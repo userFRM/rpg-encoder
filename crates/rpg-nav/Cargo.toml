@@ -1,0 +1,16 @@
+[package]
+name = "rpg-nav"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Search, fetch, explore, and TOON serialization for RPG"
+
+[dependencies]
+rpg-core.workspace = true
+anyhow.workspace = true
+globset.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

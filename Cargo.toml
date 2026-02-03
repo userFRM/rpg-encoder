@@ -1,0 +1,81 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rpg-core",
+    "crates/rpg-parser",
+    "crates/rpg-encoder",
+    "crates/rpg-nav",
+    "crates/rpg-cli",
+    "crates/rpg-mcp",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["userFRM"]
+repository = "https://github.com/userFRM/rpg-encoder"
+homepage = "https://github.com/userFRM/rpg-encoder"
+keywords = ["code-analysis", "semantic-graph", "tree-sitter", "mcp", "code-navigation"]
+categories = ["development-tools", "parser-implementations"]
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+
+# Async runtime
+tokio = { version = "1.49.0", features = ["full"] }
+
+# CLI
+clap = { version = "4.5.57", features = ["derive"] }
+
+# Tree-sitter
+tree-sitter = "0.26.5"
+tree-sitter-python = "0.25.0"
+tree-sitter-rust = "0.24.0"
+tree-sitter-typescript = "0.23.2"
+tree-sitter-javascript = "0.25.0"
+tree-sitter-go = "0.25.0"
+tree-sitter-java = "0.23.5"
+tree-sitter-c = "0.24.1"
+tree-sitter-cpp = "0.23.4"
+
+# HTTP / LLM API
+reqwest = { version = "0.13.1", features = ["json", "stream"] }
+futures-util = "0.3"
+
+# Error handling
+anyhow = "1.0.100"
+thiserror = "2.0.18"
+
+# Logging
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+
+# MCP
+rmcp = { version = "0.14.0", features = ["server", "macros", "transport-io"] }
+schemars = "1.2.1"
+
+# File system
+walkdir = "2.5.0"
+ignore = "0.4.25"
+globset = "0.4.18"
+
+# Git
+git2 = "0.20.4"
+
+# Time
+chrono = { version = "0.4.43", features = ["serde"] }
+
+# Config
+toml = "0.8"
+
+# Testing
+tempfile = "3.20"
+
+# Workspace crates
+rpg-core = { path = "crates/rpg-core" }
+rpg-parser = { path = "crates/rpg-parser" }
+rpg-encoder = { path = "crates/rpg-encoder" }
+rpg-nav = { path = "crates/rpg-nav" }

@@ -1,0 +1,33 @@
+[package]
+name = "rpg-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "CLI tool for building and querying Repository Planning Graphs"
+
+[[bin]]
+name = "rpg-encoder"
+path = "src/main.rs"
+
+[dependencies]
+rpg-core.workspace = true
+rpg-parser.workspace = true
+rpg-encoder.workspace = true
+rpg-nav.workspace = true
+clap.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+ignore.workspace = true
+globset.workspace = true
+chrono.workspace = true
+
+[features]
+local-embeddings = ["rpg-encoder/local-embeddings"]
+
+[dev-dependencies]
+tempfile.workspace = true

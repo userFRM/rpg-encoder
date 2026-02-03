@@ -1,0 +1,16 @@
+# Build artifacts
+/target/
+
+# RPG-Encoder graph
+.rpg/
+
+# Editor
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+
+# Environment
+.env

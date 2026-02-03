@@ -1,0 +1,29 @@
+[package]
+name = "rpg-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "MCP server exposing RPG navigation tools"
+
+[[bin]]
+name = "rpg-mcp-server"
+path = "src/main.rs"
+
+[dependencies]
+rpg-core.workspace = true
+rpg-nav.workspace = true
+rpg-encoder.workspace = true
+rpg-parser.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+ignore.workspace = true
+globset.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

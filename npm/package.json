@@ -1,0 +1,31 @@
+{
+  "name": "rpg-encoder",
+  "version": "0.1.0",
+  "description": "RPG-Encoder — semantic code graph for AI-assisted code understanding",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/userFRM/rpg-encoder"
+  },
+  "homepage": "https://github.com/userFRM/rpg-encoder",
+  "keywords": [
+    "mcp",
+    "code-analysis",
+    "semantic-search",
+    "llm",
+    "tree-sitter",
+    "program-graph"
+  ],
+  "bin": {
+    "rpg-encoder": "bin/run.js",
+    "rpg-mcp-server": "bin/run-mcp.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "bin/",
+    "install.js",
+    "README.md"
+  ]
+}

@@ -1,0 +1,5 @@
+bin/rpg-encoder
+bin/rpg-encoder.exe
+bin/rpg-mcp-server
+bin/rpg-mcp-server.exe
+node_modules/

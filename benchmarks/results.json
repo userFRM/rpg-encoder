@@ -1,0 +1,213 @@
+{
+  "timestamp": "2026-02-05T10:03:59",
+  "binary": "/Users/thetagamma/rpg-encoder/target/release/rpg-encoder",
+  "summary": {
+    "unlifted": {
+      "@1": 10,
+      "@3": 13,
+      "@5": 15,
+      "@10": 17,
+      "total": 20
+    },
+    "lifted": {
+      "@1": 13,
+      "@3": 15,
+      "@5": 17,
+      "@10": 18,
+      "total": 20
+    },
+    "unlifted_mrr": 0.6029166666666667,
+    "lifted_mrr": 0.73125
+  },
+  "repos": [
+    {
+      "name": "rpg-encoder",
+      "language": "rust",
+      "entities": 352,
+      "lifted_count": 352,
+      "queries": 20,
+      "unlifted": {
+        "@1": 10,
+        "@3": 13,
+        "@5": 15,
+        "@10": 17,
+        "total": 20,
+        "mrr": 12.058333333333334
+      },
+      "lifted": {
+        "@1": 13,
+        "@3": 15,
+        "@5": 17,
+        "@10": 18,
+        "total": 20,
+        "mrr": 14.625
+      },
+      "per_query": {
+        "unlifted": [
+          {
+            "query": "search code entities by query",
+            "rank": 1
+          },
+          {
+            "query": "extract semantic features from code with LLM",
+            "rank": 4
+          },
+          {
+            "query": "build semantic hierarchy for repository",
+            "rank": 1
+          },
+          {
+            "query": "resolve dependency edges between entities",
+            "rank": 0
+          },
+          {
+            "query": "serialize output in TOON format",
+            "rank": 1
+          },
+          {
+            "query": "parse entities from source code files",
+            "rank": 1
+          },
+          {
+            "query": "manage LLM provider and API calls",
+            "rank": 1
+          },
+          {
+            "query": "load and save RPG graph to disk",
+            "rank": 4
+          },
+          {
+            "query": "extract Python functions and classes",
+            "rank": 0
+          },
+          {
+            "query": "configure batch size and encoding settings",
+            "rank": 1
+          },
+          {
+            "query": "lift entities with checkpointing",
+            "rank": 8
+          },
+          {
+            "query": "fetch entity details and source code",
+            "rank": 1
+          },
+          {
+            "query": "explore dependency graph traversal",
+            "rank": 2
+          },
+          {
+            "query": "register MCP tool handlers",
+            "rank": 1
+          },
+          {
+            "query": "parse Rust functions and structs",
+            "rank": 0
+          },
+          {
+            "query": "match glob file path patterns",
+            "rank": 10
+          },
+          {
+            "query": "compute embedding similarity scores",
+            "rank": 2
+          },
+          {
+            "query": "detect and connect to Ollama",
+            "rank": 1
+          },
+          {
+            "query": "normalize semantic features text",
+            "rank": 3
+          },
+          {
+            "query": "build token-aware entity batches",
+            "rank": 1
+          }
+        ],
+        "lifted": [
+          {
+            "query": "search code entities by query",
+            "rank": 1
+          },
+          {
+            "query": "extract semantic features from code with LLM",
+            "rank": 4
+          },
+          {
+            "query": "build semantic hierarchy for repository",
+            "rank": 1
+          },
+          {
+            "query": "resolve dependency edges between entities",
+            "rank": 1
+          },
+          {
+            "query": "serialize output in TOON format",
+            "rank": 1
+          },
+          {
+            "query": "parse entities from source code files",
+            "rank": 1
+          },
+          {
+            "query": "manage LLM provider and API calls",
+            "rank": 1
+          },
+          {
+            "query": "load and save RPG graph to disk",
+            "rank": 2
+          },
+          {
+            "query": "extract Python functions and classes",
+            "rank": 0
+          },
+          {
+            "query": "configure batch size and encoding settings",
+            "rank": 1
+          },
+          {
+            "query": "lift entities with checkpointing",
+            "rank": 1
+          },
+          {
+            "query": "fetch entity details and source code",
+            "rank": 1
+          },
+          {
+            "query": "explore dependency graph traversal",
+            "rank": 1
+          },
+          {
+            "query": "register MCP tool handlers",
+            "rank": 1
+          },
+          {
+            "query": "parse Rust functions and structs",
+            "rank": 0
+          },
+          {
+            "query": "match glob file path patterns",
+            "rank": 4
+          },
+          {
+            "query": "compute embedding similarity scores",
+            "rank": 1
+          },
+          {
+            "query": "detect and connect to Ollama",
+            "rank": 8
+          },
+          {
+            "query": "normalize semantic features text",
+            "rank": 2
+          },
+          {
+            "query": "build token-aware entity batches",
+            "rank": 1
+          }
+        ]
+      }
+    }
+  ]
+}

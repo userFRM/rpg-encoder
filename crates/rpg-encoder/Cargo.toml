@@ -1,0 +1,31 @@
+[package]
+name = "rpg-encoder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Semantic lifting and hierarchy construction for RPG"
+
+[dependencies]
+rpg-core.workspace = true
+rpg-parser.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+git2.workspace = true
+ignore.workspace = true
+globset.workspace = true
+futures-util.workspace = true
+fastembed = { version = "4", optional = true }
+
+[features]
+local-embeddings = ["fastembed"]
+
+[dev-dependencies]
+tempfile.workspace = true
