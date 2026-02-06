@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 const RPG_DIR: &str = ".rpg";
 const RPG_FILE: &str = "graph.json";
+const RPG_BACKUP_FILE: &str = "graph.backup.json";
 
 /// Get the path to the RPG directory for a given project root.
 pub fn rpg_dir(project_root: &Path) -> PathBuf {
@@ -24,6 +25,32 @@ pub fn rpg_file(project_root: &Path) -> PathBuf {
 /// Check if an RPG exists for the given project root.
 pub fn rpg_exists(project_root: &Path) -> bool {
     rpg_file(project_root).exists()
+}
+
+/// Get the path to the RPG backup file for a given project root.
+pub fn rpg_backup_file(project_root: &Path) -> PathBuf {
+    rpg_dir(project_root).join(RPG_BACKUP_FILE)
+}
+
+/// Create a backup of the current graph before destructive operations.
+/// Returns the backup path if created, or None if no graph exists.
+pub fn create_backup(project_root: &Path) -> Result<Option<PathBuf>> {
+    if !rpg_exists(project_root) {
+        return Ok(None);
+    }
+
+    let source = rpg_file(project_root);
+    let dest = rpg_backup_file(project_root);
+
+    fs::copy(&source, &dest).with_context(|| {
+        format!(
+            "failed to backup {} to {}",
+            source.display(),
+            dest.display()
+        )
+    })?;
+
+    Ok(Some(dest))
 }
 
 /// Zstd magic bytes: 0x28 0xB5 0x2F 0xFD.

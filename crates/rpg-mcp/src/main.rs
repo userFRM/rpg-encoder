@@ -612,6 +612,20 @@ impl RpgServer {
             detected
         };
 
+        // Auto-preserve: load existing graph if it has lifted features
+        let old_graph: Option<RPGraph> = if storage::rpg_exists(project_root) {
+            match storage::load(project_root) {
+                Ok(g) if g.metadata.lifted_entities > 0 => {
+                    // Backup before overwriting
+                    let _ = storage::create_backup(project_root);
+                    Some(g)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
         let primary = languages[0].name();
         let mut graph = RPGraph::new(primary);
         graph.metadata.languages = languages.iter().map(|l| l.name().to_string()).collect();
@@ -692,6 +706,13 @@ impl RpgServer {
             graph.base_commit = Some(sha);
         }
 
+        // Merge old features into new graph (auto-preservation)
+        let features_restored = if let Some(ref old) = old_graph {
+            rpg_encoder::evolution::merge_features(&mut graph, old)
+        } else {
+            0
+        };
+
         // Refresh metadata and save
         graph.refresh_metadata();
         storage::save(project_root, &graph).map_err(|e| format!("Failed to save RPG: {}", e))?;
@@ -718,7 +739,7 @@ impl RpgServer {
              functional_areas: {}\n\
              dependency_edges: {}\n\
              containment_edges: {}\n\
-             lifted: 0/{}\n\
+             lifted: {}/{}\n\
              hierarchy: structural",
             lang_display,
             meta.total_entities,
@@ -726,11 +747,21 @@ impl RpgServer {
             meta.functional_areas,
             meta.dependency_edges,
             meta.containment_edges,
+            meta.lifted_entities,
             meta.total_entities,
         );
-        result.push_str(
-            "\nTip: use get_entities_for_lifting + submit_lift_results to add semantic features.",
-        );
+
+        if features_restored > 0 {
+            result.push_str(&format!(
+                "\n\nAuto-preserved {} entities with semantic features from previous graph.\n\
+                 Backup saved to .rpg/graph.backup.json",
+                features_restored
+            ));
+        } else {
+            result.push_str(
+                "\nTip: use get_entities_for_lifting + submit_lift_results to add semantic features.",
+            );
+        }
         Ok(result)
     }
 

@@ -33,6 +33,25 @@ pub struct UpdateSummary {
     pub modified_entity_ids: Vec<String>,
 }
 
+/// Merge semantic features from an old graph into a new graph by matching entity IDs.
+/// Used by `build_rpg` to auto-preserve lifted features across rebuilds.
+/// Returns the count of entities that had features restored.
+pub fn merge_features(new_graph: &mut RPGraph, old_graph: &RPGraph) -> usize {
+    let mut restored = 0;
+    for (id, new_entity) in &mut new_graph.entities {
+        // Only restore if the new entity has no features
+        if new_entity.semantic_features.is_empty() {
+            if let Some(old_entity) = old_graph.entities.get(id) {
+                if !old_entity.semantic_features.is_empty() {
+                    new_entity.semantic_features = old_entity.semantic_features.clone();
+                    restored += 1;
+                }
+            }
+        }
+    }
+    restored
+}
+
 /// Detect file changes since the RPG's base_commit (or a given override) using git2.
 pub fn detect_changes(
     project_root: &Path,
