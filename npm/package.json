@@ -5,7 +5,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/userFRM/rpg-encoder"
+    "url": "git+https://github.com/userFRM/rpg-encoder.git"
   },
   "homepage": "https://github.com/userFRM/rpg-encoder",
   "keywords": [
