@@ -4,7 +4,7 @@ use rpg_core::graph::{DependencyEdge, EdgeKind, HierarchyNode, RPGraph};
 use rpg_core::lca;
 use rpg_parser::deps;
 use rpg_parser::languages::Language;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 /// Ground all hierarchy nodes by computing LCA-based directory paths.
@@ -15,7 +15,7 @@ pub fn ground_hierarchy(graph: &mut RPGraph) {
     }
 }
 
-fn ground_node(node: &mut HierarchyNode, entities: &HashMap<String, rpg_core::graph::Entity>) {
+fn ground_node(node: &mut HierarchyNode, entities: &BTreeMap<String, rpg_core::graph::Entity>) {
     // First, ground children
     for child in node.children.values_mut() {
         ground_node(child, entities);

@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 /// The complete Repository Planning Graph: G = (V, E) where V = V_H ∪ V_L.
@@ -14,13 +14,13 @@ pub struct RPGraph {
     pub base_commit: Option<String>,
     pub metadata: GraphMetadata,
     /// V_H: high-level semantic hierarchy nodes.
-    pub hierarchy: HashMap<String, HierarchyNode>,
+    pub hierarchy: BTreeMap<String, HierarchyNode>,
     /// V_L: low-level code entities (functions, classes, methods).
-    pub entities: HashMap<String, Entity>,
+    pub entities: BTreeMap<String, Entity>,
     /// E = E_dep ∪ E_feature: all edges (dependency + containment).
     pub edges: Vec<DependencyEdge>,
     /// Reverse index: file path → entity IDs in that file.
-    pub file_index: HashMap<PathBuf, Vec<String>>,
+    pub file_index: BTreeMap<PathBuf, Vec<String>>,
     /// Performance index: entity ID → edge indices in `edges` vec.
     /// Rebuilt on load and after edge mutations via `rebuild_edge_index()`.
     #[serde(skip)]
@@ -92,7 +92,7 @@ pub struct HierarchyNode {
     pub name: String,
     /// LCA-grounded directory paths for this subtree.
     pub grounded_paths: Vec<PathBuf>,
-    pub children: HashMap<String, HierarchyNode>,
+    pub children: BTreeMap<String, HierarchyNode>,
     pub entities: Vec<String>,
     /// Aggregated semantic features from all entities in this subtree.
     pub semantic_features: Vec<String>,
@@ -106,7 +106,7 @@ impl HierarchyNode {
             id: String::new(),
             name: name.into(),
             grounded_paths: Vec::new(),
-            children: HashMap::new(),
+            children: BTreeMap::new(),
             entities: Vec::new(),
             semantic_features: Vec::new(),
             description: None,
@@ -138,7 +138,7 @@ impl HierarchyNode {
     }
 
     /// Collect all file paths from entities in this subtree.
-    pub fn collect_file_paths(&self, entities: &HashMap<String, Entity>) -> Vec<PathBuf> {
+    pub fn collect_file_paths(&self, entities: &BTreeMap<String, Entity>) -> Vec<PathBuf> {
         let ids = self.all_entity_ids();
         ids.iter()
             .filter_map(|id| entities.get(id).map(|e| e.file.clone()))
@@ -178,7 +178,7 @@ impl HierarchyNode {
     }
 
     /// Bottom-up aggregation: collect deduplicated semantic features from all children.
-    pub fn aggregate_features(&mut self, entities: &HashMap<String, Entity>) {
+    pub fn aggregate_features(&mut self, entities: &BTreeMap<String, Entity>) {
         for child in self.children.values_mut() {
             child.aggregate_features(entities);
         }
@@ -251,10 +251,10 @@ impl RPGraph {
                 semantic_hierarchy: false,
                 repo_summary: None,
             },
-            hierarchy: HashMap::new(),
-            entities: HashMap::new(),
+            hierarchy: BTreeMap::new(),
+            entities: BTreeMap::new(),
             edges: Vec::new(),
-            file_index: HashMap::new(),
+            file_index: BTreeMap::new(),
             edge_index: HashMap::new(),
             hierarchy_node_index: HashMap::new(),
         }
