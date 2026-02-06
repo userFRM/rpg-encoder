@@ -66,6 +66,45 @@ Then use the binary path directly:
 
 </details>
 
+<details>
+<summary><strong>Multi-repo setup</strong></summary>
+
+The MCP server operates on the directory passed as its first argument. For multi-repo usage:
+
+**Option 1: Global config (single primary repo)**
+
+Set your main development repo in `~/.claude.json`:
+
+```json
+{
+  "mcpServers": {
+    "rpg": {
+      "command": "npx",
+      "args": ["-y", "-p", "rpg-encoder", "rpg-mcp-server", "/path/to/primary/repo"]
+    }
+  }
+}
+```
+
+**Option 2: Per-project override**
+
+Create `.claude/mcp_servers.json` in each repo that needs RPG:
+
+```json
+{
+  "rpg": {
+    "type": "stdio",
+    "command": "npx",
+    "args": ["-y", "-p", "rpg-encoder", "rpg-mcp-server", "/path/to/this/repo"],
+    "env": {}
+  }
+}
+```
+
+The project-level config overrides the global one. Restart Claude Code after creating/modifying configs.
+
+</details>
+
 ## How It Works
 
 The RPG (Repository Planning Graph) is a hierarchical, dual-view representation from the
