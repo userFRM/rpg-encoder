@@ -48,7 +48,7 @@ When the user asks you to "lift", "be the lifter", "lift this code", "lift the r
 Process all batches in the current conversation:
 - Call `get_entities_for_lifting` with the scope.
 - Extract verb-object features for each entity per the instructions.
-- Call `submit_lift_results` with JSON: `{"file:name": ["feature1", ...]}`.
+- Call `submit_lift_results` with JSON keys matching the headers from get_entities_for_lifting (e.g., `{"file:Class::method": ["feature1", ...]}` for methods, `{"file:func": ["feature1", ...]}` for functions).
 - Continue with next batch_index until DONE.
 - Call `finalize_lifting` then `get_files_for_synthesis` + `submit_file_syntheses`.
 - Call `build_semantic_hierarchy` + `submit_hierarchy`.

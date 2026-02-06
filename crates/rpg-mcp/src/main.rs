@@ -244,7 +244,10 @@ impl RpgServer {
                     let names: Vec<&str> = ids
                         .iter()
                         .take(3)
-                        .map(|id| id.rsplit_once(':').map_or(id.as_str(), |(_, n)| n))
+                        .map(|id| {
+                            // Show qualified name (Class::method) not just method name
+                            id.split_once(':').map_or(id.as_str(), |(_, n)| n)
+                        })
                         .collect();
                     let suffix = if ids.len() > 3 {
                         format!(", ... +{}", ids.len() - 3)
@@ -904,16 +907,15 @@ impl RpgServer {
         for entity in batch {
             let truncated = truncate_source(&entity.source_text, 40);
             output.push_str(&format!(
-                "### {}:{} ({:?})\n```\n{}\n```\n\n",
-                entity.file.display(),
-                entity.name,
+                "### {} ({:?})\n```\n{}\n```\n\n",
+                entity.id(),
                 entity.kind,
                 truncated,
             ));
         }
 
         output.push_str(
-            "Submit: call `submit_lift_results` with JSON `{\"file:name\": [\"feature1\", ...]}` keys as shown above.\n\n"
+            "Submit: call `submit_lift_results` with JSON keys exactly as shown in the ### headers above (e.g., `{\"src/lib.rs:MyStruct::method\": [\"feature1\", ...]}`).\n\n"
         );
 
         if batch_index + 1 < total_batches {
@@ -931,7 +933,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "LIFTER PROTOCOL step 2: Submit semantic features you extracted. Pass a JSON object with file:name keys exactly as shown by get_entities_for_lifting. Example: {\"src/main.rs:my_func\": [\"validate input\"], \"src/lib.rs:load\": [\"load config\"]}. After submitting, immediately proceed to the next batch — do NOT stop to ask the user."
+        description = "LIFTER PROTOCOL step 2: Submit semantic features you extracted. Pass a JSON object with keys exactly as shown by get_entities_for_lifting headers. For methods use file:Class::method format. Example: {\"src/main.rs:Server::new\": [\"create server\"], \"src/lib.rs:load\": [\"load config\"]}. After submitting, immediately proceed to the next batch — do NOT stop to ask the user."
     )]
     async fn submit_lift_results(
         &self,
@@ -962,50 +964,53 @@ impl RpgServer {
                 continue;
             }
 
-            // Find the entity: direct ID match first, then file:name scan
-            let entity_id = if graph.entities.contains_key(key) {
-                Some(key.clone())
+            // Find matching entities: direct ID match first, then file:name scan (all matches)
+            let entity_ids: Vec<String> = if graph.entities.contains_key(key) {
+                vec![key.clone()]
             } else if let Some((file_part, name_part)) = key.rsplit_once(':') {
                 graph
                     .entities
                     .iter()
-                    .find(|(_, e)| {
+                    .filter(|(_, e)| {
                         e.name == name_part && e.file.to_string_lossy().as_ref() == file_part
                     })
                     .map(|(id, _)| id.clone())
+                    .collect()
             } else {
-                None
+                vec![]
             };
 
-            if let Some(ref eid) = entity_id {
-                // Drift detection: check old features before overwriting
-                let old_feats = graph
-                    .entities
-                    .get(eid)
-                    .map(|e| e.semantic_features.clone())
-                    .unwrap_or_default();
+            if entity_ids.is_empty() {
+                unmatched += 1;
+            } else {
+                for eid in &entity_ids {
+                    // Drift detection: check old features before overwriting
+                    let old_feats = graph
+                        .entities
+                        .get(eid)
+                        .map(|e| e.semantic_features.clone())
+                        .unwrap_or_default();
 
-                if !old_feats.is_empty() {
-                    let drift = rpg_encoder::evolution::compute_drift(&old_feats, feats);
-                    if drift > drift_threshold {
-                        drift_reports
-                            .push(format!("  {} drifted ({:.2}) — re-routing", eid, drift,));
-                        drifted_ids.push(eid.clone());
-                        graph.remove_entity_from_hierarchy(eid);
-                    } else if drift > 0.0 {
-                        drift_reports.push(format!(
-                            "  {} updated ({:.2} drift, below threshold)",
-                            eid, drift,
-                        ));
+                    if !old_feats.is_empty() {
+                        let drift = rpg_encoder::evolution::compute_drift(&old_feats, feats);
+                        if drift > drift_threshold {
+                            drift_reports
+                                .push(format!("  {} drifted ({:.2}) — re-routing", eid, drift));
+                            drifted_ids.push(eid.clone());
+                            graph.remove_entity_from_hierarchy(eid);
+                        } else if drift > 0.0 {
+                            drift_reports.push(format!(
+                                "  {} updated ({:.2} drift, below threshold)",
+                                eid, drift,
+                            ));
+                        }
+                    }
+
+                    if let Some(entity) = graph.entities.get_mut(eid) {
+                        entity.semantic_features = feats.clone();
+                        updated += 1;
                     }
                 }
-
-                if let Some(entity) = graph.entities.get_mut(eid) {
-                    entity.semantic_features = feats.clone();
-                    updated += 1;
-                }
-            } else {
-                unmatched += 1;
             }
         }
 
@@ -1033,7 +1038,7 @@ impl RpgServer {
             coverage_pct,
         );
         if unmatched > 0 {
-            result.push_str("\nNote: Unmatched keys must use exact file:name format (e.g., \"src/main.rs:my_func\").");
+            result.push_str("\nNote: Unmatched keys must match headers from get_entities_for_lifting (e.g., \"src/main.rs:MyStruct::method\" for methods).");
         }
 
         // Drift reports (when re-lifting modified entities)
