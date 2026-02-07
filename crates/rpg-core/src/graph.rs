@@ -78,9 +78,13 @@ pub struct EntityDeps {
     pub imports: Vec<String>,
     pub invokes: Vec<String>,
     pub inherits: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub composes: Vec<String>,
     pub imported_by: Vec<String>,
     pub invoked_by: Vec<String>,
     pub inherited_by: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub composed_by: Vec<String>,
 }
 
 /// A node in the semantic hierarchy tree (V_H node).
@@ -198,7 +202,7 @@ impl HierarchyNode {
 }
 
 /// An edge in the unified edge set E = E_dep ∪ E_feature.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct DependencyEdge {
     pub source: String,
     pub target: String,
@@ -206,7 +210,7 @@ pub struct DependencyEdge {
 }
 
 /// The kind of relationship between two nodes in the graph.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EdgeKind {
     /// E_dep: import/use dependency.
@@ -215,6 +219,8 @@ pub enum EdgeKind {
     Invokes,
     /// E_dep: class inheritance or trait implementation.
     Inherits,
+    /// E_dep: composition/aggregation (e.g., module re-exports, class composition).
+    Composes,
     /// E_feature: hierarchy containment (parent → child).
     Contains,
 }

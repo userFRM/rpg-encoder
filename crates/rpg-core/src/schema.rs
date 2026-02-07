@@ -49,8 +49,13 @@ pub fn migrate(graph: &mut RPGraph) -> Result<()> {
 }
 
 /// Serialize an RPGraph to a pretty-printed JSON string.
+///
+/// Edges are sorted by (source, target, kind) for deterministic output,
+/// ensuring minimal git diffs when the graph is re-saved.
 pub fn to_json(graph: &RPGraph) -> Result<String> {
-    serde_json::to_string_pretty(graph).context("failed to serialize RPG to JSON")
+    let mut graph = graph.clone();
+    graph.edges.sort();
+    serde_json::to_string_pretty(&graph).context("failed to serialize RPG to JSON")
 }
 
 /// Deserialize an RPGraph from a JSON string.
