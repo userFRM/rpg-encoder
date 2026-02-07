@@ -68,6 +68,7 @@ impl RpgServer {
         else {
             return String::new();
         };
+        let changes = rpg_encoder::evolution::filter_rpgignore_changes(&self.project_root, changes);
         let languages = Self::resolve_languages(&graph.metadata);
         let source_changes = if languages.is_empty() {
             changes
@@ -124,6 +125,7 @@ impl RpgServer {
     fn staleness_detail(&self, graph: &RPGraph) -> Option<String> {
         let changes =
             rpg_encoder::evolution::detect_workdir_changes(&self.project_root, graph).ok()?;
+        let changes = rpg_encoder::evolution::filter_rpgignore_changes(&self.project_root, changes);
         let languages = Self::resolve_languages(&graph.metadata);
         let changes = rpg_encoder::evolution::filter_source_changes(changes, &languages);
 
@@ -596,7 +598,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Build an RPG (Repository Planning Graph) from the codebase. Indexes all code entities, builds a file-path hierarchy, and resolves dependencies. Completes in seconds without requiring an LLM. To add semantic features (LLM-extracted intent descriptions), use get_entities_for_lifting afterwards. Run this once when first connecting to a repository."
+        description = "Build an RPG (Repository Planning Graph) from the codebase. Indexes all code entities, builds a file-path hierarchy, and resolves dependencies. Completes in seconds without requiring an LLM. To add semantic features (LLM-extracted intent descriptions), use get_entities_for_lifting afterwards. Run this once when first connecting to a repository. Respects .rpgignore files (gitignore syntax) for excluding files from the graph."
     )]
     async fn build_rpg(
         &self,
@@ -655,6 +657,7 @@ impl RpgServer {
         let walker = ignore::WalkBuilder::new(project_root)
             .hidden(true)
             .git_ignore(true)
+            .add_custom_ignore_filename(".rpgignore")
             .build();
 
         for entry in walker.flatten() {

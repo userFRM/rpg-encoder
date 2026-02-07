@@ -207,6 +207,7 @@ fn collect_source_files(
     let walker = ignore::WalkBuilder::new(project_root)
         .hidden(true)
         .git_ignore(true)
+        .add_custom_ignore_filename(".rpgignore")
         .build();
 
     let spinner = ProgressBar::new_spinner();
@@ -684,6 +685,7 @@ fn cmd_diff(project_root: &Path, since: Option<String>) -> Result<()> {
     let graph = rpg_core::storage::load(project_root)?;
 
     let changes = rpg_encoder::evolution::detect_changes(project_root, &graph, since.as_deref())?;
+    let changes = rpg_encoder::evolution::filter_rpgignore_changes(project_root, changes);
 
     if changes.is_empty() {
         eprintln!("No changes detected since last build.");

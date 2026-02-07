@@ -192,6 +192,33 @@ pub fn filter_source_changes(changes: Vec<FileChange>, languages: &[Language]) -
         .collect()
 }
 
+/// Filter out file changes matching `.rpgignore` patterns.
+///
+/// Loads `.rpgignore` from `project_root`. If the file doesn't exist, returns
+/// the input unchanged. For renamed files, checks the `to` path.
+pub fn filter_rpgignore_changes(project_root: &Path, changes: Vec<FileChange>) -> Vec<FileChange> {
+    let ignore_path = project_root.join(".rpgignore");
+    let (gitignore, err) = ignore::gitignore::Gitignore::new(&ignore_path);
+    // If the file doesn't exist or can't be parsed, pass everything through
+    if err.is_some() && !ignore_path.exists() {
+        return changes;
+    }
+
+    changes
+        .into_iter()
+        .filter(|change| {
+            let path = match change {
+                FileChange::Added(p) | FileChange::Modified(p) | FileChange::Deleted(p) => p,
+                FileChange::Renamed { to, .. } => to,
+            };
+            let is_dir = false;
+            !gitignore
+                .matched_path_or_any_parents(path, is_dir)
+                .is_ignore()
+        })
+        .collect()
+}
+
 /// Apply deletions to the graph (Algorithm 2: recursive pruning).
 pub fn apply_deletions(graph: &mut RPGraph, deleted_files: &[PathBuf]) -> usize {
     let mut removed = 0;
@@ -522,6 +549,7 @@ pub fn run_update(
     }
 
     let changes = detect_changes(project_root, graph, since)?;
+    let changes = filter_rpgignore_changes(project_root, changes);
     let changes = filter_source_changes(changes, &languages);
 
     if changes.is_empty() {

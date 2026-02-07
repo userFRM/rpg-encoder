@@ -68,6 +68,7 @@ impl Language {
         let walker = ignore::WalkBuilder::new(root)
             .hidden(true)
             .git_ignore(true)
+            .add_custom_ignore_filename(".rpgignore")
             .build();
 
         for entry in walker.flatten() {
