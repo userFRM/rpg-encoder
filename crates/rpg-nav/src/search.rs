@@ -367,7 +367,24 @@ fn search_snippets(
     results
 }
 
+/// Collect entities from one or more hierarchy scopes.
+/// Supports comma-separated scopes per paper's `search_scopes` (list of paths).
 fn collect_scoped_entities(graph: &RPGraph, scope: &str) -> Vec<String> {
+    let scopes: Vec<&str> = scope.split(',').map(|s| s.trim()).collect();
+    let mut all_ids: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for single_scope in scopes {
+        for id in collect_single_scope(graph, single_scope) {
+            if seen.insert(id.clone()) {
+                all_ids.push(id);
+            }
+        }
+    }
+    all_ids
+}
+
+fn collect_single_scope(graph: &RPGraph, scope: &str) -> Vec<String> {
     let parts: Vec<&str> = scope.split('/').collect();
     if parts.is_empty() {
         return Vec::new();

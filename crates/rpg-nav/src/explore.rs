@@ -141,7 +141,10 @@ fn get_neighbors(
 ) -> Vec<(String, EdgeKind, &'static str)> {
     let mut neighbors = Vec::new();
 
-    for edge in &graph.edges {
+    // Use edge_index for O(degree) lookup instead of O(E) linear scan
+    let edges = graph.edges_for(entity_id);
+
+    for edge in edges {
         if let Some(filter) = edge_filter
             && edge.kind != filter
         {
