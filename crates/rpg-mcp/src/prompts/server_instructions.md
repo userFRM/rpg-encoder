@@ -102,7 +102,7 @@ concrete anchors, then use `explore_rpg` to expand from those anchors.
 - **build_rpg**: Index the codebase (run once, instant)
 - **get_entities_for_lifting** + **submit_lift_results**: YOU analyze the code
 - **finalize_lifting**: Aggregate file-level features, rebuild hierarchy metadata
-- **get_files_for_synthesis** + **submit_file_syntheses**: YOU synthesize file-level summaries
+- **get_files_for_synthesis** + **submit_file_syntheses**: YOU synthesize file-level features
 - **build_semantic_hierarchy**: Get prompts for domain discovery + hierarchy assignment
 - **submit_hierarchy**: Apply your hierarchy assignments to the graph
 - **search_node**: Find code by intent (features/snippets/auto modes)

@@ -283,7 +283,7 @@ impl RpgServer {
             ));
         } else if !graph.metadata.semantic_hierarchy {
             out.push_str(
-                "NEXT STEP: All entities lifted. Call finalize_lifting, then get_files_for_synthesis + submit_file_syntheses for holistic file summaries, then build_semantic_hierarchy + submit_hierarchy.\n",
+                "NEXT STEP: All entities lifted. Call finalize_lifting, then get_files_for_synthesis + submit_file_syntheses for holistic file-level features, then build_semantic_hierarchy + submit_hierarchy.\n",
             );
         } else {
             out.push_str(
@@ -386,9 +386,9 @@ struct GetFilesForSynthesisParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct SubmitFileSynthesesParams {
-    /// JSON object mapping file paths to holistic summary strings.
-    /// Example: {"src/auth/login.rs": "handle user authentication and session management",
-    ///           "src/db/query.rs": "build and execute SQL queries against the database"}
+    /// JSON object mapping file paths to comma-separated feature strings.
+    /// Example: {"src/auth/login.rs": "handle user authentication, manage session tokens",
+    ///           "src/db/query.rs": "build SQL queries, execute database operations"}
     syntheses: String,
 }
 
@@ -1205,7 +1205,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Finalize the lifting process: aggregate file-level features onto Module entities and re-ground artifacts. Call this AFTER all entities have been lifted via submit_lift_results. No LLM needed — uses dedup-aggregation of already-lifted entity features. After finalizing, proceed to get_files_for_synthesis for holistic summaries, then build_semantic_hierarchy + submit_hierarchy."
+        description = "Finalize the lifting process: aggregate file-level features onto Module entities and re-ground artifacts. Call this AFTER all entities have been lifted via submit_lift_results. No LLM needed — uses dedup-aggregation of already-lifted entity features. After finalizing, proceed to get_files_for_synthesis for holistic file-level features, then build_semantic_hierarchy + submit_hierarchy."
     )]
     async fn finalize_lifting(&self) -> Result<String, String> {
         self.ensure_graph().await?;
@@ -1284,7 +1284,7 @@ impl RpgServer {
             ));
         } else if !graph.metadata.semantic_hierarchy {
             result.push_str(
-                "\nNEXT STEP: Call get_files_for_synthesis to produce holistic file-level summaries (improves hierarchy quality), then build_semantic_hierarchy + submit_hierarchy.\n",
+                "\nNEXT STEP: Call get_files_for_synthesis to produce holistic file-level features (improves hierarchy quality), then build_semantic_hierarchy + submit_hierarchy.\n",
             );
         } else {
             result.push_str(
@@ -1393,7 +1393,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "SYNTHESIS PROTOCOL step 2: Submit your holistic file-level summaries. Pass a JSON object mapping file paths to summary strings. These replace the dedup-aggregated Module features with your synthesized descriptions, improving hierarchy quality. Example: {\"src/auth.rs\": \"handle user authentication and session tokens\", \"src/db.rs\": \"manage database connections and query execution\"}"
+        description = "SYNTHESIS PROTOCOL step 2: Submit your holistic file-level features. Pass a JSON object mapping file paths to comma-separated feature strings. These replace the dedup-aggregated Module features with your synthesized features, improving hierarchy quality. Example: {\"src/auth.rs\": \"handle user authentication, manage session tokens\", \"src/db.rs\": \"manage database connections, execute queries\"}"
     )]
     async fn submit_file_syntheses(
         &self,
@@ -1455,7 +1455,7 @@ impl RpgServer {
             }
         }
 
-        // Re-aggregate hierarchy features with new module summaries
+        // Re-aggregate hierarchy features with new module features
         graph.aggregate_hierarchy_features();
         graph.refresh_metadata();
 
@@ -1524,7 +1524,7 @@ impl RpgServer {
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
 
-        // Collect Module entities with features (file-level summaries)
+        // Collect Module entities with features (file-level features)
         let mut file_features = String::new();
         let mut module_count = 0usize;
         for entity in graph.entities.values() {
