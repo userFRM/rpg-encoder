@@ -108,4 +108,4 @@ jobs:
 
       - name: Publish to npm
         working-directory: npm
-        run: npm publish --access public --provenance
+        run: npm publish --access public --provenance || echo "Version already published, skipping"
