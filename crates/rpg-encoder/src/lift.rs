@@ -158,11 +158,17 @@ pub fn collect_raw_entities(
         }
     }
 
-    let language = Language::from_name(&graph.metadata.language)
-        .ok_or_else(|| anyhow::anyhow!("unknown language: {}", graph.metadata.language))?;
-
     let mut raw_entities: Vec<RawEntity> = Vec::new();
     for (rel_path, entity_ids) in &files_to_read {
+        // Per-file language detection (multi-language graph support)
+        let file_lang = rel_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(Language::from_extension);
+        let Some(language) = file_lang else {
+            continue;
+        };
+
         let abs_path = project_root.join(rel_path);
         let source = match std::fs::read_to_string(&abs_path) {
             Ok(s) => s,

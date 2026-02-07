@@ -565,8 +565,12 @@ pub fn run_update(
     let added = apply_additions(graph, &added_files, project_root)?;
     summary.entities_added += added;
 
-    // Step 5: Re-populate and re-resolve dependencies
-    grounding::populate_entity_deps(graph, project_root, false);
+    // Step 5: Re-populate deps (scoped to changed files) and re-resolve globally
+    let mut changed_file_list: Vec<PathBuf> = Vec::new();
+    changed_file_list.extend(modified_files.iter().cloned());
+    changed_file_list.extend(added_files.iter().cloned());
+    changed_file_list.extend(renames.iter().map(|(_, to)| to.clone()));
+    grounding::populate_entity_deps(graph, project_root, false, Some(&changed_file_list));
     grounding::resolve_dependencies(graph);
 
     // Step 6: Re-ground hierarchy

@@ -709,6 +709,7 @@ impl RpgServer {
             &mut graph,
             project_root,
             cfg.encoding.broadcast_imports,
+            None,
         );
         rpg_encoder::grounding::ground_hierarchy(&mut graph);
         rpg_encoder::grounding::resolve_dependencies(&mut graph);

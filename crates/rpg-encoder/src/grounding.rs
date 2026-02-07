@@ -36,9 +36,34 @@ fn ground_node(node: &mut HierarchyNode, entities: &BTreeMap<String, rpg_core::g
 ///
 /// When `broadcast_imports` is false, entities without call-site info (no invokes/inherits)
 /// get no import edges rather than all file-level imports being broadcast to them.
-pub fn populate_entity_deps(graph: &mut RPGraph, project_root: &Path, broadcast_imports: bool) {
-    // For each file in the index, extract raw deps and map them to entities
-    let file_list: Vec<_> = graph.file_index.keys().cloned().collect();
+///
+/// When `changed_files` is `Some`, only entities in those files are re-populated (their
+/// forward deps are cleared first). When `None`, all files are processed.
+pub fn populate_entity_deps(
+    graph: &mut RPGraph,
+    project_root: &Path,
+    broadcast_imports: bool,
+    changed_files: Option<&[std::path::PathBuf]>,
+) {
+    // Scope to changed files or all files
+    let file_list: Vec<_> = match changed_files {
+        Some(files) => files.to_vec(),
+        None => graph.file_index.keys().cloned().collect(),
+    };
+
+    // Clear forward deps only for entities in scoped files
+    for rel_path in &file_list {
+        if let Some(ids) = graph.file_index.get(rel_path) {
+            for id in ids.clone() {
+                if let Some(entity) = graph.entities.get_mut(&id) {
+                    entity.deps.imports.clear();
+                    entity.deps.invokes.clear();
+                    entity.deps.inherits.clear();
+                    entity.deps.composes.clear();
+                }
+            }
+        }
+    }
 
     for rel_path in &file_list {
         let file_lang = rel_path
