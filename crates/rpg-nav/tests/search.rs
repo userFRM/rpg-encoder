@@ -175,6 +175,61 @@ fn test_results_sorted_by_score() {
     }
 }
 
+// --- Multi-scope tests ---
+
+#[test]
+fn test_multi_scope_comma_separated() {
+    let graph = make_graph();
+    // Search with two scopes: "Security/auth/token" and "DataAccess"
+    let results = search(
+        &graph,
+        "query validation",
+        SearchMode::Features,
+        Some("Security/auth/token, DataAccess"),
+        10,
+    );
+    // Should find entities from both scopes
+    // validate_token is in Security/auth/token, query_users is in DataAccess
+    // Both should be eligible (actual presence depends on query match)
+    for r in &results {
+        assert!(
+            r.entity_id == "auth.rs:validate_token" || r.entity_id == "db.rs:query_users",
+            "unexpected entity in multi-scope search: {}",
+            r.entity_id,
+        );
+    }
+}
+
+#[test]
+fn test_multi_scope_union_not_intersection() {
+    let graph = make_graph();
+    // Use two non-overlapping narrow scopes
+    let results_narrow1 = search(
+        &graph,
+        "authentication",
+        SearchMode::Features,
+        Some("Security/auth/token"),
+        10,
+    );
+    let results_narrow2 = search(
+        &graph,
+        "authentication",
+        SearchMode::Features,
+        Some("Security/auth/login"),
+        10,
+    );
+    let results_combined = search(
+        &graph,
+        "authentication",
+        SearchMode::Features,
+        Some("Security/auth/token, Security/auth/login"),
+        10,
+    );
+    // Combined should have at least as many results as each individual
+    assert!(results_combined.len() >= results_narrow1.len());
+    assert!(results_combined.len() >= results_narrow2.len());
+}
+
 // --- SearchParams tests ---
 
 #[test]
@@ -279,4 +334,37 @@ fn test_search_params_combined() {
     );
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].entity_id, "auth.rs:validate");
+}
+
+#[test]
+fn test_multi_scope_with_invalid_segment() {
+    let graph = make_graph();
+    // One valid scope + one nonexistent scope — should still return results from the valid one
+    let results = search(
+        &graph,
+        "authentication",
+        SearchMode::Features,
+        Some("Security/auth/token, NonExistent/bogus/path"),
+        10,
+    );
+    // Should still find validate_token from the valid scope
+    assert!(!results.is_empty());
+    assert_eq!(results[0].entity_name, "validate_token");
+}
+
+#[test]
+fn test_multi_scope_dedup_overlapping() {
+    let graph = make_graph();
+    // "Security" and "Security/auth" overlap — Security contains all of Security/auth
+    let results = search(
+        &graph,
+        "authentication",
+        SearchMode::Features,
+        Some("Security, Security/auth"),
+        10,
+    );
+    // Should not have duplicate entity IDs in results
+    let ids: Vec<&str> = results.iter().map(|r| r.entity_id.as_str()).collect();
+    let unique_ids: std::collections::HashSet<&str> = ids.iter().copied().collect();
+    assert_eq!(ids.len(), unique_ids.len(), "results should contain no duplicate entity IDs");
 }

@@ -157,6 +157,54 @@ fn test_edges_for() {
 }
 
 #[test]
+fn test_edges_for_indexed_vs_fallback_equivalence() {
+    let mut graph = RPGraph::new("rust");
+    graph.insert_entity(make_entity("f.rs:a", "a", "f.rs"));
+    graph.insert_entity(make_entity("f.rs:b", "b", "f.rs"));
+    graph.insert_entity(make_entity("g.rs:c", "c", "g.rs"));
+    graph.edges.push(DependencyEdge {
+        source: "f.rs:a".to_string(),
+        target: "f.rs:b".to_string(),
+        kind: EdgeKind::Invokes,
+    });
+    graph.edges.push(DependencyEdge {
+        source: "g.rs:c".to_string(),
+        target: "f.rs:a".to_string(),
+        kind: EdgeKind::Imports,
+    });
+    graph.edges.push(DependencyEdge {
+        source: "f.rs:a".to_string(),
+        target: "g.rs:c".to_string(),
+        kind: EdgeKind::Composes,
+    });
+
+    // Fallback path (no index built)
+    assert!(graph.edge_index.is_empty());
+    let fallback_count = graph.edges_for("f.rs:a").len();
+    let mut fallback_kinds: Vec<String> = graph
+        .edges_for("f.rs:a")
+        .iter()
+        .map(|e| format!("{:?}", e.kind))
+        .collect();
+    fallback_kinds.sort();
+
+    // Indexed path
+    graph.rebuild_edge_index();
+    assert!(!graph.edge_index.is_empty());
+    let indexed_count = graph.edges_for("f.rs:a").len();
+    let mut indexed_kinds: Vec<String> = graph
+        .edges_for("f.rs:a")
+        .iter()
+        .map(|e| format!("{:?}", e.kind))
+        .collect();
+    indexed_kinds.sort();
+
+    // Both paths should return the same edges
+    assert_eq!(fallback_count, indexed_count);
+    assert_eq!(fallback_kinds, indexed_kinds);
+}
+
+#[test]
 fn test_hierarchy_node_entity_count() {
     let mut node = HierarchyNode::new("root");
     node.entities.push("e1".to_string());

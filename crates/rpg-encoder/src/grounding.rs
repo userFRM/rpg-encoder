@@ -209,6 +209,19 @@ pub fn resolve_dependencies(graph: &mut RPGraph) {
                 &mut edges,
             );
         }
+
+        // Resolve composes (composition/aggregation relationships)
+        for compose_name in &deps.composes {
+            resolve_dep(
+                source_id,
+                compose_name,
+                source_file,
+                EdgeKind::Composes,
+                &qualified_index,
+                &name_to_ids,
+                &mut edges,
+            );
+        }
     }
 
     // Build reverse edges in entity deps
@@ -233,6 +246,13 @@ pub fn resolve_dependencies(graph: &mut RPGraph) {
                     && !target.deps.imported_by.contains(&edge.source)
                 {
                     target.deps.imported_by.push(edge.source.clone());
+                }
+            }
+            EdgeKind::Composes => {
+                if let Some(target) = graph.entities.get_mut(&edge.target)
+                    && !target.deps.composed_by.contains(&edge.source)
+                {
+                    target.deps.composed_by.push(edge.source.clone());
                 }
             }
             EdgeKind::Contains => {} // Containment edges don't have reverse dep entries

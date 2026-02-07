@@ -306,13 +306,13 @@ struct SearchNodeParams {
     query: String,
     /// Search mode: 'features', 'snippets', or 'auto' (default: 'auto')
     mode: Option<String>,
-    /// Optional hierarchy scope to restrict search (e.g., 'Security/auth')
+    /// Optional hierarchy scope to restrict search (e.g., 'Security/auth'). Comma-separated for multiple scopes.
     scope: Option<String>,
     /// Filter to entities within a line range [start, end]
     line_nums: Option<Vec<usize>>,
     /// Glob pattern to filter entities by file path (e.g., "src/**/*.rs")
     file_pattern: Option<String>,
-    /// Comma-separated entity type filter (e.g., "function,class,method")
+    /// Comma-separated entity type filter (e.g., "function,class,method"). Valid: function, class, method, file, module.
     entity_type_filter: Option<String>,
 }
 
@@ -332,11 +332,11 @@ struct ExploreRpgParams {
     entity_ids: Option<Vec<String>>,
     /// Traversal direction: 'upstream', 'downstream', or 'both'
     direction: Option<String>,
-    /// Maximum traversal depth (default: 2)
-    depth: Option<usize>,
-    /// Filter edges by kind: 'imports', 'invokes', 'inherits', or 'contains'
+    /// Maximum traversal depth (default: 2). Use -1 for unlimited depth.
+    depth: Option<i64>,
+    /// Filter edges by kind: 'imports', 'invokes', 'inherits', 'composes', or 'contains'
     edge_filter: Option<String>,
-    /// Comma-separated entity type filter (e.g., "function,class,method")
+    /// Comma-separated entity type filter (e.g., "function,class,method"). Valid: function, class, method, file, module.
     entity_type_filter: Option<String>,
 }
 
@@ -408,6 +408,10 @@ fn truncate_source(source: &str, max_lines: usize) -> String {
 }
 
 /// Parse a comma-separated entity type filter string into EntityKind values.
+/// Accepts paper-specified names: function, class, method, file, module.
+/// "file" is an alias for Module (file-level entity nodes, V_L).
+/// Note: "directory" is not a V_L entity kind — hierarchy nodes (V_H) are
+/// traversed via Contains edges but are not subject to entity_type_filter.
 fn parse_entity_type_filter(filter: &str) -> Vec<rpg_core::graph::EntityKind> {
     filter
         .split(',')
@@ -415,7 +419,7 @@ fn parse_entity_type_filter(filter: &str) -> Vec<rpg_core::graph::EntityKind> {
             "function" => Some(rpg_core::graph::EntityKind::Function),
             "class" => Some(rpg_core::graph::EntityKind::Class),
             "method" => Some(rpg_core::graph::EntityKind::Method),
-            "module" => Some(rpg_core::graph::EntityKind::Module),
+            "module" | "file" => Some(rpg_core::graph::EntityKind::Module),
             _ => None,
         })
         .collect()
@@ -424,7 +428,7 @@ fn parse_entity_type_filter(filter: &str) -> Vec<rpg_core::graph::EntityKind> {
 #[tool_router]
 impl RpgServer {
     #[tool(
-        description = "Search for code entities by intent or keywords. Returns entities with file paths, line numbers, and relevance scores. Use mode='features' for semantic intent search, 'snippets' for name/path matching, 'auto' (default) tries both."
+        description = "Search for code entities by intent or keywords. Returns entities with file paths, line numbers, and relevance scores. Use mode='features' for semantic intent search (use behavioral/functional phrases as query), 'snippets' for name/path matching (use file paths, qualified entities, or keywords as query), 'auto' (default) tries both."
     )]
     async fn search_node(
         &self,
@@ -510,7 +514,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Explore the dependency graph starting from an entity. Traverses import, invocation, and inheritance edges. Use direction='downstream' to see what the entity calls, 'upstream' to see what calls it, 'both' for full picture."
+        description = "Explore the dependency graph starting from an entity. Traverses import, invocation, inheritance, and composition edges. Use direction='downstream' to see what the entity calls, 'upstream' to see what calls it, 'both' for full picture."
     )]
     async fn explore_rpg(
         &self,
@@ -527,12 +531,17 @@ impl RpgServer {
             _ => rpg_nav::explore::Direction::Downstream,
         };
 
-        let max_depth = params.depth.unwrap_or(2);
+        let max_depth = match params.depth {
+            Some(-1) => usize::MAX, // Unlimited depth per paper spec
+            Some(d) if d >= 0 => d as usize,
+            _ => 2, // Default
+        };
 
         let edge_filter = params.edge_filter.as_deref().and_then(|f| match f {
             "imports" => Some(rpg_core::graph::EdgeKind::Imports),
             "invokes" => Some(rpg_core::graph::EdgeKind::Invokes),
             "inherits" => Some(rpg_core::graph::EdgeKind::Inherits),
+            "composes" => Some(rpg_core::graph::EdgeKind::Composes),
             "contains" => Some(rpg_core::graph::EdgeKind::Contains),
             _ => None,
         });
@@ -894,7 +903,12 @@ impl RpgServer {
 
         // Only include repo context and full instructions on batch 0 to save context space
         if batch_index == 0 {
-            let repo_info = rpg_encoder::lift::generate_repo_info(graph);
+            let project_name = self
+                .project_root
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
+            let repo_info = rpg_encoder::lift::generate_repo_info(graph, project_name);
             output.push_str(&repo_info);
             output.push_str("\n\n");
             output.push_str(rpg_encoder::semantic_lifting::SEMANTIC_PARSING_SYSTEM);
@@ -1191,7 +1205,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Finalize the lifting process: aggregate file-level features, build semantic hierarchy (domain discovery + hierarchical assignment), and re-ground artifacts. Call this AFTER all entities have been lifted via submit_lift_results. Requires an LLM provider for full semantic hierarchy; falls back to structural hierarchy if none is available."
+        description = "Finalize the lifting process: aggregate file-level features onto Module entities and re-ground artifacts. Call this AFTER all entities have been lifted via submit_lift_results. No LLM needed — uses dedup-aggregation of already-lifted entity features. After finalizing, proceed to get_files_for_synthesis for holistic summaries, then build_semantic_hierarchy + submit_hierarchy."
     )]
     async fn finalize_lifting(&self) -> Result<String, String> {
         self.ensure_graph().await?;

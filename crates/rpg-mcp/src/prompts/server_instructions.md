@@ -70,11 +70,32 @@ Instead, split the work across fresh subagent conversations:
 conversation. After ~300 entities, the context fills up and the chat breaks. Subagents solve
 this by giving each chunk its own fresh context window.
 
+## ERROR RECOVERY
+
+If `submit_lift_results` reports unmatched keys (features that couldn't be applied):
+1. Check that keys match the `### headers` from `get_entities_for_lifting` exactly
+2. For methods, use the qualified format: `file:Class::method`
+3. Re-submit only the corrected features — already-applied features are persisted
+
+This implements the paper's retry-on-malformed-output pattern at the agent protocol level.
+
 ## RESUME SUPPORT
 
 The graph persists to disk (`.rpg/graph.json`) after every `submit_lift_results` call.
 If a session ends mid-lift, starting a new session and calling `lifting_status` picks up
 exactly where you left off — only unlifted entities are returned by `get_entities_for_lifting`.
+
+## NAVIGATION WORKFLOW
+
+When using the RPG to understand or navigate a codebase (after lifting is complete):
+
+1. **Semantic discovery** — `search_node(query="...", mode="features")` to find entities by intent.
+2. **Precision verification** — `fetch_node(entity_id="...")` to inspect source code, features, and dependencies.
+3. **Local expansion** — `explore_rpg(entity_id="...", direction="both")` to trace call chains and inheritance.
+4. **Pinpoint retrieval** — `search_node(query="...", mode="snippets")` for exact name/path lookups.
+
+If semantic search returns insufficient results, fall back to snippets mode to bootstrap
+concrete anchors, then use `explore_rpg` to expand from those anchors.
 
 ## TOOLS
 - **lifting_status**: Dashboard — coverage, per-area progress, unlifted files, NEXT STEP
