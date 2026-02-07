@@ -1296,7 +1296,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "SYNTHESIS PROTOCOL step 1: Get file-level entity features for YOU to synthesize into holistic file summaries. Each file's child entities (functions, classes, methods) have already been lifted with verb-object features. Your job: read the entity features and produce a coherent 1-2 sentence summary of what the FILE does as a whole. Returns batched data. After synthesizing, call submit_file_syntheses with your results."
+        description = "SYNTHESIS PROTOCOL step 1: Get file-level entity features for YOU to synthesize into holistic file features. Each file's child entities (functions, classes, methods) have already been lifted with verb-object features. Your job: read the entity features and synthesize them into 3-6 comma-separated high-level features for the FILE as a whole. Returns batched data. After synthesizing, call submit_file_syntheses with your results."
     )]
     async fn get_files_for_synthesis(
         &self,
@@ -1362,10 +1362,12 @@ impl RpgServer {
 
         if batch_index == 0 {
             output.push_str("## Instructions\n\n");
-            output.push_str("For each file below, read its entity features and write a holistic 1-2 sentence summary\n");
-            output.push_str("of what the FILE does as a whole. This is NOT a bag of features — synthesize them into\n");
-            output.push_str("a coherent description of the file's purpose and functionality.\n\n");
-            output.push_str("Submit as: `submit_file_syntheses({\"path/to/file.rs\": \"holistic summary here\", ...})`\n\n");
+            output.push_str("For each file below, read its entity features and synthesize them into 3-6 comma-separated\n");
+            output.push_str("high-level features for the FILE as a whole. This is NOT a bag of features — merge and abstract\n");
+            output.push_str(
+                "the individual entity features into higher-level file responsibilities.\n\n",
+            );
+            output.push_str("Submit as: `submit_file_syntheses({\"path/to/file.rs\": \"feature1, feature2, feature3\", ...})`\n\n");
         }
 
         output.push_str("## Files\n\n");

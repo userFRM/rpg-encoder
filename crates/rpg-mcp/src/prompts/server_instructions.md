@@ -11,8 +11,8 @@ No API keys or local LLMs needed. YOU are the LLM — you analyze the code direc
 6. Repeat 3-5 until all batches done (follow the NEXT action in each response)
 7. `finalize_lifting` — aggregate file-level features, rebuild hierarchy metadata
 8. `get_files_for_synthesis` — get file-level entity features for holistic synthesis
-9. Synthesize each file's entity features into a coherent 1-2 sentence summary
-10. `submit_file_syntheses({...})` — apply your holistic file summaries (improves hierarchy)
+9. Synthesize each file's entity features into 3-6 comma-separated high-level features
+10. `submit_file_syntheses({...})` — apply your holistic file features (improves hierarchy)
 11. `build_semantic_hierarchy` — get domain discovery + hierarchy assignment prompts
 12. `submit_hierarchy({...})` — apply your hierarchy assignments
 13. `lifting_status` — verify 100% coverage and semantic hierarchy
@@ -24,14 +24,14 @@ No API keys or local LLMs needed. YOU are the LLM — you analyze the code direc
 After all entities are lifted, `finalize_lifting` produces dedup-aggregated file features.
 These are functional but not holistic — they're just a bag of child features.
 
-The **synthesis step** asks YOU to read each file's entity features and write a coherent
-summary of what the file does as a whole. This produces better input for domain discovery
-and hierarchy assignment.
+The **synthesis step** asks YOU to read each file's entity features and synthesize them
+into 3-6 comma-separated high-level features for the file as a whole. This produces better
+input for domain discovery and hierarchy assignment.
 
 Flow:
 1. `get_files_for_synthesis(batch_index=0)` — returns files with entity features
-2. For each file, write a holistic 1-2 sentence summary
-3. `submit_file_syntheses({"path/file.rs": "summary", ...})` — applies to Module entities
+2. For each file, synthesize into 3-6 comma-separated high-level features
+3. `submit_file_syntheses({"path/file.rs": "feature1, feature2, ...", ...})` — applies to Module entities
 4. Repeat for all batches
 5. Then proceed to `build_semantic_hierarchy`
 
