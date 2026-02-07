@@ -111,6 +111,26 @@ fn test_resolve_multiple_edges() {
 }
 
 #[test]
+fn test_resolve_composes() {
+    let mut graph = RPGraph::new("rust");
+    let mut composer = make_entity("mod.rs:facade", "facade", "mod.rs");
+    composer.deps.composes.push("impl_detail".to_string());
+    graph.insert_entity(composer);
+    graph.insert_entity(make_entity("impl.rs:impl_detail", "impl_detail", "impl.rs"));
+
+    resolve_dependencies(&mut graph);
+
+    assert_eq!(graph.edges.len(), 1);
+    assert_eq!(graph.edges[0].source, "mod.rs:facade");
+    assert_eq!(graph.edges[0].target, "impl.rs:impl_detail");
+    assert_eq!(graph.edges[0].kind, EdgeKind::Composes);
+
+    // Reverse edge should be populated
+    let target = graph.get_entity("impl.rs:impl_detail").unwrap();
+    assert!(target.deps.composed_by.contains(&"mod.rs:facade".to_string()));
+}
+
+#[test]
 fn test_resolve_mixed_dep_types() {
     let mut graph = RPGraph::new("python");
 

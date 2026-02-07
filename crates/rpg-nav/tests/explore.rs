@@ -156,6 +156,83 @@ fn test_explore_no_cycles() {
 }
 
 #[test]
+fn test_explore_unlimited_depth() {
+    // Build a long chain: a -> b -> c -> d with depth = usize::MAX (simulating -1)
+    let mut graph = make_graph();
+    // The default make_graph has a->b->c chain at depth 3
+    // With unlimited depth, we should traverse the full chain
+    graph.rebuild_edge_index();
+
+    let result = explore(&graph, "a.rs:a", Direction::Downstream, usize::MAX, None);
+    assert!(result.is_some());
+    let tree = result.unwrap();
+    // a -> b -> c (full chain traversed, d is only connected upstream via imports)
+    assert_eq!(tree.children.len(), 1);
+    assert_eq!(tree.children[0].entity_name, "b");
+    assert_eq!(tree.children[0].children.len(), 1);
+    assert_eq!(tree.children[0].children[0].entity_name, "c");
+}
+
+#[test]
+fn test_explore_composes_edge() {
+    let mut graph = RPGraph::new("rust");
+    graph.insert_entity(make_entity("mod.rs:mod_a", "mod_a", "mod.rs"));
+    graph.insert_entity(make_entity("impl.rs:impl_a", "impl_a", "impl.rs"));
+    graph.edges.push(DependencyEdge {
+        source: "mod.rs:mod_a".to_string(),
+        target: "impl.rs:impl_a".to_string(),
+        kind: EdgeKind::Composes,
+    });
+    graph.rebuild_edge_index();
+
+    // Should traverse Composes edges
+    let result = explore(&graph, "mod.rs:mod_a", Direction::Downstream, 2, None);
+    assert!(result.is_some());
+    let tree = result.unwrap();
+    assert_eq!(tree.children.len(), 1);
+    assert_eq!(tree.children[0].entity_name, "impl_a");
+    assert_eq!(tree.children[0].edge_kind, Some(EdgeKind::Composes));
+
+    // Filter to only Composes edges
+    let result =
+        explore(&graph, "mod.rs:mod_a", Direction::Downstream, 2, Some(EdgeKind::Composes));
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().children.len(), 1);
+
+    // Filter to Invokes should find nothing
+    let result =
+        explore(&graph, "mod.rs:mod_a", Direction::Downstream, 2, Some(EdgeKind::Invokes));
+    assert!(result.is_some());
+    assert!(result.unwrap().children.is_empty());
+}
+
+#[test]
+fn test_explore_uses_edge_index() {
+    // Verify that explore works correctly when edge_index is populated
+    let mut graph = make_graph();
+    graph.rebuild_edge_index();
+
+    let result = explore(&graph, "a.rs:a", Direction::Downstream, 3, None);
+    assert!(result.is_some());
+    let tree = result.unwrap();
+    assert_eq!(tree.children.len(), 1);
+    assert_eq!(tree.children[0].entity_name, "b");
+    assert_eq!(tree.children[0].children.len(), 1);
+    assert_eq!(tree.children[0].children[0].entity_name, "c");
+}
+
+#[test]
+fn test_explore_depth_zero() {
+    let graph = make_graph();
+    // Depth 0 should return just the root node with no children
+    let result = explore(&graph, "a.rs:a", Direction::Downstream, 0, None);
+    assert!(result.is_some());
+    let tree = result.unwrap();
+    assert_eq!(tree.entity_name, "a");
+    assert!(tree.children.is_empty(), "depth=0 should have no children");
+}
+
+#[test]
 fn test_format_tree_output() {
     let graph = make_graph();
     let tree = explore(&graph, "a.rs:a", Direction::Downstream, 2, None).unwrap();

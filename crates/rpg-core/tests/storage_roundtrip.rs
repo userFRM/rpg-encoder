@@ -44,6 +44,36 @@ fn test_save_and_load_roundtrip() {
 }
 
 #[test]
+fn test_composes_edge_roundtrip() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+
+    let mut graph = RPGraph::new("rust");
+    let mut entity = make_entity("f.rs:main", "main", "f.rs");
+    entity.deps.composes = vec!["helper".to_string()];
+    entity.deps.composed_by = vec!["caller".to_string()];
+    graph.insert_entity(entity);
+    graph.edges.push(DependencyEdge {
+        source: "f.rs:main".to_string(),
+        target: "f.rs:helper".to_string(),
+        kind: EdgeKind::Composes,
+    });
+    graph.refresh_metadata();
+
+    storage::save(root, &graph).unwrap();
+    let loaded = storage::load(root).unwrap();
+
+    // Verify Composes edge survives serialization
+    assert_eq!(loaded.edges.len(), 1);
+    assert_eq!(loaded.edges[0].kind, EdgeKind::Composes);
+
+    // Verify composes/composed_by deps survive serialization
+    let e = loaded.entities.get("f.rs:main").unwrap();
+    assert_eq!(e.deps.composes, vec!["helper".to_string()]);
+    assert_eq!(e.deps.composed_by, vec!["caller".to_string()]);
+}
+
+#[test]
 fn test_rpg_exists_false() {
     let tmp = TempDir::new().unwrap();
     assert!(!storage::rpg_exists(tmp.path()));
