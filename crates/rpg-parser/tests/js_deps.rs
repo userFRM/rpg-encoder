@@ -50,3 +50,28 @@ fn test_class_inheritance() {
     assert_eq!(deps.inherits[0].child_class, "Dog");
     assert_eq!(deps.inherits[0].parent_class, "Animal");
 }
+
+#[test]
+fn test_js_barrel_reexport() {
+    let source = "export { Foo } from './foo';";
+    let deps = extract_deps(Path::new("index.js"), source, Language::JavaScript);
+    assert_eq!(deps.composes.len(), 1);
+    assert_eq!(deps.composes[0].target_name, "Foo");
+}
+
+#[test]
+fn test_jsx_component_usage() {
+    let source = r"
+function App() {
+    return <Button />;
+}
+";
+    let deps = extract_deps(Path::new("test.jsx"), source, Language::JavaScript);
+    let button_call = deps.calls.iter().find(|c| c.callee == "Button");
+    assert!(
+        button_call.is_some(),
+        "expected JSX component call in .jsx file, got: {:?}",
+        deps.calls
+    );
+    assert_eq!(button_call.unwrap().caller_entity, "App");
+}

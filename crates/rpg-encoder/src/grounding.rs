@@ -109,6 +109,18 @@ pub fn populate_entity_deps(graph: &mut RPGraph, project_root: &Path, broadcast_
             }
         }
 
+        // Map composes: assign only to Module entities (barrel re-exports are file-level)
+        for compose in &raw_deps.composes {
+            for id in &entity_ids {
+                if let Some(entity) = graph.entities.get_mut(id)
+                    && entity.kind == rpg_core::graph::EntityKind::Module
+                    && !entity.deps.composes.contains(&compose.target_name)
+                {
+                    entity.deps.composes.push(compose.target_name.clone());
+                }
+            }
+        }
+
         // Scoped import assignment: only assign imports that the entity actually references.
         // If the entity invokes or inherits a symbol that matches an import, assign it.
         // Fall back to broadcast if the entity has no call-site info.

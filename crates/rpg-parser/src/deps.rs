@@ -9,6 +9,7 @@ pub struct RawDeps {
     pub imports: Vec<ImportDep>,
     pub calls: Vec<CallDep>,
     pub inherits: Vec<InheritDep>,
+    pub composes: Vec<ComposeDep>,
 }
 
 /// A raw import dependency (module + imported symbols).
@@ -30,6 +31,13 @@ pub struct CallDep {
 pub struct InheritDep {
     pub child_class: String,
     pub parent_class: String,
+}
+
+/// A raw composition dependency (re-export or aggregation).
+#[derive(Debug, Clone)]
+pub struct ComposeDep {
+    pub source_entity: String,
+    pub target_name: String,
 }
 
 /// A scope (function or method) that can contain call sites.
@@ -441,9 +449,10 @@ pub fn extract_js_deps(_path: &Path, source: &str, language: Language) -> RawDep
     let mut scopes: Vec<FunctionScope> = Vec::new();
     collect_js_scopes(&root, source, &mut scopes, None);
 
-    // Collect imports, inheritance, and calls
+    // Collect imports, inheritance, calls, and JSX usage
     collect_js_imports(&root, source, &mut deps);
     collect_js_calls(&root, source, &scopes, &mut deps.calls);
+    collect_js_jsx_usage(&root, source, &scopes, &mut deps.calls);
 
     deps
 }
@@ -486,6 +495,26 @@ fn collect_js_scopes(
                     let cls = source[name_node.byte_range()].to_string();
                     collect_js_scopes(&child, source, scopes, Some(&cls));
                     continue;
+                }
+            }
+            // Arrow functions: const Foo = () => {}
+            "lexical_declaration" | "variable_declaration" => {
+                let mut inner = child.walk();
+                for decl in child.children(&mut inner) {
+                    if decl.kind() == "variable_declarator" {
+                        let has_arrow = has_child_kind(&decl, "arrow_function");
+                        let has_func = has_child_kind(&decl, "function");
+                        if (has_arrow || has_func)
+                            && let Some(name_node) = decl.child_by_field_name("name")
+                        {
+                            let name = source[name_node.byte_range()].to_string();
+                            scopes.push(FunctionScope {
+                                name,
+                                start_row: child.start_position().row,
+                                end_row: child.end_position().row,
+                            });
+                        }
+                    }
                 }
             }
             _ => {}
@@ -539,7 +568,75 @@ fn collect_js_imports(node: &tree_sitter::Node, source: &str, deps: &mut RawDeps
                 }
             }
             "export_statement" => {
-                collect_js_imports(&child, source, deps);
+                // Detect barrel re-exports: export { X } from './Y' or export * from './Y'
+                if let Some(src_node) = child.child_by_field_name("source") {
+                    let module = source[src_node.byte_range()]
+                        .trim_matches(|c: char| c == '\'' || c == '"')
+                        .to_string();
+
+                    let mut ic = child.walk();
+                    let mut specifier_names = Vec::new();
+                    let mut has_star = false;
+
+                    for ec in child.children(&mut ic) {
+                        match ec.kind() {
+                            "export_clause" => {
+                                let mut sc = ec.walk();
+                                for spec in ec.children(&mut sc) {
+                                    if spec.kind() == "export_specifier" {
+                                        // Use alias if present (export { default as Foo }),
+                                        // otherwise use the name field
+                                        let name_node = spec
+                                            .child_by_field_name("alias")
+                                            .or_else(|| spec.child_by_field_name("name"));
+                                        if let Some(n) = name_node {
+                                            specifier_names
+                                                .push(source[n.byte_range()].to_string());
+                                        }
+                                    }
+                                }
+                            }
+                            "namespace_export" | "*" => {
+                                has_star = true;
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if has_star {
+                        // export * from './module' — compose the module file path
+                        // Use the module path so resolve_dep can match the Module entity
+                        let target = module
+                            .trim_start_matches("./")
+                            .trim_start_matches("../")
+                            .to_string();
+                        deps.composes.push(ComposeDep {
+                            source_entity: "<module>".to_string(),
+                            target_name: target,
+                        });
+                        deps.imports.push(ImportDep {
+                            module: module.clone(),
+                            symbols: Vec::new(),
+                        });
+                    }
+
+                    for name in &specifier_names {
+                        deps.composes.push(ComposeDep {
+                            source_entity: "<module>".to_string(),
+                            target_name: name.clone(),
+                        });
+                    }
+
+                    if !specifier_names.is_empty() {
+                        deps.imports.push(ImportDep {
+                            module,
+                            symbols: specifier_names,
+                        });
+                    }
+                } else {
+                    // No source → regular export wrapping a declaration
+                    collect_js_imports(&child, source, deps);
+                }
             }
             _ => {}
         }
@@ -588,6 +685,44 @@ fn collect_js_calls(
             }
         }
         collect_js_calls(&child, source, scopes, calls);
+    }
+}
+
+fn has_child_kind(node: &tree_sitter::Node, kind: &str) -> bool {
+    let mut cursor = node.walk();
+    node.children(&mut cursor).any(|c| c.kind() == kind)
+}
+
+fn collect_js_jsx_usage(
+    node: &tree_sitter::Node,
+    source: &str,
+    scopes: &[FunctionScope],
+    calls: &mut Vec<CallDep>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "jsx_self_closing_element" | "jsx_opening_element" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let tag = &source[name_node.byte_range()];
+                    // Uppercase = component, lowercase = HTML element.
+                    // For dotted names like Foo.Bar, extract the last segment
+                    // so it can resolve to entity "Bar".
+                    if tag.starts_with(|c: char| c.is_uppercase()) {
+                        let callee = tag.rsplit('.').next().unwrap_or(tag).to_string();
+                        let call_row = child.start_position().row;
+                        let caller = find_enclosing_scope(scopes, call_row)
+                            .unwrap_or_else(|| "<module>".to_string());
+                        calls.push(CallDep {
+                            caller_entity: caller,
+                            callee,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+        collect_js_jsx_usage(&child, source, scopes, calls);
     }
 }
 

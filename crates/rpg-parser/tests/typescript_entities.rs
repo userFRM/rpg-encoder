@@ -76,3 +76,51 @@ fn test_exported_function() {
     assert_eq!(entities[0].name, "doStuff");
     assert_eq!(entities[0].kind, EntityKind::Function);
 }
+
+#[test]
+fn test_tsx_entity_extraction() {
+    let source = r#"
+import React from 'react';
+
+interface ButtonProps {
+    label: string;
+    onClick: () => void;
+}
+
+const Button: React.FC<ButtonProps> = ({ label, onClick }) => {
+    return <button onClick={onClick}>{label}</button>;
+};
+
+export function App() {
+    return (
+        <div>
+            <Button label="Click me" onClick={() => {}} />
+        </div>
+    );
+}
+"#;
+    let entities = extract_entities(Path::new("test.tsx"), source, Language::TypeScript);
+    let iface = entities.iter().find(|e| e.name == "ButtonProps");
+    assert!(
+        iface.is_some(),
+        "expected ButtonProps interface, got: {:?}",
+        entities.iter().map(|e| &e.name).collect::<Vec<_>>()
+    );
+    assert_eq!(iface.unwrap().kind, EntityKind::Class);
+
+    let button = entities.iter().find(|e| e.name == "Button");
+    assert!(
+        button.is_some(),
+        "expected Button arrow function, got: {:?}",
+        entities.iter().map(|e| &e.name).collect::<Vec<_>>()
+    );
+    assert_eq!(button.unwrap().kind, EntityKind::Function);
+
+    let app = entities.iter().find(|e| e.name == "App");
+    assert!(
+        app.is_some(),
+        "expected App function, got: {:?}",
+        entities.iter().map(|e| &e.name).collect::<Vec<_>>()
+    );
+    assert_eq!(app.unwrap().kind, EntityKind::Function);
+}
