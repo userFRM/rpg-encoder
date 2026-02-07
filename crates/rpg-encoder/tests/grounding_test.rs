@@ -160,3 +160,26 @@ fn test_resolve_mixed_dep_types() {
     assert!(edge_kinds.contains(&EdgeKind::Imports));
     assert!(edge_kinds.contains(&EdgeKind::Invokes));
 }
+
+#[test]
+fn test_resolve_dependencies_clears_reverse_deps_on_re_resolve() {
+    let mut graph = RPGraph::new("rust");
+    let mut caller = make_entity("a.rs:caller", "caller", "a.rs");
+    caller.deps.invokes.push("callee".to_string());
+    graph.insert_entity(caller);
+    graph.insert_entity(make_entity("b.rs:callee", "callee", "b.rs"));
+
+    // Resolve twice — reverse deps should NOT accumulate
+    resolve_dependencies(&mut graph);
+    resolve_dependencies(&mut graph);
+
+    let callee = graph.get_entity("b.rs:callee").unwrap();
+    assert_eq!(
+        callee.deps.invoked_by.len(),
+        1,
+        "invoked_by should have exactly 1 entry after double resolve, got: {:?}",
+        callee.deps.invoked_by
+    );
+
+    assert_eq!(graph.edges.len(), 1, "edges should not duplicate");
+}

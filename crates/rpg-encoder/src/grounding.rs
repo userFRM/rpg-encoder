@@ -261,6 +261,14 @@ pub fn resolve_dependencies(graph: &mut RPGraph) {
         }
     }
 
+    // Clear all reverse dep vectors before repopulating (prevents stale refs on re-resolve)
+    for entity in graph.entities.values_mut() {
+        entity.deps.invoked_by.clear();
+        entity.deps.inherited_by.clear();
+        entity.deps.imported_by.clear();
+        entity.deps.composed_by.clear();
+    }
+
     // Build reverse edges in entity deps
     for edge in &edges {
         match edge.kind {
