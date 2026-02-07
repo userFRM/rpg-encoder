@@ -101,7 +101,8 @@ pub fn resolve_scope(graph: &RPGraph, scope: &str) -> LiftScope {
 }
 
 /// Generate a compact repo overview from graph metadata (paper's `repo_info` context).
-pub fn generate_repo_info(graph: &RPGraph) -> String {
+/// Wraps output in `<repo_name>` and `<repo_info>` tags per paper §A.1.1.
+pub fn generate_repo_info(graph: &RPGraph, project_name: &str) -> String {
     let lang = &graph.metadata.language;
     let total = graph.entities.len();
     let files = graph.metadata.total_files;
@@ -118,7 +119,7 @@ pub fn generate_repo_info(graph: &RPGraph) -> String {
     };
 
     let (lifted, _) = graph.lifting_coverage();
-    if lifted > 0 {
+    let info = if lifted > 0 {
         format!(
             "{} repository with {} entities across {} files ({} semantically lifted). Top-level modules: {}.",
             lang, total, files, lifted, area_list
@@ -128,7 +129,12 @@ pub fn generate_repo_info(graph: &RPGraph) -> String {
             "{} repository with {} entities across {} files. Top-level modules: {}.",
             lang, total, files, area_list
         )
-    }
+    };
+
+    format!(
+        "<repo_name>\n{}\n</repo_name>\n\n<repo_info>\n{}\n</repo_info>",
+        project_name, info
+    )
 }
 
 /// Re-read source files and collect RawEntity objects for the scoped entities.
