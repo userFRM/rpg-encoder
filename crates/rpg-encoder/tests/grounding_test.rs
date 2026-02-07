@@ -127,7 +127,12 @@ fn test_resolve_composes() {
 
     // Reverse edge should be populated
     let target = graph.get_entity("impl.rs:impl_detail").unwrap();
-    assert!(target.deps.composed_by.contains(&"mod.rs:facade".to_string()));
+    assert!(
+        target
+            .deps
+            .composed_by
+            .contains(&"mod.rs:facade".to_string())
+    );
 }
 
 #[test]

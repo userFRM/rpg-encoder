@@ -533,7 +533,7 @@ impl RpgServer {
 
         let max_depth = match params.depth {
             Some(-1) => usize::MAX, // Unlimited depth per paper spec
-            Some(d) if d >= 0 => d as usize,
+            Some(d) if d >= 0 => usize::try_from(d).unwrap_or(2),
             _ => 2, // Default
         };
 

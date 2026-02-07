@@ -23,7 +23,7 @@ pub struct HierarchyFetchResult {
 /// Result of a fetch operation — either a V_L entity or a V_H hierarchy node.
 #[derive(Debug, Clone)]
 pub enum FetchOutput {
-    Entity(FetchResult),
+    Entity(Box<FetchResult>),
     Hierarchy(HierarchyFetchResult),
 }
 
@@ -40,11 +40,11 @@ pub fn fetch(
         let entity = entity.clone();
         let source_code = read_entity_source(project_root, &entity);
         let hierarchy_context = find_siblings(graph, &entity);
-        return Ok(FetchOutput::Entity(FetchResult {
+        return Ok(FetchOutput::Entity(Box::new(FetchResult {
             entity,
             source_code,
             hierarchy_context,
-        }));
+        })));
     }
 
     // Try V_H hierarchy node

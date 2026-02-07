@@ -93,7 +93,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-          registry-url: "https://registry.npmjs.org"
+
+      - name: Configure npm registry for OIDC trusted publishing
+        run: |
+          echo "registry=https://registry.npmjs.org/" > "$HOME/.npmrc"
+          echo "node $(node --version), npm $(npm --version)"
+          cat "$HOME/.npmrc"
+
+      - name: Sync version from git tag
+        working-directory: npm
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
 
       - name: Publish to npm
         working-directory: npm

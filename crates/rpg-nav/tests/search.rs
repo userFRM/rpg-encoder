@@ -366,5 +366,9 @@ fn test_multi_scope_dedup_overlapping() {
     // Should not have duplicate entity IDs in results
     let ids: Vec<&str> = results.iter().map(|r| r.entity_id.as_str()).collect();
     let unique_ids: std::collections::HashSet<&str> = ids.iter().copied().collect();
-    assert_eq!(ids.len(), unique_ids.len(), "results should contain no duplicate entity IDs");
+    assert_eq!(
+        ids.len(),
+        unique_ids.len(),
+        "results should contain no duplicate entity IDs"
+    );
 }

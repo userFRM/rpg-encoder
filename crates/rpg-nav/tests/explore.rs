@@ -194,14 +194,24 @@ fn test_explore_composes_edge() {
     assert_eq!(tree.children[0].edge_kind, Some(EdgeKind::Composes));
 
     // Filter to only Composes edges
-    let result =
-        explore(&graph, "mod.rs:mod_a", Direction::Downstream, 2, Some(EdgeKind::Composes));
+    let result = explore(
+        &graph,
+        "mod.rs:mod_a",
+        Direction::Downstream,
+        2,
+        Some(EdgeKind::Composes),
+    );
     assert!(result.is_some());
     assert_eq!(result.unwrap().children.len(), 1);
 
     // Filter to Invokes should find nothing
-    let result =
-        explore(&graph, "mod.rs:mod_a", Direction::Downstream, 2, Some(EdgeKind::Invokes));
+    let result = explore(
+        &graph,
+        "mod.rs:mod_a",
+        Direction::Downstream,
+        2,
+        Some(EdgeKind::Invokes),
+    );
     assert!(result.is_some());
     assert!(result.unwrap().children.is_empty());
 }
