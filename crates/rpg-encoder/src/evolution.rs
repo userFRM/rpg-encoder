@@ -276,9 +276,28 @@ pub fn apply_modifications(
             .filter(|e| !old_ids_set.contains(&e.id()))
             .collect();
 
+        // Check if existing siblings have a hierarchy path to inherit
+        let sibling_hierarchy: Option<String> = graph.file_index.get(file).and_then(|ids| {
+            ids.iter().find_map(|id| {
+                graph
+                    .entities
+                    .get(id)
+                    .filter(|e| !e.hierarchy_path.is_empty())
+                    .map(|e| e.hierarchy_path.clone())
+            })
+        });
+
         for raw in &added_raws {
-            let entity = (*raw).clone().into_entity();
+            let mut entity = (*raw).clone().into_entity();
+            if let Some(ref path) = sibling_hierarchy {
+                entity.hierarchy_path = path.clone();
+            }
+            let entity_id = entity.id.clone();
+            let hierarchy_path = entity.hierarchy_path.clone();
             graph.insert_entity(entity);
+            if !hierarchy_path.is_empty() {
+                graph.insert_into_hierarchy(&hierarchy_path, &entity_id);
+            }
             added_count += 1;
         }
     }
@@ -296,6 +315,9 @@ pub fn apply_modifications(
 /// Entities are inserted without semantic features. Use the MCP interactive
 /// lifting protocol (get_entities_for_lifting → submit_lift_results) to
 /// add features after the structural update.
+///
+/// Each entity receives a file-path-based hierarchy placement, matching the
+/// same structural hierarchy that `build_file_path_hierarchy` would produce.
 pub fn apply_additions(
     graph: &mut RPGraph,
     added_files: &[PathBuf],
@@ -318,13 +340,19 @@ pub fn apply_additions(
         let raw_entities: Vec<RawEntity> =
             rpg_parser::entities::extract_entities(file, &source, language);
 
+        // Compute structural hierarchy path from file path
+        let hierarchy_path = file_path_hierarchy(file);
+
         for raw in raw_entities {
-            let entity = raw.into_entity();
-            let hierarchy_path = entity.hierarchy_path.clone();
+            let mut entity = raw.into_entity();
+            if let Some(ref path) = hierarchy_path {
+                entity.hierarchy_path = path.clone();
+            }
             let entity_id = entity.id.clone();
+            let entity_hierarchy = entity.hierarchy_path.clone();
             graph.insert_entity(entity);
-            if !hierarchy_path.is_empty() {
-                graph.insert_into_hierarchy(&hierarchy_path, &entity_id);
+            if !entity_hierarchy.is_empty() {
+                graph.insert_into_hierarchy(&entity_hierarchy, &entity_id);
             }
             added_count += 1;
         }
@@ -333,28 +361,111 @@ pub fn apply_additions(
     Ok(added_count)
 }
 
-/// Handle renamed files: treat as delete old + add new.
+/// Compute a structural hierarchy path from a file path, matching the logic
+/// in `RPGraph::build_file_path_hierarchy`.
+pub(crate) fn file_path_hierarchy(file: &Path) -> Option<String> {
+    let components: Vec<&str> = file
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => s.to_str(),
+            _ => None,
+        })
+        .collect();
+
+    match components.len() {
+        0 => None,
+        1 => {
+            let stem = components[0]
+                .rsplit_once('.')
+                .map_or(components[0], |(s, _)| s);
+            Some(stem.to_string())
+        }
+        2 => {
+            let stem = components[1]
+                .rsplit_once('.')
+                .map_or(components[1], |(s, _)| s);
+            Some(format!("{}/{}", components[0], stem))
+        }
+        _ => {
+            let last = components.last().unwrap();
+            let stem = last.rsplit_once('.').map_or(*last, |(s, _)| s);
+            Some(format!("{}/{}/{}", components[0], components[1], stem))
+        }
+    }
+}
+
+/// Handle renamed files: update entity file paths, rekey entity IDs, and
+/// rewrite all references (file_index, edges, hierarchy) to use the new IDs.
 pub fn apply_renames(graph: &mut RPGraph, renames: &[(PathBuf, PathBuf)]) -> (usize, usize) {
     let mut migrated_files = 0;
     let mut renamed = 0;
 
     for (from, to) in renames {
-        if let Some(entity_ids) = graph.file_index.get(from).cloned() {
-            for id in &entity_ids {
-                if let Some(entity) = graph.entities.get_mut(id) {
+        if let Some(old_ids) = graph.file_index.get(from).cloned() {
+            // Build old→new ID mapping
+            let mut id_map: Vec<(String, String)> = Vec::new();
+
+            for old_id in &old_ids {
+                if let Some(mut entity) = graph.entities.remove(old_id) {
                     entity.file = to.clone();
+                    // Recompute ID from updated file path
+                    let new_id = match &entity.parent_class {
+                        Some(class) => {
+                            format!("{}:{}::{}", to.display(), class, entity.name)
+                        }
+                        None => format!("{}:{}", to.display(), entity.name),
+                    };
+                    entity.id = new_id.clone();
+                    graph.entities.insert(new_id.clone(), entity);
+                    id_map.push((old_id.clone(), new_id));
                     renamed += 1;
                 }
             }
-            // Update file_index
-            if let Some(ids) = graph.file_index.remove(from) {
-                migrated_files += 1;
-                graph.file_index.insert(to.clone(), ids);
+
+            // Update file_index: remove old path, insert new path with new IDs
+            graph.file_index.remove(from);
+            let new_ids: Vec<String> = id_map.iter().map(|(_, new)| new.clone()).collect();
+            graph.file_index.insert(to.clone(), new_ids);
+            migrated_files += 1;
+
+            // Rewrite edge references
+            for edge in &mut graph.edges {
+                for (old_id, new_id) in &id_map {
+                    if edge.source == *old_id {
+                        edge.source = new_id.clone();
+                    }
+                    if edge.target == *old_id {
+                        edge.target = new_id.clone();
+                    }
+                }
+            }
+
+            // Rewrite hierarchy entity references
+            for area in graph.hierarchy.values_mut() {
+                rekey_hierarchy_entities(area, &id_map);
             }
         }
     }
 
     (migrated_files, renamed)
+}
+
+/// Recursively rewrite entity IDs in hierarchy nodes after a rename.
+fn rekey_hierarchy_entities(
+    node: &mut rpg_core::graph::HierarchyNode,
+    id_map: &[(String, String)],
+) {
+    for entity_id in &mut node.entities {
+        for (old_id, new_id) in id_map {
+            if *entity_id == *old_id {
+                *entity_id = new_id.clone();
+                break;
+            }
+        }
+    }
+    for child in node.children.values_mut() {
+        rekey_hierarchy_entities(child, id_map);
+    }
 }
 
 /// Compute semantic drift between old and new features using Jaccard distance.
