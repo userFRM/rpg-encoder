@@ -5,7 +5,7 @@
 //! Uses the Python fixture project from tests/fixtures/python_project.
 
 use rpg_core::graph::{EntityKind, RPGraph};
-use rpg_encoder::evolution::{apply_deletions, apply_renames};
+use rpg_encoder::evolution::{apply_additions, apply_deletions, apply_renames};
 use rpg_parser::entities::{RawEntity, extract_entities};
 use rpg_parser::languages::Language;
 use std::path::{Path, PathBuf};
@@ -600,4 +600,54 @@ fn test_new_file_entities_no_hierarchy() {
     );
 
     verify_graph_integrity(&graph);
+}
+
+#[test]
+fn test_apply_additions_assigns_hierarchy() {
+    let mut graph = build_fixture_graph();
+
+    // Create a temp dir with a new Python file
+    let tmp = std::env::temp_dir().join("rpg_test_additions");
+    let _ = std::fs::remove_dir_all(&tmp);
+    let sub = tmp.join("src").join("notifications");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(
+        sub.join("email.py"),
+        "def send_email(to, subject):\n    pass\n",
+    )
+    .unwrap();
+
+    let added_files = vec![PathBuf::from("src/notifications/email.py")];
+    let added = apply_additions(&mut graph, &added_files, &tmp).unwrap();
+    assert_eq!(added, 1);
+
+    // The new entity should have a file-path hierarchy path
+    let entity = graph
+        .entities
+        .values()
+        .find(|e| e.name == "send_email")
+        .expect("new function should exist");
+    assert!(
+        !entity.hierarchy_path.is_empty(),
+        "entity from new file should have structural hierarchy path"
+    );
+    assert_eq!(entity.hierarchy_path, "src/notifications/email");
+
+    // Entity should also be in the hierarchy tree
+    let has_hierarchy_entry = graph.hierarchy.values().any(|area| {
+        fn contains_entity(node: &rpg_core::graph::HierarchyNode, id: &str) -> bool {
+            node.entities.contains(&id.to_string())
+                || node.children.values().any(|c| contains_entity(c, id))
+        }
+        contains_entity(area, &entity.id)
+    });
+    assert!(
+        has_hierarchy_entry,
+        "new entity should be placed in hierarchy tree"
+    );
+
+    verify_graph_integrity(&graph);
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&tmp);
 }

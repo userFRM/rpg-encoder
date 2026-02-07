@@ -315,6 +315,9 @@ pub fn apply_modifications(
 /// Entities are inserted without semantic features. Use the MCP interactive
 /// lifting protocol (get_entities_for_lifting → submit_lift_results) to
 /// add features after the structural update.
+///
+/// Each entity receives a file-path-based hierarchy placement, matching the
+/// same structural hierarchy that `build_file_path_hierarchy` would produce.
 pub fn apply_additions(
     graph: &mut RPGraph,
     added_files: &[PathBuf],
@@ -337,19 +340,58 @@ pub fn apply_additions(
         let raw_entities: Vec<RawEntity> =
             rpg_parser::entities::extract_entities(file, &source, language);
 
+        // Compute structural hierarchy path from file path
+        let hierarchy_path = file_path_hierarchy(file);
+
         for raw in raw_entities {
-            let entity = raw.into_entity();
-            let hierarchy_path = entity.hierarchy_path.clone();
+            let mut entity = raw.into_entity();
+            if let Some(ref path) = hierarchy_path {
+                entity.hierarchy_path = path.clone();
+            }
             let entity_id = entity.id.clone();
+            let entity_hierarchy = entity.hierarchy_path.clone();
             graph.insert_entity(entity);
-            if !hierarchy_path.is_empty() {
-                graph.insert_into_hierarchy(&hierarchy_path, &entity_id);
+            if !entity_hierarchy.is_empty() {
+                graph.insert_into_hierarchy(&entity_hierarchy, &entity_id);
             }
             added_count += 1;
         }
     }
 
     Ok(added_count)
+}
+
+/// Compute a structural hierarchy path from a file path, matching the logic
+/// in `RPGraph::build_file_path_hierarchy`.
+pub(crate) fn file_path_hierarchy(file: &Path) -> Option<String> {
+    let components: Vec<&str> = file
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => s.to_str(),
+            _ => None,
+        })
+        .collect();
+
+    match components.len() {
+        0 => None,
+        1 => {
+            let stem = components[0]
+                .rsplit_once('.')
+                .map_or(components[0], |(s, _)| s);
+            Some(stem.to_string())
+        }
+        2 => {
+            let stem = components[1]
+                .rsplit_once('.')
+                .map_or(components[1], |(s, _)| s);
+            Some(format!("{}/{}", components[0], stem))
+        }
+        _ => {
+            let last = components.last().unwrap();
+            let stem = last.rsplit_once('.').map_or(*last, |(s, _)| s);
+            Some(format!("{}/{}/{}", components[0], components[1], stem))
+        }
+    }
 }
 
 /// Handle renamed files: update entity file paths, rekey entity IDs, and
