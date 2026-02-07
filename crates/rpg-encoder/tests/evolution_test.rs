@@ -86,8 +86,11 @@ fn test_apply_renames_updates_file_path() {
     assert_eq!(migrated_files, 1);
     assert_eq!(renamed, 1);
 
-    let entity = graph.get_entity("old.rs:foo").unwrap();
+    // Old ID should be gone, new ID should exist
+    assert!(graph.get_entity("old.rs:foo").is_none());
+    let entity = graph.get_entity("new.rs:foo").unwrap();
     assert_eq!(entity.file, PathBuf::from("new.rs"));
+    assert_eq!(entity.id, "new.rs:foo");
     assert!(graph.file_index.contains_key(&PathBuf::from("new.rs")));
     assert!(!graph.file_index.contains_key(&PathBuf::from("old.rs")));
 }
@@ -106,6 +109,12 @@ fn test_apply_renames_multiple_entities() {
     assert_eq!(migrated_files, 1);
     assert_eq!(renamed, 2);
     assert_eq!(graph.file_index[&PathBuf::from("new.rs")].len(), 2);
+    // Verify new IDs exist
+    assert!(graph.entities.contains_key("new.rs:foo"));
+    assert!(graph.entities.contains_key("new.rs:bar"));
+    // Old IDs should be gone
+    assert!(!graph.entities.contains_key("old.rs:foo"));
+    assert!(!graph.entities.contains_key("old.rs:bar"));
 }
 
 #[test]

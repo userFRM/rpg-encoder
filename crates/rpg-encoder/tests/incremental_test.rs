@@ -148,13 +148,12 @@ fn test_incremental_rename_file() {
     let mut graph = build_fixture_graph();
 
     // Find entities in auth/login.py
-    let login_entities_before: Vec<String> = graph
+    let login_entity_count = graph
         .entities
         .values()
         .filter(|e| e.file == Path::new("src/auth/login.py"))
-        .map(|e| e.id.clone())
-        .collect();
-    assert!(!login_entities_before.is_empty());
+        .count();
+    assert!(login_entity_count > 0);
 
     // Rename auth/login.py → auth/authentication.py
     let (migrated, renamed) = apply_renames(
@@ -166,18 +165,25 @@ fn test_incremental_rename_file() {
     );
 
     assert_eq!(migrated, 1);
-    assert_eq!(renamed, login_entities_before.len());
+    assert_eq!(renamed, login_entity_count);
 
-    // Entities should now have the new file path
-    for id in &login_entities_before {
-        if let Some(entity) = graph.entities.get(id) {
-            assert_eq!(
-                entity.file,
-                PathBuf::from("src/auth/authentication.py"),
-                "entity {} should have updated file path",
-                id
-            );
-        }
+    // Entities should now have new IDs with the new file path
+    let new_entities: Vec<&rpg_core::graph::Entity> = graph
+        .entities
+        .values()
+        .filter(|e| e.file == Path::new("src/auth/authentication.py"))
+        .collect();
+    assert_eq!(
+        new_entities.len(),
+        login_entity_count,
+        "all entities should be rekeyed to new file"
+    );
+    for entity in &new_entities {
+        assert!(
+            entity.id.starts_with("src/auth/authentication.py:"),
+            "entity ID {} should start with new file path",
+            entity.id
+        );
     }
 
     // Old file should not be in file_index
@@ -377,6 +383,220 @@ fn test_incremental_multiple_operations() {
     assert!(
         graph.entities.values().any(|e| e.name == "health_check"),
         "new function should exist"
+    );
+
+    verify_graph_integrity(&graph);
+}
+
+#[test]
+fn test_rename_rekeys_entity_ids() {
+    let mut graph = build_fixture_graph();
+
+    // Collect old entity IDs for src/auth/login.py
+    let old_ids: Vec<String> = graph
+        .entities
+        .values()
+        .filter(|e| e.file == Path::new("src/auth/login.py"))
+        .map(|e| e.id.clone())
+        .collect();
+    assert!(!old_ids.is_empty(), "should have entities in login.py");
+
+    // Add an edge referencing an old entity ID to verify edge rewriting
+    // Use an entity from a different file as the target
+    let test_edge_source = old_ids[0].clone();
+    let test_edge_target = graph
+        .entities
+        .keys()
+        .find(|id| !id.starts_with("src/auth/login.py:"))
+        .cloned()
+        .expect("should have entities outside login.py");
+    graph.edges.push(rpg_core::graph::DependencyEdge {
+        source: test_edge_source.clone(),
+        target: test_edge_target.clone(),
+        kind: rpg_core::graph::EdgeKind::Invokes,
+    });
+
+    // Rename login.py → authentication.py
+    let (migrated, renamed) = apply_renames(
+        &mut graph,
+        &[(
+            PathBuf::from("src/auth/login.py"),
+            PathBuf::from("src/auth/authentication.py"),
+        )],
+    );
+
+    assert_eq!(migrated, 1);
+    assert_eq!(renamed, old_ids.len());
+
+    // Old IDs should be gone from entities map
+    for old_id in &old_ids {
+        assert!(
+            !graph.entities.contains_key(old_id),
+            "old entity ID {} should be removed after rename",
+            old_id
+        );
+    }
+
+    // New IDs should exist and reference the new file
+    let new_ids: Vec<String> = graph
+        .entities
+        .values()
+        .filter(|e| e.file == Path::new("src/auth/authentication.py"))
+        .map(|e| e.id.clone())
+        .collect();
+    assert_eq!(
+        new_ids.len(),
+        old_ids.len(),
+        "should have same number of entities after rename"
+    );
+    for new_id in &new_ids {
+        assert!(
+            new_id.starts_with("src/auth/authentication.py:"),
+            "new ID {} should start with new file path",
+            new_id
+        );
+    }
+
+    // file_index should use new path with new IDs
+    assert!(
+        !graph
+            .file_index
+            .contains_key(&PathBuf::from("src/auth/login.py"))
+    );
+    let indexed_ids = graph
+        .file_index
+        .get(&PathBuf::from("src/auth/authentication.py"))
+        .expect("new file should be in file_index");
+    for new_id in &new_ids {
+        assert!(
+            indexed_ids.contains(new_id),
+            "file_index should contain new ID {}",
+            new_id
+        );
+    }
+
+    // Edge should be rewritten to new ID (find by kind + target to avoid matching hierarchy edges)
+    let rewritten_edge = graph
+        .edges
+        .iter()
+        .find(|e| e.target == test_edge_target && e.kind == rpg_core::graph::EdgeKind::Invokes)
+        .expect("test edge should still exist");
+    assert!(
+        rewritten_edge
+            .source
+            .starts_with("src/auth/authentication.py:"),
+        "edge source should be rewritten to new ID, got: {}",
+        rewritten_edge.source
+    );
+
+    verify_graph_integrity(&graph);
+}
+
+#[test]
+fn test_new_entity_inherits_hierarchy() {
+    let mut graph = build_fixture_graph();
+
+    // Verify that existing entities in src/models.py have a hierarchy path
+    let models_hierarchy = graph
+        .entities
+        .values()
+        .find(|e| e.file == Path::new("src/models.py") && e.kind != EntityKind::Module)
+        .map(|e| e.hierarchy_path.clone())
+        .expect("should have entities in models.py with hierarchy path");
+    assert!(
+        !models_hierarchy.is_empty(),
+        "existing entities should have a hierarchy path"
+    );
+
+    // Add a new entity to the same file and verify hierarchy inheritance
+    let new_source = r"
+class User:
+    def __init__(self, name: str, email: str):
+        self.name = name
+        self.email = email
+
+class Product:
+    def __init__(self, title: str, price: float):
+        self.title = title
+        self.price = price
+
+    def discount(self, pct: float) -> float:
+        return self.price * (1.0 - pct)
+";
+
+    let models_path = PathBuf::from("src/models.py");
+    let new_entities = extract_entities(&models_path, new_source, Language::Python);
+    let existing_ids: std::collections::HashSet<String> = graph.entities.keys().cloned().collect();
+
+    let mut found_new = false;
+    for raw in new_entities {
+        let id = raw.id();
+        if !existing_ids.contains(&id) {
+            // This is a new entity — inherit hierarchy from siblings
+            let sibling_hierarchy = graph.file_index.get(&models_path).and_then(|ids| {
+                ids.iter().find_map(|sid| {
+                    graph
+                        .entities
+                        .get(sid)
+                        .filter(|e| !e.hierarchy_path.is_empty())
+                        .map(|e| e.hierarchy_path.clone())
+                })
+            });
+            assert!(
+                sibling_hierarchy.is_some(),
+                "should find hierarchy path from existing sibling in same file"
+            );
+
+            let mut entity = raw.into_entity();
+            entity.hierarchy_path = sibling_hierarchy.unwrap();
+            let entity_id = entity.id.clone();
+            let hierarchy_path = entity.hierarchy_path.clone();
+            graph.insert_entity(entity);
+            graph.insert_into_hierarchy(&hierarchy_path, &entity_id);
+
+            // Verify the new entity has the inherited hierarchy path
+            let inserted = graph.entities.get(&entity_id).unwrap();
+            assert_eq!(
+                inserted.hierarchy_path, models_hierarchy,
+                "new entity should inherit hierarchy path from siblings"
+            );
+            found_new = true;
+            break;
+        }
+    }
+    assert!(found_new, "should have found at least one new entity");
+
+    verify_graph_integrity(&graph);
+}
+
+#[test]
+fn test_new_file_entities_no_hierarchy() {
+    let mut graph = build_fixture_graph();
+
+    // Add entity from a completely new file — should have empty hierarchy
+    let new_source = "def brand_new_func():\n    pass\n";
+    let new_path = PathBuf::from("src/brand_new.py");
+    let new_entities = extract_entities(&new_path, new_source, Language::Python);
+    assert!(!new_entities.is_empty());
+
+    for raw in new_entities {
+        let entity = raw.into_entity();
+        assert!(
+            entity.hierarchy_path.is_empty(),
+            "entity from brand new file should have empty hierarchy path"
+        );
+        graph.insert_entity(entity);
+    }
+
+    // No hierarchy path should be assigned (new file, no siblings)
+    let new_entity = graph
+        .entities
+        .values()
+        .find(|e| e.name == "brand_new_func")
+        .expect("new function should exist");
+    assert!(
+        new_entity.hierarchy_path.is_empty(),
+        "entity from new file with no siblings should have no hierarchy"
     );
 
     verify_graph_integrity(&graph);
