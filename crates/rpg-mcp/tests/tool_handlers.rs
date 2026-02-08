@@ -1,10 +1,13 @@
 use rpg_core::graph::*;
 use rpg_core::storage;
+use rpg_encoder::grounding;
 use rpg_nav::explore::{Direction, explore, format_tree};
 use rpg_nav::fetch::{FetchOutput, fetch};
 use rpg_nav::search::{SearchMode, search};
 use rpg_nav::toon;
-use std::path::PathBuf;
+use rpg_parser::entities::extract_entities;
+use rpg_parser::languages::Language;
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
@@ -108,6 +111,72 @@ fn make_temp_project(graph: &RPGraph) -> (TempDir, PathBuf) {
     storage::save(&root, graph).unwrap();
 
     (tmp, root)
+}
+
+fn nextjs_fixture_root() -> PathBuf {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    manifest_dir
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("tests/fixtures/nextjs_project")
+}
+
+fn collect_ts_fixture_files(root: &Path) -> Vec<(PathBuf, String)> {
+    let mut out = Vec::new();
+    collect_ts_recursive(root, root, &mut out);
+    out
+}
+
+fn collect_ts_recursive(base: &Path, dir: &Path, out: &mut Vec<(PathBuf, String)>) {
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_ts_recursive(base, &path, out);
+            continue;
+        }
+
+        let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+            continue;
+        };
+        if ext != "ts" && ext != "tsx" {
+            continue;
+        }
+
+        let rel = path.strip_prefix(base).unwrap().to_path_buf();
+        let source = std::fs::read_to_string(&path).unwrap();
+        out.push((rel, source));
+    }
+}
+
+fn build_nextjs_fixture_graph() -> RPGraph {
+    let root = nextjs_fixture_root();
+    let files = collect_ts_fixture_files(&root);
+    assert!(
+        !files.is_empty(),
+        "expected fixture TS/TSX files in {}",
+        root.display()
+    );
+
+    let mut graph = RPGraph::new("typescript");
+    for (rel_path, source) in &files {
+        let entities = extract_entities(rel_path, source, Language::TypeScript);
+        for entity in entities {
+            graph.insert_entity(entity.into_entity());
+        }
+    }
+
+    graph.create_module_entities();
+    graph.build_file_path_hierarchy();
+    grounding::populate_entity_deps(&mut graph, &root, false, None);
+    grounding::resolve_dependencies(&mut graph);
+    graph.assign_hierarchy_ids();
+    graph.aggregate_hierarchy_features();
+    graph.materialize_containment_edges();
+    grounding::ground_hierarchy(&mut graph);
+    graph.refresh_metadata();
+    graph
 }
 
 // ---------------------------------------------------------------------------
@@ -329,5 +398,74 @@ fn test_reload_rpg() {
         entity
             .semantic_features
             .contains(&"entry point".to_string())
+    );
+}
+
+#[test]
+fn test_nextjs_page_component_store_traversal() {
+    let graph = build_nextjs_fixture_graph();
+
+    let page_id = "app/login/page.tsx:Page";
+    let component_id = "src/components/LoginForm.tsx:LoginForm";
+    let store_id = "src/state/store.ts:setAuthStore";
+
+    let page = graph.get_entity(page_id).expect("missing page entity");
+    assert_eq!(page.kind, EntityKind::Page);
+    assert!(
+        page.deps.renders.contains(&"LoginForm".to_string()),
+        "Page should render LoginForm"
+    );
+
+    let component = graph
+        .get_entity(component_id)
+        .expect("missing component entity");
+    assert_eq!(component.kind, EntityKind::Component);
+    assert!(
+        component
+            .deps
+            .writes_state
+            .contains(&"setAuthStore".to_string()),
+        "LoginForm should write state via setAuthStore"
+    );
+
+    let store = graph.get_entity(store_id).expect("missing store entity");
+    assert_eq!(store.kind, EntityKind::Store);
+    assert!(
+        store
+            .deps
+            .state_written_by
+            .contains(&component_id.to_string()),
+        "Store should include reverse state write edge from LoginForm"
+    );
+
+    let has_page_to_component = graph
+        .edges
+        .iter()
+        .any(|e| e.source == page_id && e.target == component_id && e.kind == EdgeKind::Renders);
+    assert!(
+        has_page_to_component,
+        "expected renders edge page -> component"
+    );
+
+    let has_component_to_store = graph.edges.iter().any(|e| {
+        e.source == component_id && e.target == store_id && e.kind == EdgeKind::WritesState
+    });
+    assert!(
+        has_component_to_store,
+        "expected writes_state edge component -> store"
+    );
+
+    let tree = explore(&graph, page_id, Direction::Downstream, 3, None)
+        .expect("expected traversal tree from page");
+    let tree_output = format_tree(&tree, 0);
+    assert!(
+        tree_output.contains("LoginForm"),
+        "traversal should include component node:\n{}",
+        tree_output
+    );
+    assert!(
+        tree_output.contains("setAuthStore"),
+        "traversal should include store node:\n{}",
+        tree_output
     );
 }

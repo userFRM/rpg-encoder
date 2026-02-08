@@ -66,6 +66,10 @@ fn test_ts_empty_source() {
     assert!(deps.calls.is_empty());
     assert!(deps.inherits.is_empty());
     assert!(deps.composes.is_empty());
+    assert!(deps.renders.is_empty());
+    assert!(deps.reads_state.is_empty());
+    assert!(deps.writes_state.is_empty());
+    assert!(deps.dispatches.is_empty());
 }
 
 #[test]
@@ -281,5 +285,56 @@ function Layout() {
         component_calls.contains(&"Content"),
         "expected Content, got: {:?}",
         component_calls
+    );
+}
+
+#[test]
+fn test_frontend_render_and_state_signals() {
+    let source = r"
+function LoginPage() {
+    const user = useSelector(selectUser);
+    const [count, setCount] = useState(0);
+    setCount(count + 1);
+    dispatch(loginRequested());
+    return <LoginForm />;
+}
+";
+
+    let deps = extract_deps(
+        Path::new("app/login/page.tsx"),
+        source,
+        Language::TypeScript,
+    );
+
+    let render = deps.renders.iter().find(|d| d.callee == "LoginForm");
+    assert!(
+        render.is_some(),
+        "expected LoginPage to render LoginForm, got: {:?}",
+        deps.renders
+    );
+    assert_eq!(render.unwrap().caller_entity, "LoginPage");
+
+    let reads = deps.reads_state.iter().find(|d| d.callee == "useSelector");
+    assert!(
+        reads.is_some(),
+        "expected state read signal from useSelector, got: {:?}",
+        deps.reads_state
+    );
+
+    let writes = deps.writes_state.iter().find(|d| d.callee == "setCount");
+    assert!(
+        writes.is_some(),
+        "expected state write signal from setCount, got: {:?}",
+        deps.writes_state
+    );
+
+    let dispatch = deps
+        .dispatches
+        .iter()
+        .find(|d| d.callee == "loginRequested");
+    assert!(
+        dispatch.is_some(),
+        "expected dispatch signal for loginRequested, got: {:?}",
+        deps.dispatches
     );
 }

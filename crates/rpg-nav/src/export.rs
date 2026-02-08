@@ -38,6 +38,10 @@ pub fn export_dot(graph: &RPGraph) -> String {
                 "ellipse"
             }
             rpg_core::graph::EntityKind::Class => "box",
+            rpg_core::graph::EntityKind::Page | rpg_core::graph::EntityKind::Layout => "tab",
+            rpg_core::graph::EntityKind::Component => "box3d",
+            rpg_core::graph::EntityKind::Hook => "ellipse",
+            rpg_core::graph::EntityKind::Store => "cylinder",
             rpg_core::graph::EntityKind::Module => "component",
         };
         let color = if entity.semantic_features.is_empty() {
@@ -62,6 +66,10 @@ pub fn export_dot(graph: &RPGraph) -> String {
             EdgeKind::Imports => "dashed",
             EdgeKind::Inherits => "bold",
             EdgeKind::Composes => "solid",
+            EdgeKind::Renders => "solid",
+            EdgeKind::ReadsState => "dashed",
+            EdgeKind::WritesState => "bold",
+            EdgeKind::Dispatches => "solid",
             EdgeKind::Contains => "dotted",
         };
         let label = match edge.kind {
@@ -69,6 +77,10 @@ pub fn export_dot(graph: &RPGraph) -> String {
             EdgeKind::Imports => "imports",
             EdgeKind::Inherits => "inherits",
             EdgeKind::Composes => "composes",
+            EdgeKind::Renders => "renders",
+            EdgeKind::ReadsState => "reads_state",
+            EdgeKind::WritesState => "writes_state",
+            EdgeKind::Dispatches => "dispatches",
             EdgeKind::Contains => "contains",
         };
         writeln!(
@@ -146,15 +158,24 @@ pub fn export_mermaid(graph: &RPGraph) -> String {
         let src = mermaid_safe_id(&edge.source);
         let tgt = mermaid_safe_id(&edge.target);
         let arrow = match edge.kind {
-            EdgeKind::Invokes | EdgeKind::Contains | EdgeKind::Composes => "-->",
+            EdgeKind::Invokes
+            | EdgeKind::Contains
+            | EdgeKind::Composes
+            | EdgeKind::Renders
+            | EdgeKind::Dispatches => "-->",
             EdgeKind::Imports => "-.->",
-            EdgeKind::Inherits => "==>",
+            EdgeKind::Inherits | EdgeKind::WritesState => "==>",
+            EdgeKind::ReadsState => "-.->",
         };
         let label = match edge.kind {
             EdgeKind::Invokes => "invokes",
             EdgeKind::Imports => "imports",
             EdgeKind::Inherits => "inherits",
             EdgeKind::Composes => "composes",
+            EdgeKind::Renders => "renders",
+            EdgeKind::ReadsState => "reads_state",
+            EdgeKind::WritesState => "writes_state",
+            EdgeKind::Dispatches => "dispatches",
             EdgeKind::Contains => "contains",
         };
         writeln!(out, "  {} {}|{}| {}", src, arrow, label, tgt).unwrap();

@@ -10,6 +10,10 @@ pub struct RawDeps {
     pub calls: Vec<CallDep>,
     pub inherits: Vec<InheritDep>,
     pub composes: Vec<ComposeDep>,
+    pub renders: Vec<CallDep>,
+    pub reads_state: Vec<CallDep>,
+    pub writes_state: Vec<CallDep>,
+    pub dispatches: Vec<CallDep>,
 }
 
 /// A raw import dependency (module + imported symbols).
@@ -453,6 +457,7 @@ pub fn extract_js_deps(_path: &Path, source: &str, language: Language) -> RawDep
     collect_js_imports(&root, source, &mut deps);
     collect_js_calls(&root, source, &scopes, &mut deps.calls);
     collect_js_jsx_usage(&root, source, &scopes, &mut deps.calls);
+    collect_js_frontend_signals(&root, source, &scopes, &mut deps);
 
     deps
 }
@@ -724,6 +729,159 @@ fn collect_js_jsx_usage(
         }
         collect_js_jsx_usage(&child, source, scopes, calls);
     }
+}
+
+fn collect_js_frontend_signals(
+    node: &tree_sitter::Node,
+    source: &str,
+    scopes: &[FunctionScope],
+    deps: &mut RawDeps,
+) {
+    collect_js_renders(node, source, scopes, &mut deps.renders);
+    collect_js_state_signals(
+        node,
+        source,
+        scopes,
+        &mut deps.reads_state,
+        &mut deps.writes_state,
+        &mut deps.dispatches,
+    );
+}
+
+fn collect_js_renders(
+    node: &tree_sitter::Node,
+    source: &str,
+    scopes: &[FunctionScope],
+    renders: &mut Vec<CallDep>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "jsx_self_closing_element" | "jsx_opening_element" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let tag = &source[name_node.byte_range()];
+                    if tag.starts_with(|c: char| c.is_uppercase()) {
+                        let rendered = tag.rsplit('.').next().unwrap_or(tag).to_string();
+                        let caller = find_enclosing_scope(scopes, child.start_position().row)
+                            .unwrap_or_else(|| "<module>".to_string());
+                        renders.push(CallDep {
+                            caller_entity: caller,
+                            callee: rendered,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+        collect_js_renders(&child, source, scopes, renders);
+    }
+}
+
+fn collect_js_state_signals(
+    node: &tree_sitter::Node,
+    source: &str,
+    scopes: &[FunctionScope],
+    reads_state: &mut Vec<CallDep>,
+    writes_state: &mut Vec<CallDep>,
+    dispatches: &mut Vec<CallDep>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "call_expression"
+            && let Some(func_node) = child.child_by_field_name("function")
+        {
+            let callee = extract_callee_name(&func_node, source);
+            if !callee.is_empty() {
+                let caller = find_enclosing_scope(scopes, child.start_position().row)
+                    .unwrap_or_else(|| "<module>".to_string());
+
+                if is_state_reader_name(&callee) {
+                    reads_state.push(CallDep {
+                        caller_entity: caller.clone(),
+                        callee: callee.clone(),
+                    });
+                }
+
+                if is_state_setter_name(&callee) {
+                    writes_state.push(CallDep {
+                        caller_entity: caller.clone(),
+                        callee: callee.clone(),
+                    });
+                }
+
+                if callee == "dispatch" {
+                    let target = extract_dispatch_target(&child, source)
+                        .unwrap_or_else(|| "dispatch".to_string());
+                    dispatches.push(CallDep {
+                        caller_entity: caller,
+                        callee: target,
+                    });
+                }
+            }
+        }
+        collect_js_state_signals(
+            &child,
+            source,
+            scopes,
+            reads_state,
+            writes_state,
+            dispatches,
+        );
+    }
+}
+
+fn is_state_reader_name(name: &str) -> bool {
+    matches!(
+        name,
+        "useSelector" | "useAppSelector" | "useStore" | "getState" | "useAtomValue"
+    )
+}
+
+fn is_state_setter_name(name: &str) -> bool {
+    if name == "setState" || name == "set" {
+        return true;
+    }
+    if !name.starts_with("set") || name.len() <= 3 {
+        return false;
+    }
+    name.chars().nth(3).is_some_and(|c| c.is_ascii_uppercase())
+}
+
+fn extract_dispatch_target(call_expr: &tree_sitter::Node, source: &str) -> Option<String> {
+    let args_node = call_expr.child_by_field_name("arguments")?;
+    let mut cursor = args_node.walk();
+    for arg in args_node.children(&mut cursor) {
+        if !arg.is_named() {
+            continue;
+        }
+        if arg.kind() == "call_expression"
+            && let Some(func_node) = arg.child_by_field_name("function")
+        {
+            let callee = extract_callee_name(&func_node, source);
+            if !callee.is_empty() {
+                return Some(callee);
+            }
+        }
+
+        let text = source[arg.byte_range()].trim();
+        if text.is_empty() {
+            continue;
+        }
+        let symbol = text
+            .rsplit('.')
+            .next()
+            .unwrap_or(text)
+            .split('(')
+            .next()
+            .unwrap_or(text)
+            .trim()
+            .trim_end_matches(';')
+            .to_string();
+        if !symbol.is_empty() {
+            return Some(symbol);
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------

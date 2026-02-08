@@ -271,13 +271,20 @@ fn extract_js_node(
             "function_declaration" => {
                 if let Some(name_node) = child.child_by_field_name("name") {
                     let name = &source[name_node.byte_range()];
+                    let default_kind = if parent_class.is_some() {
+                        EntityKind::Method
+                    } else {
+                        EntityKind::Function
+                    };
                     entities.push(RawEntity {
                         name: name.to_string(),
-                        kind: if parent_class.is_some() {
-                            EntityKind::Method
-                        } else {
-                            EntityKind::Function
-                        },
+                        kind: classify_js_entity_kind(
+                            path,
+                            name,
+                            &source[child.byte_range()],
+                            default_kind,
+                            parent_class,
+                        ),
                         file: path.to_path_buf(),
                         line_start: child.start_position().row + 1,
                         line_end: child.end_position().row + 1,
@@ -291,7 +298,13 @@ fn extract_js_node(
                     let class_name = &source[name_node.byte_range()];
                     entities.push(RawEntity {
                         name: class_name.to_string(),
-                        kind: EntityKind::Class,
+                        kind: classify_js_entity_kind(
+                            path,
+                            class_name,
+                            &source[child.byte_range()],
+                            EntityKind::Class,
+                            None,
+                        ),
                         file: path.to_path_buf(),
                         line_start: child.start_position().row + 1,
                         line_end: child.end_position().row + 1,
@@ -345,13 +358,33 @@ fn extract_js_node(
                             let name = &source[name_node.byte_range()];
                             entities.push(RawEntity {
                                 name: name.to_string(),
-                                kind: EntityKind::Function,
+                                kind: classify_js_entity_kind(
+                                    path,
+                                    name,
+                                    &source[decl.byte_range()],
+                                    EntityKind::Function,
+                                    parent_class,
+                                ),
                                 file: path.to_path_buf(),
                                 line_start: child.start_position().row + 1,
                                 line_end: child.end_position().row + 1,
                                 parent_class: parent_class.map(String::from),
                                 source_text: source[child.byte_range()].to_string(),
                             });
+                        } else if let Some(name_node) = decl.child_by_field_name("name") {
+                            let name = &source[name_node.byte_range()];
+                            let decl_source = &source[decl.byte_range()];
+                            if looks_like_store_entity(name, decl_source) {
+                                entities.push(RawEntity {
+                                    name: name.to_string(),
+                                    kind: EntityKind::Store,
+                                    file: path.to_path_buf(),
+                                    line_start: decl.start_position().row + 1,
+                                    line_end: decl.end_position().row + 1,
+                                    parent_class: parent_class.map(String::from),
+                                    source_text: decl_source.to_string(),
+                                });
+                            }
                         }
                     }
                 }
@@ -372,6 +405,89 @@ fn extract_js_node(
 fn has_child_kind(node: &tree_sitter::Node, kind: &str) -> bool {
     let mut cursor = node.walk();
     node.children(&mut cursor).any(|c| c.kind() == kind)
+}
+
+fn classify_js_entity_kind(
+    path: &Path,
+    name: &str,
+    source_snippet: &str,
+    default_kind: EntityKind,
+    parent_class: Option<&str>,
+) -> EntityKind {
+    if parent_class.is_some() || default_kind == EntityKind::Method {
+        return EntityKind::Method;
+    }
+
+    if is_next_app_file(path, "page") && looks_like_react_component(name, source_snippet) {
+        return EntityKind::Page;
+    }
+
+    if is_next_app_file(path, "layout") && looks_like_react_component(name, source_snippet) {
+        return EntityKind::Layout;
+    }
+
+    if looks_like_custom_hook(name) {
+        return EntityKind::Hook;
+    }
+
+    if looks_like_store_entity(name, source_snippet) {
+        return EntityKind::Store;
+    }
+
+    if default_kind == EntityKind::Class {
+        if source_snippet.contains("extends React.Component")
+            || source_snippet.contains("extends React.PureComponent")
+            || source_snippet.contains("extends Component")
+            || source_snippet.contains("extends PureComponent")
+        {
+            return EntityKind::Component;
+        }
+        return EntityKind::Class;
+    }
+
+    if looks_like_react_component(name, source_snippet) {
+        return EntityKind::Component;
+    }
+
+    default_kind
+}
+
+fn is_next_app_file(path: &Path, stem: &str) -> bool {
+    let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    if !file_name.starts_with(&format!("{}.", stem)) {
+        return false;
+    }
+    path.iter().any(|seg| seg.to_string_lossy() == "app")
+}
+
+fn looks_like_react_component(name: &str, source_snippet: &str) -> bool {
+    let starts_upper = name.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+    if !starts_upper {
+        return false;
+    }
+    source_snippet.contains("return <")
+        || (source_snippet.contains("return (") && source_snippet.contains('<'))
+        || source_snippet.contains("=> <")
+        || source_snippet.contains("React.FC")
+        || source_snippet.contains("<>")
+}
+
+fn looks_like_custom_hook(name: &str) -> bool {
+    if !name.starts_with("use") || name.len() <= 3 {
+        return false;
+    }
+    name.chars().nth(3).is_some_and(|c| c.is_ascii_uppercase())
+}
+
+fn looks_like_store_entity(name: &str, source_snippet: &str) -> bool {
+    let lname = name.to_ascii_lowercase();
+    lname.contains("store")
+        || lname.ends_with("slice")
+        || source_snippet.contains("configureStore(")
+        || source_snippet.contains("createStore(")
+        || source_snippet.contains("createSlice(")
 }
 
 // ---------------------------------------------------------------------------

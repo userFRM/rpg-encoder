@@ -183,3 +183,71 @@ fn test_resolve_dependencies_clears_reverse_deps_on_re_resolve() {
 
     assert_eq!(graph.edges.len(), 1, "edges should not duplicate");
 }
+
+#[test]
+fn test_resolve_frontend_dependency_edges() {
+    let mut graph = RPGraph::new("typescript");
+
+    let mut page = make_entity(
+        "app/login/page.tsx:LoginPage",
+        "LoginPage",
+        "app/login/page.tsx",
+    );
+    page.kind = EntityKind::Page;
+    page.deps.renders.push("LoginForm".to_string());
+    page.deps.reads_state.push("authStore".to_string());
+    page.deps.writes_state.push("setSession".to_string());
+    page.deps.dispatches.push("loginRequested".to_string());
+    graph.insert_entity(page);
+
+    let mut component = make_entity(
+        "src/ui/LoginForm.tsx:LoginForm",
+        "LoginForm",
+        "src/ui/LoginForm.tsx",
+    );
+    component.kind = EntityKind::Component;
+    graph.insert_entity(component);
+
+    let mut store = make_entity(
+        "src/state/store.ts:authStore",
+        "authStore",
+        "src/state/store.ts",
+    );
+    store.kind = EntityKind::Store;
+    graph.insert_entity(store);
+
+    graph.insert_entity(make_entity(
+        "src/state/session.ts:setSession",
+        "setSession",
+        "src/state/session.ts",
+    ));
+    graph.insert_entity(make_entity(
+        "src/state/actions.ts:loginRequested",
+        "loginRequested",
+        "src/state/actions.ts",
+    ));
+
+    resolve_dependencies(&mut graph);
+
+    let kinds: Vec<EdgeKind> = graph.edges.iter().map(|e| e.kind).collect();
+    assert!(kinds.contains(&EdgeKind::Renders));
+    assert!(kinds.contains(&EdgeKind::ReadsState));
+    assert!(kinds.contains(&EdgeKind::WritesState));
+    assert!(kinds.contains(&EdgeKind::Dispatches));
+
+    let login_form = graph.get_entity("src/ui/LoginForm.tsx:LoginForm").unwrap();
+    assert!(
+        login_form
+            .deps
+            .rendered_by
+            .contains(&"app/login/page.tsx:LoginPage".to_string())
+    );
+
+    let auth_store = graph.get_entity("src/state/store.ts:authStore").unwrap();
+    assert!(
+        auth_store
+            .deps
+            .state_read_by
+            .contains(&"app/login/page.tsx:LoginPage".to_string())
+    );
+}

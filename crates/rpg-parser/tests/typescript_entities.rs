@@ -114,7 +114,7 @@ export function App() {
         "expected Button arrow function, got: {:?}",
         entities.iter().map(|e| &e.name).collect::<Vec<_>>()
     );
-    assert_eq!(button.unwrap().kind, EntityKind::Function);
+    assert_eq!(button.unwrap().kind, EntityKind::Component);
 
     let app = entities.iter().find(|e| e.name == "App");
     assert!(
@@ -122,5 +122,77 @@ export function App() {
         "expected App function, got: {:?}",
         entities.iter().map(|e| &e.name).collect::<Vec<_>>()
     );
-    assert_eq!(app.unwrap().kind, EntityKind::Function);
+    assert_eq!(app.unwrap().kind, EntityKind::Component);
+}
+
+#[test]
+fn test_next_app_router_page_and_layout_kinds() {
+    let page_source = r"
+export default function Page() {
+    return <LoginForm />;
+}
+";
+    let page_entities = extract_entities(
+        Path::new("app/auth/login/page.tsx"),
+        page_source,
+        Language::TypeScript,
+    );
+    let page = page_entities
+        .iter()
+        .find(|e| e.name == "Page")
+        .expect("missing Page entity");
+    assert_eq!(page.kind, EntityKind::Page);
+
+    let layout_source = r"
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+    return <html><body>{children}</body></html>;
+}
+";
+    let layout_entities = extract_entities(
+        Path::new("app/layout.tsx"),
+        layout_source,
+        Language::TypeScript,
+    );
+    let layout = layout_entities
+        .iter()
+        .find(|e| e.name == "RootLayout")
+        .expect("missing RootLayout entity");
+    assert_eq!(layout.kind, EntityKind::Layout);
+}
+
+#[test]
+fn test_component_hook_and_store_kinds() {
+    let source = r#"
+import { configureStore } from "@reduxjs/toolkit";
+
+const authStore = configureStore({ reducer: {} });
+
+const useAuth = () => {
+    return { ok: true };
+};
+
+function LoginForm() {
+    return <form />;
+}
+"#;
+
+    let entities = extract_entities(Path::new("src/auth.tsx"), source, Language::TypeScript);
+
+    let store = entities
+        .iter()
+        .find(|e| e.name == "authStore")
+        .expect("missing authStore entity");
+    assert_eq!(store.kind, EntityKind::Store);
+
+    let hook = entities
+        .iter()
+        .find(|e| e.name == "useAuth")
+        .expect("missing useAuth entity");
+    assert_eq!(hook.kind, EntityKind::Hook);
+
+    let component = entities
+        .iter()
+        .find(|e| e.name == "LoginForm")
+        .expect("missing LoginForm entity");
+    assert_eq!(component.kind, EntityKind::Component);
 }
