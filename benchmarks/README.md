@@ -18,7 +18,7 @@ The benchmark uses the rpg-encoder repository itself as the test target:
 
 | Repo | Language | Entities | Queries |
 |------|----------|----------|---------|
-| `rpg-encoder` | Rust | 352 | 20 |
+| `rpg-encoder` | Rust | 652 | 39 |
 
 Each query is a natural-language intent with expected file path substrings:
 ```json
@@ -34,51 +34,50 @@ Each query is a natural-language intent with expected file path substrings:
 # Prerequisites
 cargo build --release          # Build rpg-encoder
 
-# Unlifted baseline (fast, ~10 seconds)
-python3 benchmarks/search_quality.py --no-lift
-
-# Full benchmark with lifting (requires an LLM provider)
-MOONSHOT_API_KEY=xxx python3 benchmarks/search_quality.py
-
 # Re-run measurement only (fast, uses cached graphs)
 python3 benchmarks/search_quality.py --measure-only
+
+# Full benchmark with lifting (uses agent-as-lifter or API key)
+python3 benchmarks/search_quality.py
 
 # Force re-lift all entities
 python3 benchmarks/search_quality.py --force-lift
 ```
 
-Supported LLM providers for lifting: Moonshot (Kimi), OpenAI, Anthropic, Ollama.
-
 ## Results
 
-### With Semantic Lifting (Kimi k2.5, TOON format)
+### With Semantic Lifting (agent-as-lifter)
 
-352/352 entities lifted (100% coverage). Zero parse failures with TOON line format.
+652/652 entities lifted (100% coverage).
 
 ```
   Metric         Unlifted         Lifted    Delta
   ──────── ────────────── ────────────── ────────
-  Acc@1       10/20 (50%)    13/20 (65%)     +15%
-  Acc@3       13/20 (65%)    15/20 (75%)     +10%
-  Acc@5       15/20 (75%)    17/20 (85%)     +10%
-  Acc@10      17/20 (85%)    18/20 (90%)      +5%
-  MRR               0.603          0.731   +0.128
+  Acc@1       19/39 (49%)    21/39 (54%)      +5%
+  Acc@3       27/39 (69%)    31/39 (79%)     +10%
+  Acc@5       29/39 (74%)    34/39 (87%)     +13%
+  Acc@10      30/39 (77%)    36/39 (92%)     +15%
+  MRR               0.606          0.683   +0.077
+
+  MRR delta: +0.077 (95% CI [-0.094, +0.260])
 ```
 
-Lifting improves Acc@1 by **+15%** and MRR by **+0.128**.
+Lifting improves Acc@5 by **+13%** and Acc@10 by **+15%**.
 
 Notable per-query improvements with lifting:
-- "resolve dependency edges between entities": miss -> @1
-- "lift entities with checkpointing": @8 -> @1
-- "explore dependency graph traversal": @2 -> @1
-- "match glob file path patterns": @10 -> @4
-- "load and save RPG graph to disk": @4 -> @2
+- "configure batch size and encoding settings": @8 -> @1
+- "resolve scope specification to entity IDs": @4 -> @1
+- "ground hierarchy nodes to directory paths": @4 -> @1
+- "detect file changes from git diff": miss -> @1
+- "compute semantic drift between features": miss -> @1
+- "repair failed lifting batches": miss -> @1
+- "strip LLM think blocks from response": miss -> @1
 
 ## Architecture
 
 The benchmark has two phases:
 
-1. **PREPARE** (slow, cached): Copy repo, build graph, lift entities with LLM. Results cached in `/tmp/rpg-bench/rpg-encoder/.rpg/`.
+1. **PREPARE** (slow, cached): Copy repo, build graph, lift entities. Results cached in `/tmp/rpg-bench/rpg-encoder/.rpg/`.
 2. **MEASURE** (fast, reproducible): Run search queries against cached graphs, compute Acc@k and MRR.
 
 This separation means you only pay the lifting cost once. Subsequent runs with `--measure-only` complete in seconds.
@@ -90,7 +89,7 @@ This separation means you only pay the lifting cost once. Subsequent runs with `
 rm -rf /tmp/rpg-bench
 
 # Full reproducible run
-MOONSHOT_API_KEY=xxx python3 benchmarks/search_quality.py 2>&1 | tee benchmarks/run.log
+python3 benchmarks/search_quality.py 2>&1 | tee benchmarks/run.log
 
 # Results saved to benchmarks/results.json
 ```

@@ -1,46 +1,51 @@
 {
-  "timestamp": "2026-02-05T10:03:59",
+  "timestamp": "2026-02-08T00:33:38",
   "binary": "/Users/thetagamma/rpg-encoder/target/release/rpg-encoder",
   "summary": {
     "unlifted": {
-      "@1": 10,
-      "@3": 13,
-      "@5": 15,
-      "@10": 17,
-      "total": 20
+      "@1": 19,
+      "@3": 27,
+      "@5": 29,
+      "@10": 30,
+      "total": 39
     },
     "lifted": {
-      "@1": 13,
-      "@3": 15,
-      "@5": 17,
-      "@10": 18,
-      "total": 20
+      "@1": 21,
+      "@3": 31,
+      "@5": 34,
+      "@10": 36,
+      "total": 39
     },
-    "unlifted_mrr": 0.6029166666666667,
-    "lifted_mrr": 0.73125
+    "unlifted_mrr": 0.6058,
+    "lifted_mrr": 0.6827,
+    "mrr_bootstrap_ci": {
+      "delta": 0.077,
+      "ci_lower": -0.094,
+      "ci_upper": 0.2605
+    }
   },
   "repos": [
     {
       "name": "rpg-encoder",
       "language": "rust",
-      "entities": 352,
-      "lifted_count": 352,
-      "queries": 20,
+      "entities": 652,
+      "lifted_count": 652,
+      "queries": 39,
       "unlifted": {
-        "@1": 10,
-        "@3": 13,
-        "@5": 15,
-        "@10": 17,
-        "total": 20,
-        "mrr": 12.058333333333334
+        "@1": 19,
+        "@3": 27,
+        "@5": 29,
+        "@10": 30,
+        "total": 39,
+        "mrr": 23.625
       },
       "lifted": {
-        "@1": 13,
-        "@3": 15,
-        "@5": 17,
-        "@10": 18,
-        "total": 20,
-        "mrr": 14.625
+        "@1": 21,
+        "@3": 31,
+        "@5": 34,
+        "@10": 36,
+        "total": 39,
+        "mrr": 26.626190476190473
       },
       "per_query": {
         "unlifted": [
@@ -50,7 +55,7 @@
           },
           {
             "query": "extract semantic features from code with LLM",
-            "rank": 4
+            "rank": 1
           },
           {
             "query": "build semantic hierarchy for repository",
@@ -58,7 +63,7 @@
           },
           {
             "query": "resolve dependency edges between entities",
-            "rank": 0
+            "rank": 2
           },
           {
             "query": "serialize output in TOON format",
@@ -69,24 +74,20 @@
             "rank": 1
           },
           {
-            "query": "manage LLM provider and API calls",
-            "rank": 1
-          },
-          {
             "query": "load and save RPG graph to disk",
-            "rank": 4
+            "rank": 1
           },
           {
             "query": "extract Python functions and classes",
-            "rank": 0
-          },
-          {
-            "query": "configure batch size and encoding settings",
             "rank": 1
           },
           {
-            "query": "lift entities with checkpointing",
+            "query": "configure batch size and encoding settings",
             "rank": 8
+          },
+          {
+            "query": "lift entities with checkpointing",
+            "rank": 1
           },
           {
             "query": "fetch entity details and source code",
@@ -94,49 +95,129 @@
           },
           {
             "query": "explore dependency graph traversal",
-            "rank": 2
+            "rank": 1
           },
           {
             "query": "register MCP tool handlers",
-            "rank": 1
-          },
-          {
-            "query": "parse Rust functions and structs",
-            "rank": 0
-          },
-          {
-            "query": "match glob file path patterns",
-            "rank": 10
-          },
-          {
-            "query": "compute embedding similarity scores",
             "rank": 2
           },
           {
-            "query": "detect and connect to Ollama",
-            "rank": 1
+            "query": "parse Rust functions and structs",
+            "rank": 2
+          },
+          {
+            "query": "match glob file path patterns",
+            "rank": 0
           },
           {
             "query": "normalize semantic features text",
-            "rank": 3
+            "rank": 1
           },
           {
             "query": "build token-aware entity batches",
+            "rank": 0
+          },
+          {
+            "query": "compute lowest common ancestor of paths",
             "rank": 1
+          },
+          {
+            "query": "detect file changes from git diff",
+            "rank": 0
+          },
+          {
+            "query": "incremental update from code modifications",
+            "rank": 2
+          },
+          {
+            "query": "compute semantic drift between features",
+            "rank": 0
+          },
+          {
+            "query": "discover functional areas from entities",
+            "rank": 0
+          },
+          {
+            "query": "assign entities to hierarchy paths",
+            "rank": 1
+          },
+          {
+            "query": "find best parent node for entity",
+            "rank": 0
+          },
+          {
+            "query": "parse pipe-delimited line format features",
+            "rank": 1
+          },
+          {
+            "query": "resolve scope specification to entity IDs",
+            "rank": 4
+          },
+          {
+            "query": "generate repo-level architectural summary",
+            "rank": 0
+          },
+          {
+            "query": "ground hierarchy nodes to directory paths",
+            "rank": 4
+          },
+          {
+            "query": "propagate dependency features bottom-up",
+            "rank": 2
+          },
+          {
+            "query": "materialize containment edges from hierarchy",
+            "rank": 2
+          },
+          {
+            "query": "build file path hierarchy from directories",
+            "rank": 2
+          },
+          {
+            "query": "parse tree-sitter syntax nodes",
+            "rank": 1
+          },
+          {
+            "query": "detect programming language from file extension",
+            "rank": 1
+          },
+          {
+            "query": "extract import and invocation dependencies",
+            "rank": 1
+          },
+          {
+            "query": "format search results as TOON output",
+            "rank": 1
+          },
+          {
+            "query": "repair failed lifting batches",
+            "rank": 0
+          },
+          {
+            "query": "strip LLM think blocks from response",
+            "rank": 0
+          },
+          {
+            "query": "validate RPG graph schema version",
+            "rank": 1
+          },
+          {
+            "query": "aggregate hierarchy features bottom-up",
+            "rank": 2
           }
         ],
         "lifted": [
           {
             "query": "search code entities by query",
-            "rank": 1
-          },
-          {
-            "query": "extract semantic features from code with LLM",
             "rank": 4
           },
           {
-            "query": "build semantic hierarchy for repository",
+            "query": "extract semantic features from code with LLM",
             "rank": 1
+          },
+          {
+            "query": "build semantic hierarchy for repository",
+            "rank": 0
           },
           {
             "query": "resolve dependency edges between entities",
@@ -148,19 +229,15 @@
           },
           {
             "query": "parse entities from source code files",
-            "rank": 1
-          },
-          {
-            "query": "manage LLM provider and API calls",
-            "rank": 1
+            "rank": 7
           },
           {
             "query": "load and save RPG graph to disk",
-            "rank": 2
+            "rank": 1
           },
           {
             "query": "extract Python functions and classes",
-            "rank": 0
+            "rank": 1
           },
           {
             "query": "configure batch size and encoding settings",
@@ -168,42 +245,122 @@
           },
           {
             "query": "lift entities with checkpointing",
-            "rank": 1
-          },
-          {
-            "query": "fetch entity details and source code",
-            "rank": 1
-          },
-          {
-            "query": "explore dependency graph traversal",
-            "rank": 1
-          },
-          {
-            "query": "register MCP tool handlers",
-            "rank": 1
-          },
-          {
-            "query": "parse Rust functions and structs",
-            "rank": 0
-          },
-          {
-            "query": "match glob file path patterns",
-            "rank": 4
-          },
-          {
-            "query": "compute embedding similarity scores",
-            "rank": 1
-          },
-          {
-            "query": "detect and connect to Ollama",
-            "rank": 8
-          },
-          {
-            "query": "normalize semantic features text",
             "rank": 2
           },
           {
+            "query": "fetch entity details and source code",
+            "rank": 3
+          },
+          {
+            "query": "explore dependency graph traversal",
+            "rank": 2
+          },
+          {
+            "query": "register MCP tool handlers",
+            "rank": 2
+          },
+          {
+            "query": "parse Rust functions and structs",
+            "rank": 1
+          },
+          {
+            "query": "match glob file path patterns",
+            "rank": 2
+          },
+          {
+            "query": "normalize semantic features text",
+            "rank": 1
+          },
+          {
             "query": "build token-aware entity batches",
+            "rank": 2
+          },
+          {
+            "query": "compute lowest common ancestor of paths",
+            "rank": 1
+          },
+          {
+            "query": "detect file changes from git diff",
+            "rank": 1
+          },
+          {
+            "query": "incremental update from code modifications",
+            "rank": 5
+          },
+          {
+            "query": "compute semantic drift between features",
+            "rank": 1
+          },
+          {
+            "query": "discover functional areas from entities",
+            "rank": 5
+          },
+          {
+            "query": "assign entities to hierarchy paths",
+            "rank": 2
+          },
+          {
+            "query": "find best parent node for entity",
+            "rank": 0
+          },
+          {
+            "query": "parse pipe-delimited line format features",
+            "rank": 1
+          },
+          {
+            "query": "resolve scope specification to entity IDs",
+            "rank": 1
+          },
+          {
+            "query": "generate repo-level architectural summary",
+            "rank": 0
+          },
+          {
+            "query": "ground hierarchy nodes to directory paths",
+            "rank": 1
+          },
+          {
+            "query": "propagate dependency features bottom-up",
+            "rank": 6
+          },
+          {
+            "query": "materialize containment edges from hierarchy",
+            "rank": 1
+          },
+          {
+            "query": "build file path hierarchy from directories",
+            "rank": 2
+          },
+          {
+            "query": "parse tree-sitter syntax nodes",
+            "rank": 1
+          },
+          {
+            "query": "detect programming language from file extension",
+            "rank": 2
+          },
+          {
+            "query": "extract import and invocation dependencies",
+            "rank": 3
+          },
+          {
+            "query": "format search results as TOON output",
+            "rank": 1
+          },
+          {
+            "query": "repair failed lifting batches",
+            "rank": 1
+          },
+          {
+            "query": "strip LLM think blocks from response",
+            "rank": 1
+          },
+          {
+            "query": "validate RPG graph schema version",
+            "rank": 1
+          },
+          {
+            "query": "aggregate hierarchy features bottom-up",
             "rank": 1
           }
         ]
