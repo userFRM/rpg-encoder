@@ -1,0 +1,58 @@
+schema_version = 1
+name = "laravel"
+priority = 10
+languages = ["php"]
+
+[detect]
+deps = ["laravel/framework"]
+config_files = ["artisan"]
+
+[[classify]]
+id = "laravel.controller"
+action = { reclassify = "controller" }
+[classify.match]
+kind = "class"
+source_contains_any = ["extends Controller"]
+file_path_contains = "Controller"
+
+[[classify]]
+id = "laravel.model"
+action = { reclassify = "model" }
+[classify.match]
+kind = "class"
+source_contains_any = ["extends Model"]
+
+[[classify]]
+id = "laravel.middleware"
+action = { reclassify = "middleware" }
+[classify.match]
+kind = "class"
+file_path_contains = "Middleware"
+
+[[classify]]
+id = "laravel.test"
+action = { reclassify = "test" }
+[classify.match]
+kind = "class"
+source_contains_any = ["extends TestCase"]
+
+[prompt_hints]
+lifting = """
+- **Controllers**: describe the HTTP endpoint and resource operations
+- **Models** (Eloquent): describe the domain entity and relationships
+- **Middleware**: describe the request filtering or transformation
+- **Requests** (FormRequest): describe the validation rules
+"""
+synthesis = """
+- For controller files: capture the resource CRUD operations
+- For model files: capture the domain entity and Eloquent relationships
+"""
+hierarchy = """
+- Controllers: "WebEndpoints/resource management/handle user CRUD"
+- Models: "DataModel/domain entities/define user schema"
+- Middleware: "CrossCutting/request pipeline/authenticate requests"
+"""
+discovery = """
+- Group Laravel controllers and models by feature domain
+- Middleware and service providers form a CrossCutting area
+"""

@@ -1,0 +1,57 @@
+schema_version = 1
+name = "aspnet"
+priority = 10
+languages = ["csharp"]
+
+[detect]
+deps = ["Microsoft.AspNetCore"]
+config_files = ["appsettings.json"]
+
+[[classify]]
+id = "aspnet.controller"
+action = { reclassify = "controller" }
+[classify.match]
+kind = "class"
+source_contains_any = ["ControllerBase", "[ApiController]", ": Controller"]
+
+[[classify]]
+id = "aspnet.model"
+action = { reclassify = "model" }
+[classify.match]
+kind = "class"
+source_contains_any = ["DbContext", ": DbContext"]
+
+[[classify]]
+id = "aspnet.middleware"
+action = { reclassify = "middleware" }
+[classify.match]
+kind = "class"
+source_contains_any = ["IMiddleware", "IAsyncActionFilter"]
+
+[[classify]]
+id = "aspnet.test"
+action = { reclassify = "test" }
+[classify.match]
+kind = "class"
+source_contains_any = ["[Fact]", "[Theory]", "[Test]", "[TestMethod]"]
+
+[prompt_hints]
+lifting = """
+- **Controllers** (ControllerBase subclasses): describe the API endpoint and resource
+- **Models** (EF entities / DbContext): describe the domain data and relationships
+- **Middleware** (IMiddleware): describe the request pipeline behavior
+- **Services**: describe the business logic
+"""
+synthesis = """
+- For controller files: capture the HTTP endpoints and resource operations
+- For DbContext files: capture the data model and entity relationships
+"""
+hierarchy = """
+- Controllers: "WebEndpoints/resource management/handle user CRUD"
+- Models: "DataModel/domain entities/define user schema"
+- Middleware: "CrossCutting/request pipeline/authenticate requests"
+"""
+discovery = """
+- Group ASP.NET controllers and services by feature domain
+- DbContext and entity configurations form a DataModel area
+"""

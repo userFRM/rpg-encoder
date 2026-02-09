@@ -108,14 +108,14 @@ pub fn process_files(dir: &Path) -> Vec<String> {
 fn bench_python_extraction(c: &mut Criterion) {
     let path = PathBuf::from("test.py");
     c.bench_function("extract_entities_python", |b| {
-        b.iter(|| extract_entities(black_box(&path), black_box(SAMPLE_PYTHON), Language::Python))
+        b.iter(|| extract_entities(black_box(&path), black_box(SAMPLE_PYTHON), Language::PYTHON))
     });
 }
 
 fn bench_rust_extraction(c: &mut Criterion) {
     let path = PathBuf::from("test.rs");
     c.bench_function("extract_entities_rust", |b| {
-        b.iter(|| extract_entities(black_box(&path), black_box(SAMPLE_RUST), Language::Rust))
+        b.iter(|| extract_entities(black_box(&path), black_box(SAMPLE_RUST), Language::RUST))
     });
 }
 

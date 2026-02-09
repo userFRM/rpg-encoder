@@ -1,0 +1,57 @@
+schema_version = 1
+name = "nestjs"
+priority = 10
+languages = ["typescript"]
+
+[detect]
+deps = ["@nestjs/core"]
+config_files = ["nest-cli.json"]
+
+[[classify]]
+id = "nestjs.controller"
+action = { reclassify = "controller" }
+[classify.match]
+kind = "class"
+source_contains_any = ["@Controller("]
+
+[[classify]]
+id = "nestjs.service"
+action = { reclassify = "service" }
+[classify.match]
+kind = "class"
+source_contains_any = ["@Injectable("]
+
+[[classify]]
+id = "nestjs.middleware"
+action = { reclassify = "middleware" }
+[classify.match]
+kind = "class"
+source_contains_any = ["NestMiddleware"]
+
+[[classify]]
+id = "nestjs.test"
+action = { reclassify = "test" }
+[classify.match]
+kind = "class"
+source_contains_any = ["describe(", "it("]
+file_path_contains = ".spec"
+
+[prompt_hints]
+lifting = """
+- **Controllers** (@Controller classes): describe the API endpoint and resource
+- **Services** (@Injectable classes): describe the business logic
+- **Guards**: describe the access control logic
+- **Interceptors**: describe the request/response transformation
+"""
+synthesis = """
+- For controller files: capture the resource endpoints exposed
+- For service files: capture the domain operations provided
+"""
+hierarchy = """
+- Controllers: "WebEndpoints/resource management/handle user CRUD"
+- Services: "BusinessLogic/feature domain/manage user accounts"
+"""
+discovery = """
+- Group NestJS modules by feature domain (Users, Auth, Products)
+- Guards and interceptors form a CrossCutting area
+"""

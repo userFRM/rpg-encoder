@@ -1,0 +1,40 @@
+schema_version = 1
+name = "swiftui"
+priority = 10
+languages = ["swift"]
+
+[detect]
+deps = ["SwiftUI"]
+
+[[classify]]
+id = "swiftui.view"
+action = { reclassify = "component" }
+[classify.match]
+kind = "class"
+source_contains_any = [": View {", ": View,", "View {"]
+
+[[classify]]
+id = "swiftui.observable"
+action = { reclassify = "model" }
+[classify.match]
+kind = "class"
+source_contains_any = ["@Observable", "ObservableObject"]
+
+[prompt_hints]
+lifting = """
+- **Views** (structs conforming to View): describe what the user sees or interacts with
+- **Observable objects** (@Observable / @ObservableObject): describe the state domain
+- **View modifiers**: describe the visual transformation
+"""
+synthesis = """
+- For view files: capture the screen purpose and user interactions
+- For model files: capture the state domain and data flow
+"""
+hierarchy = """
+- Views: "UserInterface/feature screen/render specific view"
+- Observable objects: "StateManagement/feature domain/manage specific state"
+"""
+discovery = """
+- Group SwiftUI views by feature screen or user journey
+- Observable objects and their views belong to the same feature area
+"""

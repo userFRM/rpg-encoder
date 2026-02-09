@@ -1,0 +1,11 @@
+schema_version = 1
+name = "swift"
+extensions = ["swift"]
+glob = "**/*.swift"
+
+[grammar]
+crate_path = "tree_sitter_swift::LANGUAGE"
+
+[builtin]
+entity_extractor = "extract_swift_entities"
+dep_extractor = "extract_swift_deps"

@@ -9,7 +9,7 @@ fn java_import_declaration() {
 
 public class Foo {}
 ";
-    let deps = extract_deps(Path::new("Foo.java"), source, Language::Java);
+    let deps = extract_deps(Path::new("Foo.java"), source, Language::JAVA);
     assert_eq!(deps.imports.len(), 1);
     assert_eq!(deps.imports[0].module, "java.util");
     assert_eq!(deps.imports[0].symbols, vec!["List"]);
@@ -18,7 +18,7 @@ public class Foo {}
 #[test]
 fn java_class_inheritance() {
     let source = "public class Dog extends Animal {}";
-    let deps = extract_deps(Path::new("Dog.java"), source, Language::Java);
+    let deps = extract_deps(Path::new("Dog.java"), source, Language::JAVA);
     assert!(!deps.inherits.is_empty());
     let inherit = &deps.inherits[0];
     assert_eq!(inherit.child_class, "Dog");
@@ -28,7 +28,7 @@ fn java_class_inheritance() {
 #[test]
 fn java_interface_implementation() {
     let source = "public class Foo implements Bar {}";
-    let deps = extract_deps(Path::new("Foo.java"), source, Language::Java);
+    let deps = extract_deps(Path::new("Foo.java"), source, Language::JAVA);
     assert!(!deps.inherits.is_empty());
     let inherit = deps
         .inherits

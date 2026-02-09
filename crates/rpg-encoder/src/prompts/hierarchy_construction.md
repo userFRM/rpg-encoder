@@ -17,23 +17,6 @@ Examples:
 
 Avoid filler labels (e.g., "misc", "others", "core", "general").
 
-## Frontend Hierarchy Patterns
-For frontend codebases (React, Next.js, Vue, etc.), the hierarchy should reflect user journeys and feature domains rather than file-system directory conventions or technical categories.
-
-Frontend examples:
-- Pages: `"UserInterface/authentication flow/render login page"`
-- Layouts: `"UserInterface/application shell/wrap pages with navigation"`
-- Components: `"UserInterface/authentication flow/render login form"`
-- Custom hooks: `"StateManagement/authentication access/read auth state via hook"`
-- Selectors: `"StateManagement/authentication queries/compute logged-in status"`
-- Thunks: `"StateManagement/authentication operations/authenticate user credentials"`
-- Slices/stores: `"StateManagement/authentication state/define auth reducers"`
-- RTK Query APIs: `"DataFetching/post retrieval/fetch posts from API"`
-- Store config: `"StateManagement/store configuration/compose root reducer"`
-- Shared UI: `"SharedComponents/form controls/render button variants"`
-
-Key principle: a login page, its form component, the auth hook, the auth selector, the auth thunk, and the auth slice all belong to the same feature domain (authentication) — even though they live in different directories. The hierarchy should reflect this shared domain, with category distinguishing the role (state vs. UI vs. data-fetching).
-
 ## Semantic Naming Rules
 1. Use "verb + object" phrasing.
 2. Use lowercase English only for categories and subcategories.
@@ -53,8 +36,10 @@ Key principle: a login page, its form component, the auth hook, the auth selecto
 - Exclude docs/examples/tests/vendor code unless essential to core functionality.
 
 ## Output Format
-One entity per line. Format: entity_name | FunctionalArea/category/subcategory
+One file per line. Format: file_path | FunctionalArea/category/subcategory
+
+All entities within a file inherit its hierarchy assignment.
 
 Example:
-parse_args | CommandLineInterface/parse input/read arguments
-send_request | HttpClient/manage connections/send data
+src/cli/args.rs | CommandLineInterface/parse input/read arguments
+src/http/client.rs | HttpClient/manage connections/send data

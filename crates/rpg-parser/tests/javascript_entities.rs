@@ -6,7 +6,7 @@ use std::path::Path;
 #[test]
 fn test_function_declaration() {
     let source = "function hello() { return 1; }";
-    let entities = extract_entities(Path::new("test.js"), source, Language::JavaScript);
+    let entities = extract_entities(Path::new("test.js"), source, Language::JAVASCRIPT);
     assert_eq!(entities.len(), 1);
     assert_eq!(entities[0].name, "hello");
     assert_eq!(entities[0].kind, EntityKind::Function);
@@ -21,7 +21,7 @@ class Dog {
     bark() {}
 }
 ";
-    let entities = extract_entities(Path::new("test.js"), source, Language::JavaScript);
+    let entities = extract_entities(Path::new("test.js"), source, Language::JAVASCRIPT);
     assert!(
         entities.len() >= 2,
         "expected at least 2 entities, got {}",
@@ -44,7 +44,7 @@ class Dog {
 #[test]
 fn test_const_arrow_function() {
     let source = "const square = (x) => x * x;";
-    let entities = extract_entities(Path::new("test.js"), source, Language::JavaScript);
+    let entities = extract_entities(Path::new("test.js"), source, Language::JAVASCRIPT);
     assert_eq!(entities.len(), 1);
     assert_eq!(entities[0].name, "square");
     assert_eq!(entities[0].kind, EntityKind::Function);
@@ -59,7 +59,7 @@ function beta() { return 2; }
 
 function gamma(x) { return x; }
 ";
-    let entities = extract_entities(Path::new("test.js"), source, Language::JavaScript);
+    let entities = extract_entities(Path::new("test.js"), source, Language::JAVASCRIPT);
     assert_eq!(entities.len(), 3);
     let names: Vec<&str> = entities.iter().map(|e| e.name.as_str()).collect();
     assert!(names.contains(&"alpha"));
@@ -80,7 +80,7 @@ class Person {
     }
 }
 ";
-    let entities = extract_entities(Path::new("test.js"), source, Language::JavaScript);
+    let entities = extract_entities(Path::new("test.js"), source, Language::JAVASCRIPT);
     assert!(
         entities.len() >= 3,
         "expected at least 3 entities, got {}",

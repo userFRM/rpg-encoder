@@ -43,6 +43,13 @@ pub fn export_dot(graph: &RPGraph) -> String {
             rpg_core::graph::EntityKind::Hook => "ellipse",
             rpg_core::graph::EntityKind::Store => "cylinder",
             rpg_core::graph::EntityKind::Module => "component",
+            rpg_core::graph::EntityKind::Controller | rpg_core::graph::EntityKind::Route => {
+                "hexagon"
+            }
+            rpg_core::graph::EntityKind::Model => "box",
+            rpg_core::graph::EntityKind::Service => "ellipse",
+            rpg_core::graph::EntityKind::Middleware => "trapezium",
+            rpg_core::graph::EntityKind::Test => "diamond",
         };
         let color = if entity.semantic_features.is_empty() {
             "#ffffff"

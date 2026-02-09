@@ -5,7 +5,9 @@
 //! Uses the Python fixture project from tests/fixtures/python_project.
 
 use rpg_core::graph::{EntityKind, RPGraph};
-use rpg_encoder::evolution::{apply_additions, apply_deletions, apply_renames};
+use rpg_encoder::evolution::{
+    apply_additions, apply_deletions, apply_modifications, apply_renames,
+};
 use rpg_parser::entities::{RawEntity, extract_entities};
 use rpg_parser::languages::Language;
 use std::path::{Path, PathBuf};
@@ -45,7 +47,7 @@ fn build_fixture_graph() -> RPGraph {
 
     let mut all_entities: Vec<RawEntity> = Vec::new();
     for (rel_path, source) in &files {
-        let raw = extract_entities(rel_path, source, Language::Python);
+        let raw = extract_entities(rel_path, source, Language::PYTHON);
         all_entities.extend(raw);
     }
 
@@ -219,7 +221,7 @@ def format_template(template: str, **kwargs) -> str:
 "#;
 
     let new_path = PathBuf::from("src/email.py");
-    let new_entities = extract_entities(&new_path, new_source, Language::Python);
+    let new_entities = extract_entities(&new_path, new_source, Language::PYTHON);
     assert!(
         new_entities.len() >= 2,
         "should extract at least 2 functions"
@@ -281,7 +283,7 @@ def validate_config(config: Dict[str, Any]) -> bool:
     return all(k in config for k in required)
 "#;
 
-    let new_entities = extract_entities(&config_path, modified_source, Language::Python);
+    let new_entities = extract_entities(&config_path, modified_source, Language::PYTHON);
     assert!(
         new_entities.len() >= 4,
         "modified config should have >= 4 functions"
@@ -359,7 +361,7 @@ fn test_incremental_multiple_operations() {
     // 3. Add new file
     let new_source = "def health_check():\n    return True\n";
     let new_path = PathBuf::from("src/health.py");
-    let new_entities = extract_entities(&new_path, new_source, Language::Python);
+    let new_entities = extract_entities(&new_path, new_source, Language::PYTHON);
     for raw in new_entities {
         graph.insert_entity(raw.into_entity());
     }
@@ -525,7 +527,7 @@ class Product:
 ";
 
     let models_path = PathBuf::from("src/models.py");
-    let new_entities = extract_entities(&models_path, new_source, Language::Python);
+    let new_entities = extract_entities(&models_path, new_source, Language::PYTHON);
     let existing_ids: std::collections::HashSet<String> = graph.entities.keys().cloned().collect();
 
     let mut found_new = false;
@@ -576,7 +578,7 @@ fn test_new_file_entities_no_hierarchy() {
     // Add entity from a completely new file — should have empty hierarchy
     let new_source = "def brand_new_func():\n    pass\n";
     let new_path = PathBuf::from("src/brand_new.py");
-    let new_entities = extract_entities(&new_path, new_source, Language::Python);
+    let new_entities = extract_entities(&new_path, new_source, Language::PYTHON);
     assert!(!new_entities.is_empty());
 
     for raw in new_entities {
@@ -618,7 +620,7 @@ fn test_apply_additions_assigns_hierarchy() {
     .unwrap();
 
     let added_files = vec![PathBuf::from("src/notifications/email.py")];
-    let added = apply_additions(&mut graph, &added_files, &tmp).unwrap();
+    let added = apply_additions(&mut graph, &added_files, &tmp, None).unwrap();
     assert_eq!(added, 1);
 
     // The new entity should have a file-path hierarchy path
@@ -661,7 +663,7 @@ fn test_collect_raw_entities_multi_language() {
     // Insert Python entities
     let py_source = "def greet():\n    pass\n";
     let py_path = PathBuf::from("src/greet.py");
-    let py_entities = extract_entities(&py_path, py_source, Language::Python);
+    let py_entities = extract_entities(&py_path, py_source, Language::PYTHON);
     for raw in py_entities {
         graph.insert_entity(raw.into_entity());
     }
@@ -669,7 +671,7 @@ fn test_collect_raw_entities_multi_language() {
     // Insert Rust entities
     let rs_source = "fn hello() {}\n";
     let rs_path = PathBuf::from("src/hello.rs");
-    let rs_entities = extract_entities(&rs_path, rs_source, Language::Rust);
+    let rs_entities = extract_entities(&rs_path, rs_source, Language::RUST);
     for raw in rs_entities {
         graph.insert_entity(raw.into_entity());
     }
@@ -716,7 +718,7 @@ fn test_scoped_deps_only_refreshes_changed_files() {
     let root = fixture_root();
 
     // Populate deps for all files first
-    rpg_encoder::grounding::populate_entity_deps(&mut graph, &root, false, None);
+    rpg_encoder::grounding::populate_entity_deps(&mut graph, &root, false, None, None);
 
     // Find an entity in src/models.py that has invokes/imports
     let models_entity = graph
@@ -738,6 +740,7 @@ fn test_scoped_deps_only_refreshes_changed_files() {
         &root,
         false,
         Some(&[PathBuf::from("src/models.py")]),
+        None,
     );
 
     // login.py entity should retain its original deps (not cleared)
@@ -757,4 +760,64 @@ fn test_scoped_deps_only_refreshes_changed_files() {
             "models.py entity should still exist"
         );
     }
+}
+
+#[test]
+fn test_apply_modifications_updates_entity_kind() {
+    // Verify that apply_modifications refreshes structural fields (kind, parent_class),
+    // not just line numbers.
+    let tmp = std::env::temp_dir().join("rpg_test_mod_kind");
+    let _ = std::fs::remove_dir_all(&tmp);
+    let src = tmp.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+
+    // Write initial Python source: a function
+    let file_rel = PathBuf::from("src/helper.py");
+    let initial_source = "def helper():\n    pass\n";
+    std::fs::write(src.join("helper.py"), initial_source).unwrap();
+
+    // Build initial graph with the function entity
+    let mut graph = RPGraph::new("python");
+    graph.metadata.languages = vec!["python".to_string()];
+    let raw = extract_entities(&file_rel, initial_source, Language::PYTHON);
+    assert!(!raw.is_empty(), "should extract at least one entity");
+    for r in raw {
+        graph.insert_entity(r.into_entity());
+    }
+
+    // Verify initial kind is Function
+    let entity = graph
+        .entities
+        .values()
+        .find(|e| e.name == "helper")
+        .expect("helper function should exist");
+    assert_eq!(entity.kind, EntityKind::Function);
+    let entity_id = entity.id.clone();
+
+    // Now "modify" the file: add a class with the same function name as a method
+    // This won't change the ID, but to test kind refresh we manually alter the entity kind
+    // and then re-run apply_modifications which should restore the correct kind.
+    graph.entities.get_mut(&entity_id).unwrap().kind = EntityKind::Class;
+    assert_eq!(
+        graph.entities.get(&entity_id).unwrap().kind,
+        EntityKind::Class,
+        "manually set to Class to simulate stale kind"
+    );
+
+    // Run apply_modifications — it re-extracts from source and should refresh kind
+    let modified_files = vec![file_rel];
+    let (modified, _added, _removed, _stale) =
+        apply_modifications(&mut graph, &modified_files, &tmp, None).unwrap();
+    assert!(modified > 0, "should report modified entities");
+
+    // Verify kind was refreshed back to Function
+    let entity = graph.entities.get(&entity_id).unwrap();
+    assert_eq!(
+        entity.kind,
+        EntityKind::Function,
+        "apply_modifications should refresh entity kind from re-extracted source"
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&tmp);
 }

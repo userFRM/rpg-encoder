@@ -1,0 +1,11 @@
+schema_version = 1
+name = "php"
+extensions = ["php"]
+glob = "**/*.php"
+
+[grammar]
+crate_path = "tree_sitter_php::LANGUAGE_PHP"
+
+[builtin]
+entity_extractor = "extract_php_entities"
+dep_extractor = "extract_php_deps"

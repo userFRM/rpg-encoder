@@ -1,0 +1,11 @@
+schema_version = 1
+name = "go"
+extensions = ["go"]
+glob = "**/*.go"
+
+[grammar]
+crate_path = "tree_sitter_go::LANGUAGE"
+
+[builtin]
+entity_extractor = "extract_go_entities"
+dep_extractor = "extract_go_deps"

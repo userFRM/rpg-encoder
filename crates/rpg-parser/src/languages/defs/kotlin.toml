@@ -1,0 +1,11 @@
+schema_version = 1
+name = "kotlin"
+extensions = ["kt", "kts"]
+glob = "**/*.{kt,kts}"
+
+[grammar]
+crate_path = "tree_sitter_kotlin_ng::LANGUAGE"
+
+[builtin]
+entity_extractor = "extract_kotlin_entities"
+dep_extractor = "extract_kotlin_deps"

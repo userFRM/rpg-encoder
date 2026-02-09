@@ -1,0 +1,26 @@
+schema_version = 1
+name = "svelte"
+priority = 12
+languages = ["typescript", "javascript"]
+
+[detect]
+deps = ["svelte"]
+config_files = ["svelte.config.js"]
+
+[prompt_hints]
+lifting = """
+- **Components**: describe what the user sees or interacts with
+- **Stores** (writable/readable): describe the reactive state domain
+"""
+synthesis = """
+- For component files: capture the user-facing purpose
+- For store files: capture the state domain managed
+"""
+hierarchy = """
+- Components: "UserInterface/feature domain/render specific widget"
+- Stores: "StateManagement/feature domain/manage specific state"
+"""
+discovery = """
+- Group Svelte components by feature domain
+- Stores form a StateManagement area when substantial
+"""

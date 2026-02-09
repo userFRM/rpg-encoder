@@ -92,9 +92,16 @@ tree-sitter-go = "0.25.0"
 tree-sitter-java = "0.23.5"
 tree-sitter-c = "0.24.1"
 tree-sitter-cpp = "0.23.4"
+tree-sitter-c-sharp = "0.23.1"
+tree-sitter-php = "0.24.2"
+tree-sitter-ruby = "0.23.1"
+tree-sitter-kotlin-ng = "1.1.0"
+tree-sitter-swift = "0.7.1"
+tree-sitter-scala = "0.24.0"
+tree-sitter-bash = "0.25.1"
 
 # Error handling
-anyhow = "1.0.100"
+anyhow = "1.0.101"
 thiserror = "2.0.18"
 
 # Logging
@@ -135,7 +142,7 @@ zstd = "0.13.3"
 toon-format = { version = "0.4.1", default-features = false }
 
 # Progress indicators
-indicatif = "0.17"
+indicatif = "0.18.3"
 
 # Testing
 tempfile = "3.24.0"

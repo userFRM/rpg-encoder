@@ -1,7 +1,6 @@
 //! Extract dependencies (imports, calls, inheritance) from AST.
 
 use crate::languages::Language;
-use std::collections::HashSet;
 use std::path::Path;
 
 /// Raw dependency information extracted from a single file.
@@ -15,6 +14,21 @@ pub struct RawDeps {
     pub reads_state: Vec<CallDep>,
     pub writes_state: Vec<CallDep>,
     pub dispatches: Vec<CallDep>,
+}
+
+impl RawDeps {
+    /// All call-like dep vectors with their corresponding edge kinds.
+    /// Used by grounding to generically map caller→entity deps.
+    pub fn call_dep_vectors(&self) -> Vec<(rpg_core::graph::EdgeKind, &Vec<CallDep>)> {
+        use rpg_core::graph::EdgeKind;
+        vec![
+            (EdgeKind::Invokes, &self.calls),
+            (EdgeKind::Renders, &self.renders),
+            (EdgeKind::ReadsState, &self.reads_state),
+            (EdgeKind::WritesState, &self.writes_state),
+            (EdgeKind::Dispatches, &self.dispatches),
+        ]
+    }
 }
 
 /// A raw import dependency (module + imported symbols).
@@ -47,17 +61,10 @@ pub struct ComposeDep {
 
 /// A scope (function or method) that can contain call sites.
 #[derive(Debug, Clone)]
-struct FunctionScope {
-    name: String,
-    start_row: usize,
-    end_row: usize,
-}
-
-#[derive(Debug, Default)]
-struct StateSignalContext {
-    selector_hooks: HashSet<String>,
-    dispatch_hooks: HashSet<String>,
-    dispatch_call_aliases: HashSet<String>,
+pub struct FunctionScope {
+    pub name: String,
+    pub start_row: usize,
+    pub end_row: usize,
 }
 
 /// Extract dependency info from a Python source file.
@@ -196,7 +203,7 @@ fn extract_callee_name(node: &tree_sitter::Node, source: &str) -> String {
 }
 
 /// Find which function scope encloses a given line.
-fn find_enclosing_scope(scopes: &[FunctionScope], row: usize) -> Option<String> {
+pub fn find_enclosing_scope(scopes: &[FunctionScope], row: usize) -> Option<String> {
     // Find the innermost (smallest range) scope containing this row
     scopes
         .iter()
@@ -429,14 +436,30 @@ fn parse_rust_use(text: &str) -> ImportDep {
 
 /// Generic dependency extraction dispatching to the correct language extractor.
 pub fn extract_deps(path: &Path, source: &str, language: Language) -> RawDeps {
-    match language {
-        Language::Python => extract_python_deps(path, source),
-        Language::Rust => extract_rust_deps(path, source),
-        Language::TypeScript | Language::JavaScript => extract_js_deps(path, source, language),
-        Language::Go => extract_go_deps(path, source),
-        Language::Java => extract_java_deps(path, source),
-        Language::C | Language::Cpp => extract_c_deps(path, source, language),
+    if let Some(name) = crate::languages::builtin_dep_extractor_name(language) {
+        match name {
+            "extract_python_deps" => return extract_python_deps(path, source),
+            "extract_rust_deps" => return extract_rust_deps(path, source),
+            "extract_js_deps" => return extract_js_deps(path, source, language),
+            "extract_go_deps" => return extract_go_deps(path, source),
+            "extract_java_deps" => return extract_java_deps(path, source),
+            "extract_c_deps" => return extract_c_deps(path, source, language),
+            "extract_csharp_deps" => return extract_csharp_deps(path, source),
+            "extract_php_deps" => return extract_php_deps(path, source),
+            "extract_ruby_deps" => return extract_ruby_deps(path, source),
+            "extract_kotlin_deps" => return extract_kotlin_deps(path, source),
+            "extract_swift_deps" => return extract_swift_deps(path, source),
+            "extract_scala_deps" => return extract_scala_deps(path, source),
+            "extract_bash_deps" => return extract_bash_deps(path, source),
+            other => {
+                eprintln!(
+                    "warning: unrecognized dep extractor '{}' for {:?}",
+                    other, language
+                );
+            }
+        }
     }
+    RawDeps::default()
 }
 
 // ---------------------------------------------------------------------------
@@ -461,18 +484,38 @@ pub fn extract_js_deps(_path: &Path, source: &str, language: Language) -> RawDep
     let mut scopes: Vec<FunctionScope> = Vec::new();
     collect_js_scopes(&root, source, &mut scopes, None);
 
-    // Collect imports, inheritance, calls, and render/state signals.
-    // JSX composition is modeled as `renders` (not `calls`) to avoid duplicate
-    // Invokes+Renders edges for the same UI relationship.
+    // Core deps: imports, inheritance, and calls.
+    // Paradigm-specific deps (JSX renders, Redux state signals) are handled
+    // by the TOML-driven paradigm engine (query_engine.rs + features.rs).
     collect_js_imports(&root, source, &mut deps);
     collect_js_calls(&root, source, &scopes, &mut deps.calls);
-    collect_js_jsx_usage(&root, source, &scopes, &mut deps.renders);
-    collect_js_frontend_signals(&root, source, &scopes, &mut deps);
 
     deps
 }
 
-fn collect_js_scopes(
+/// Build function scopes from source for a given language.
+///
+/// Convenience wrapper that handles tree-sitter parsing internally.
+/// Only produces scopes for JS/TS languages; returns empty for others.
+pub fn build_scopes(source: &str, language: Language) -> Vec<FunctionScope> {
+    if language != Language::TYPESCRIPT && language != Language::JAVASCRIPT {
+        return Vec::new();
+    }
+    let ts_lang = language.ts_language();
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&ts_lang).is_err() {
+        return Vec::new();
+    }
+    let Some(tree) = parser.parse(source.as_bytes(), None) else {
+        return Vec::new();
+    };
+    let root = tree.root_node();
+    let mut scopes = Vec::new();
+    collect_js_scopes(&root, source, &mut scopes, None);
+    scopes
+}
+
+pub fn collect_js_scopes(
     node: &tree_sitter::Node,
     source: &str,
     scopes: &mut Vec<FunctionScope>,
@@ -720,403 +763,13 @@ fn has_child_kind(node: &tree_sitter::Node, kind: &str) -> bool {
     node.children(&mut cursor).any(|c| c.kind() == kind)
 }
 
-fn collect_js_jsx_usage(
-    node: &tree_sitter::Node,
-    source: &str,
-    scopes: &[FunctionScope],
-    renders: &mut Vec<CallDep>,
-) {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        match child.kind() {
-            "jsx_self_closing_element" | "jsx_opening_element" => {
-                if let Some(name_node) = child.child_by_field_name("name") {
-                    let tag = &source[name_node.byte_range()];
-                    // Uppercase = component, lowercase = HTML element.
-                    // For dotted names like Foo.Bar, extract the last segment
-                    // so it can resolve to entity "Bar".
-                    if tag.starts_with(|c: char| c.is_uppercase()) {
-                        let callee = tag.rsplit('.').next().unwrap_or(tag).to_string();
-                        let call_row = child.start_position().row;
-                        let caller = find_enclosing_scope(scopes, call_row)
-                            .unwrap_or_else(|| "<module>".to_string());
-                        renders.push(CallDep {
-                            caller_entity: caller,
-                            callee,
-                        });
-                    }
-                }
-            }
-            _ => {}
-        }
-        collect_js_jsx_usage(&child, source, scopes, renders);
-    }
-}
-
-fn collect_js_frontend_signals(
-    node: &tree_sitter::Node,
-    source: &str,
-    scopes: &[FunctionScope],
-    deps: &mut RawDeps,
-) {
-    let state_context = build_state_signal_context(node, source);
-    // Note: renders are now collected inline by collect_js_jsx_usage (single traversal)
-    collect_js_state_signals(
-        node,
-        source,
-        scopes,
-        &state_context,
-        &mut deps.reads_state,
-        &mut deps.writes_state,
-        &mut deps.dispatches,
-    );
-}
-
-fn build_state_signal_context(node: &tree_sitter::Node, source: &str) -> StateSignalContext {
-    let mut ctx = StateSignalContext::default();
-    // Built-in known names.
-    ctx.selector_hooks.insert("useSelector".to_string());
-    ctx.selector_hooks.insert("useAppSelector".to_string());
-    ctx.dispatch_hooks.insert("useDispatch".to_string());
-    ctx.dispatch_hooks.insert("useAppDispatch".to_string());
-    ctx.dispatch_call_aliases.insert("dispatch".to_string());
-
-    collect_redux_hook_aliases(
-        node,
-        source,
-        &mut ctx.selector_hooks,
-        &mut ctx.dispatch_hooks,
-    );
-    collect_dispatch_call_aliases(
-        node,
-        source,
-        &ctx.dispatch_hooks,
-        &mut ctx.dispatch_call_aliases,
-    );
-    ctx
-}
-
-fn collect_redux_hook_aliases(
-    node: &tree_sitter::Node,
-    source: &str,
-    selector_hooks: &mut HashSet<String>,
-    dispatch_hooks: &mut HashSet<String>,
-) {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "import_statement" {
-            let Some(src_node) = child.child_by_field_name("source") else {
-                continue;
-            };
-            let module =
-                source[src_node.byte_range()].trim_matches(|c: char| c == '\'' || c == '"');
-            if module != "react-redux" {
-                continue;
-            }
-            collect_redux_hook_aliases_from_import_clause(
-                &child,
-                source,
-                selector_hooks,
-                dispatch_hooks,
-            );
-        }
-        collect_redux_hook_aliases(&child, source, selector_hooks, dispatch_hooks);
-    }
-}
-
-fn collect_redux_hook_aliases_from_import_clause(
-    node: &tree_sitter::Node,
-    source: &str,
-    selector_hooks: &mut HashSet<String>,
-    dispatch_hooks: &mut HashSet<String>,
-) {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "import_specifier" {
-            let spec_text = source[child.byte_range()].trim();
-            let (imported, local) = parse_import_specifier_alias(spec_text);
-            if imported == "useSelector" || imported == "useAppSelector" {
-                selector_hooks.insert(local.clone());
-            }
-            if imported == "useDispatch" || imported == "useAppDispatch" {
-                dispatch_hooks.insert(local);
-            }
-        }
-        collect_redux_hook_aliases_from_import_clause(
-            &child,
-            source,
-            selector_hooks,
-            dispatch_hooks,
-        );
-    }
-}
-
-fn parse_import_specifier_alias(spec_text: &str) -> (String, String) {
-    let mut parts = spec_text.splitn(2, " as ");
-    let first = parts.next().unwrap_or("").trim().to_string();
-    let second = parts.next().map(|s| s.trim().to_string());
-    match second {
-        Some(local) if !local.is_empty() => (first, local),
-        _ => (first.clone(), first),
-    }
-}
-
-fn collect_dispatch_call_aliases(
-    node: &tree_sitter::Node,
-    source: &str,
-    dispatch_hooks: &HashSet<String>,
-    dispatch_call_aliases: &mut HashSet<String>,
-) {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if (child.kind() == "lexical_declaration" || child.kind() == "variable_declaration")
-            && let Some(alias) =
-                extract_dispatch_alias_from_declaration(&child, source, dispatch_hooks)
-        {
-            dispatch_call_aliases.insert(alias);
-        }
-        collect_dispatch_call_aliases(&child, source, dispatch_hooks, dispatch_call_aliases);
-    }
-}
-
-fn extract_dispatch_alias_from_declaration(
-    decl_node: &tree_sitter::Node,
-    source: &str,
-    dispatch_hooks: &HashSet<String>,
-) -> Option<String> {
-    let mut cursor = decl_node.walk();
-    for child in decl_node.children(&mut cursor) {
-        if child.kind() != "variable_declarator" {
-            continue;
-        }
-        let Some(name_node) = child.child_by_field_name("name") else {
-            continue;
-        };
-        if name_node.kind() != "identifier" {
-            continue;
-        }
-        let Some(value_node) = child.child_by_field_name("value") else {
-            continue;
-        };
-        if value_node.kind() != "call_expression" {
-            continue;
-        }
-        let Some(func_node) = value_node.child_by_field_name("function") else {
-            continue;
-        };
-        let callee = extract_callee_name(&func_node, source);
-        if dispatch_hooks.contains(&callee) {
-            return Some(source[name_node.byte_range()].to_string());
-        }
-    }
-    None
-}
-
-fn collect_js_state_signals(
-    node: &tree_sitter::Node,
-    source: &str,
-    scopes: &[FunctionScope],
-    state_context: &StateSignalContext,
-    reads_state: &mut Vec<CallDep>,
-    writes_state: &mut Vec<CallDep>,
-    dispatches: &mut Vec<CallDep>,
-) {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "call_expression"
-            && let Some(func_node) = child.child_by_field_name("function")
-        {
-            let callee = extract_callee_name(&func_node, source);
-            if !callee.is_empty() {
-                let caller = find_enclosing_scope(scopes, child.start_position().row)
-                    .unwrap_or_else(|| "<module>".to_string());
-
-                if state_context.selector_hooks.contains(&callee) || is_state_reader_name(&callee) {
-                    reads_state.push(CallDep {
-                        caller_entity: caller.clone(),
-                        callee: callee.clone(),
-                    });
-                    // Also extract selector function name from useSelector(selectFoo)
-                    if state_context.selector_hooks.contains(&callee)
-                        && let Some(sel) = extract_selector_argument(&child, source)
-                    {
-                        reads_state.push(CallDep {
-                            caller_entity: caller.clone(),
-                            callee: sel,
-                        });
-                    }
-                }
-
-                if is_state_setter_name(&callee) {
-                    writes_state.push(CallDep {
-                        caller_entity: caller.clone(),
-                        callee: callee.clone(),
-                    });
-                    if let Some(normalized_store) = normalized_store_target_from_setter(&callee) {
-                        writes_state.push(CallDep {
-                            caller_entity: caller.clone(),
-                            callee: normalized_store,
-                        });
-                    }
-                }
-
-                if state_context.dispatch_call_aliases.contains(&callee) {
-                    let target = extract_dispatch_target(&child, source)
-                        .unwrap_or_else(|| "dispatch".to_string());
-                    dispatches.push(CallDep {
-                        caller_entity: caller,
-                        callee: target,
-                    });
-                }
-            }
-        }
-        collect_js_state_signals(
-            &child,
-            source,
-            scopes,
-            state_context,
-            reads_state,
-            writes_state,
-            dispatches,
-        );
-    }
-}
-
-fn is_state_reader_name(name: &str) -> bool {
-    // Note: useDispatch/useAppDispatch are NOT state readers — they acquire dispatch
-    // capability without reading state. They are handled separately via the dispatch
-    // detection path (callee == "dispatch" → extract_dispatch_target).
-    if matches!(
-        name,
-        "useSelector" | "useAppSelector" | "useStore" | "getState" | "useAtomValue"
-    ) {
-        return true;
-    }
-    // RTK Query auto-generated hooks: useGetXQuery, useUpdateXMutation
-    if name.starts_with("use")
-        && name.len() > 3
-        && name.chars().nth(3).is_some_and(|c| c.is_ascii_uppercase())
-        && (name.ends_with("Query") || name.ends_with("Mutation"))
-    {
-        return true;
-    }
-    false
-}
-
-fn is_state_setter_name(name: &str) -> bool {
-    if name == "setState" {
-        return true;
-    }
-    if !name.starts_with("set") || name.len() <= 3 {
-        return false;
-    }
-    // Exclude common JS built-ins that start with "set" + uppercase
-    if matches!(
-        name,
-        "setTimeout" | "setInterval" | "setImmediate" | "setPrototypeOf"
-    ) {
-        return false;
-    }
-    name.chars().nth(3).is_some_and(|c| c.is_ascii_uppercase())
-}
-
-fn normalized_store_target_from_setter(setter_name: &str) -> Option<String> {
-    if !(setter_name.ends_with("Store") || setter_name.ends_with("Slice")) {
-        return None;
-    }
-    if !setter_name.starts_with("set") || setter_name.len() <= 3 {
-        return None;
-    }
-    let mut chars = setter_name[3..].chars();
-    let first = chars.next()?;
-    let mut normalized = String::new();
-    normalized.push(first.to_ascii_lowercase());
-    normalized.extend(chars);
-    if normalized.is_empty() {
-        None
-    } else {
-        Some(normalized)
-    }
-}
-
-fn extract_dispatch_target(call_expr: &tree_sitter::Node, source: &str) -> Option<String> {
-    let args_node = call_expr.child_by_field_name("arguments")?;
-    let mut cursor = args_node.walk();
-    for arg in args_node.children(&mut cursor) {
-        if !arg.is_named() {
-            continue;
-        }
-        // Best case: dispatch(actionCreator(...)) — extract the function name
-        if arg.kind() == "call_expression"
-            && let Some(func_node) = arg.child_by_field_name("function")
-        {
-            let callee = extract_callee_name(&func_node, source);
-            if !callee.is_empty() {
-                return Some(callee);
-            }
-        }
-
-        // Identifier reference: dispatch(someAction) — plain variable
-        if arg.kind() == "identifier" {
-            let text = source[arg.byte_range()].trim();
-            if !text.is_empty() {
-                return Some(text.to_string());
-            }
-        }
-
-        // Member expression: dispatch(actions.login)
-        if arg.kind() == "member_expression"
-            && let Some(prop) = arg.child_by_field_name("property")
-        {
-            let text = source[prop.byte_range()].trim();
-            if !text.is_empty() {
-                return Some(text.to_string());
-            }
-        }
-
-        // Skip object literals, template strings, and other non-identifier arguments
-        // to avoid producing noisy unresolved symbols.
-        break;
-    }
-    None
-}
-
-/// Extract the selector function name from useSelector(selectFoo) calls.
-fn extract_selector_argument(call_expr: &tree_sitter::Node, source: &str) -> Option<String> {
-    let args_node = call_expr.child_by_field_name("arguments")?;
-    let mut cursor = args_node.walk();
-    for arg in args_node.children(&mut cursor) {
-        if !arg.is_named() {
-            continue;
-        }
-        // Direct identifier: useSelector(selectUser)
-        if arg.kind() == "identifier" {
-            let text = source[arg.byte_range()].trim();
-            if !text.is_empty() {
-                return Some(text.to_string());
-            }
-        }
-        // Member expression: useSelector(selectors.selectUser) — take last segment
-        if arg.kind() == "member_expression"
-            && let Some(prop) = arg.child_by_field_name("property")
-        {
-            let text = source[prop.byte_range()].trim();
-            if !text.is_empty() {
-                return Some(text.to_string());
-            }
-        }
-        break; // Only check first argument
-    }
-    None
-}
-
 // ---------------------------------------------------------------------------
 // Go
 // ---------------------------------------------------------------------------
 
 /// Extract deps from Go source.
 pub fn extract_go_deps(_path: &Path, source: &str) -> RawDeps {
-    let lang = Language::Go.ts_language();
+    let lang = Language::GO.ts_language();
     let mut parser = tree_sitter::Parser::new();
     if parser.set_language(&lang).is_err() {
         return RawDeps::default();
@@ -1244,7 +897,7 @@ fn collect_go_calls(
 
 /// Extract deps from Java source.
 pub fn extract_java_deps(_path: &Path, source: &str) -> RawDeps {
-    let lang = Language::Java.ts_language();
+    let lang = Language::JAVA.ts_language();
     let mut parser = tree_sitter::Parser::new();
     if parser.set_language(&lang).is_err() {
         return RawDeps::default();
@@ -1443,7 +1096,7 @@ pub fn extract_c_deps(_path: &Path, source: &str, language: Language) -> RawDeps
     }
 
     // C++: collect inheritance from class_specifier
-    if language == Language::Cpp {
+    if language == Language::CPP {
         collect_cpp_inheritance(&root, source, &mut deps.inherits);
     }
 
@@ -1529,5 +1182,1193 @@ fn collect_c_calls(
             }
         }
         collect_c_calls(&child, source, scopes, calls);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C#
+// ---------------------------------------------------------------------------
+
+/// Extract deps from C# source.
+pub fn extract_csharp_deps(_path: &Path, source: &str) -> RawDeps {
+    let lang = Language::CSHARP.ts_language();
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&lang).is_err() {
+        return RawDeps::default();
+    }
+    let Some(tree) = parser.parse(source.as_bytes(), None) else {
+        return RawDeps::default();
+    };
+
+    let mut deps = RawDeps::default();
+    let root = tree.root_node();
+
+    // Collect scopes
+    let mut scopes: Vec<FunctionScope> = Vec::new();
+    collect_csharp_scopes(&root, source, &mut scopes, None);
+
+    // Collect imports and inheritance
+    collect_csharp_imports_and_inheritance(&root, source, &mut deps);
+
+    // Collect calls
+    collect_csharp_calls(&root, source, &scopes, &mut deps.calls);
+
+    deps
+}
+
+fn collect_csharp_scopes(
+    node: &tree_sitter::Node,
+    source: &str,
+    scopes: &mut Vec<FunctionScope>,
+    parent_class: Option<&str>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "method_declaration" | "constructor_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let name = source[name_node.byte_range()].to_string();
+                    let scope_name = match parent_class {
+                        Some(cls) => format!("{}.{}", cls, name),
+                        None => name,
+                    };
+                    scopes.push(FunctionScope {
+                        name: scope_name,
+                        start_row: child.start_position().row,
+                        end_row: child.end_position().row,
+                    });
+                }
+            }
+            "class_declaration" | "struct_declaration" | "interface_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let cls = source[name_node.byte_range()].to_string();
+                    collect_csharp_scopes(&child, source, scopes, Some(&cls));
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        collect_csharp_scopes(&child, source, scopes, parent_class);
+    }
+}
+
+fn collect_csharp_imports_and_inheritance(
+    node: &tree_sitter::Node,
+    source: &str,
+    deps: &mut RawDeps,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "using_directive" => {
+                let text = source[child.byte_range()].trim().to_string();
+                let module = text
+                    .trim_start_matches("global ")
+                    .trim_start_matches("using ")
+                    .trim_start_matches("static ")
+                    .trim_end_matches(';')
+                    .trim()
+                    .to_string();
+                // Skip alias usings like "using Foo = Bar.Baz"
+                if !module.contains('=') {
+                    deps.imports.push(ImportDep {
+                        module,
+                        symbols: Vec::new(),
+                    });
+                }
+            }
+            "class_declaration" | "struct_declaration" | "interface_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let class_name = source[name_node.byte_range()].to_string();
+                    // Check for base_list (: BaseClass, IInterface)
+                    let mut ic = child.walk();
+                    for c in child.children(&mut ic) {
+                        if c.kind() == "base_list" {
+                            let text = &source[c.byte_range()];
+                            // Strip leading ":"
+                            let text = text.trim_start_matches(':').trim();
+                            for base in text.split(',') {
+                                let parent = base.trim().to_string();
+                                // Strip generic type parameters
+                                let parent =
+                                    parent.split('<').next().unwrap_or("").trim().to_string();
+                                if !parent.is_empty() {
+                                    deps.inherits.push(InheritDep {
+                                        child_class: class_name.clone(),
+                                        parent_class: parent,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                collect_csharp_imports_and_inheritance(&child, source, deps);
+            }
+            _ => {
+                collect_csharp_imports_and_inheritance(&child, source, deps);
+            }
+        }
+    }
+}
+
+fn collect_csharp_calls(
+    node: &tree_sitter::Node,
+    source: &str,
+    scopes: &[FunctionScope],
+    calls: &mut Vec<CallDep>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "invocation_expression" {
+            // The function part is the first child
+            if let Some(func_node) = child.child(0) {
+                let callee = match func_node.kind() {
+                    "member_access_expression" => {
+                        // obj.Method() — extract method name
+                        func_node
+                            .child_by_field_name("name")
+                            .map(|n| source[n.byte_range()].to_string())
+                            .unwrap_or_default()
+                    }
+                    "identifier" => source[func_node.byte_range()].to_string(),
+                    _ => {
+                        let text = &source[func_node.byte_range()];
+                        text.rsplit('.').next().unwrap_or("").trim().to_string()
+                    }
+                };
+                if !callee.is_empty() {
+                    let caller = find_enclosing_scope(scopes, child.start_position().row)
+                        .unwrap_or_else(|| "<module>".to_string());
+                    calls.push(CallDep {
+                        caller_entity: caller,
+                        callee,
+                    });
+                }
+            }
+        }
+        collect_csharp_calls(&child, source, scopes, calls);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PHP
+// ---------------------------------------------------------------------------
+
+/// Extract deps from PHP source.
+pub fn extract_php_deps(_path: &Path, source: &str) -> RawDeps {
+    let lang = Language::PHP.ts_language();
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&lang).is_err() {
+        return RawDeps::default();
+    }
+    let Some(tree) = parser.parse(source.as_bytes(), None) else {
+        return RawDeps::default();
+    };
+
+    let mut deps = RawDeps::default();
+    let root = tree.root_node();
+
+    // Collect scopes
+    let mut scopes: Vec<FunctionScope> = Vec::new();
+    collect_php_scopes(&root, source, &mut scopes, None);
+
+    // Collect imports and inheritance
+    collect_php_imports_and_inheritance(&root, source, &mut deps);
+
+    // Collect calls
+    collect_php_calls(&root, source, &scopes, &mut deps.calls);
+
+    deps
+}
+
+fn collect_php_scopes(
+    node: &tree_sitter::Node,
+    source: &str,
+    scopes: &mut Vec<FunctionScope>,
+    parent_class: Option<&str>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "function_definition" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let name = source[name_node.byte_range()].to_string();
+                    let scope_name = match parent_class {
+                        Some(cls) => format!("{}.{}", cls, name),
+                        None => name,
+                    };
+                    scopes.push(FunctionScope {
+                        name: scope_name,
+                        start_row: child.start_position().row,
+                        end_row: child.end_position().row,
+                    });
+                }
+            }
+            "method_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let name = source[name_node.byte_range()].to_string();
+                    let scope_name = match parent_class {
+                        Some(cls) => format!("{}.{}", cls, name),
+                        None => name,
+                    };
+                    scopes.push(FunctionScope {
+                        name: scope_name,
+                        start_row: child.start_position().row,
+                        end_row: child.end_position().row,
+                    });
+                }
+            }
+            "class_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let cls = source[name_node.byte_range()].to_string();
+                    collect_php_scopes(&child, source, scopes, Some(&cls));
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        collect_php_scopes(&child, source, scopes, parent_class);
+    }
+}
+
+fn collect_php_imports_and_inheritance(node: &tree_sitter::Node, source: &str, deps: &mut RawDeps) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "namespace_use_declaration" => {
+                // use Foo\Bar\Baz; or use Foo\Bar\{Baz, Qux};
+                let text = source[child.byte_range()].trim().to_string();
+                let module = text
+                    .trim_start_matches("use ")
+                    .trim_start_matches("function ")
+                    .trim_start_matches("const ")
+                    .trim_end_matches(';')
+                    .trim()
+                    .to_string();
+                deps.imports.push(ImportDep {
+                    module,
+                    symbols: Vec::new(),
+                });
+            }
+            "class_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let class_name = source[name_node.byte_range()].to_string();
+                    // Check for extends (base_clause)
+                    let mut ic = child.walk();
+                    for c in child.children(&mut ic) {
+                        match c.kind() {
+                            "base_clause" => {
+                                // extends ParentClass
+                                let text = &source[c.byte_range()];
+                                let text = text.trim_start_matches("extends").trim();
+                                for parent in text.split(',') {
+                                    let parent = parent.trim().to_string();
+                                    if !parent.is_empty() {
+                                        deps.inherits.push(InheritDep {
+                                            child_class: class_name.clone(),
+                                            parent_class: parent,
+                                        });
+                                    }
+                                }
+                            }
+                            "class_interface_clause" => {
+                                // implements Interface1, Interface2
+                                let text = &source[c.byte_range()];
+                                let text = text.trim_start_matches("implements").trim();
+                                for iface in text.split(',') {
+                                    let iface = iface.trim().to_string();
+                                    if !iface.is_empty() {
+                                        deps.inherits.push(InheritDep {
+                                            child_class: class_name.clone(),
+                                            parent_class: iface,
+                                        });
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                collect_php_imports_and_inheritance(&child, source, deps);
+            }
+            _ => {
+                collect_php_imports_and_inheritance(&child, source, deps);
+            }
+        }
+    }
+}
+
+fn collect_php_calls(
+    node: &tree_sitter::Node,
+    source: &str,
+    scopes: &[FunctionScope],
+    calls: &mut Vec<CallDep>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "function_call_expression" => {
+                if let Some(func_node) = child.child_by_field_name("function") {
+                    let callee = extract_callee_name(&func_node, source);
+                    if !callee.is_empty() {
+                        let caller = find_enclosing_scope(scopes, child.start_position().row)
+                            .unwrap_or_else(|| "<module>".to_string());
+                        calls.push(CallDep {
+                            caller_entity: caller,
+                            callee,
+                        });
+                    }
+                }
+            }
+            "member_call_expression" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let callee = source[name_node.byte_range()].to_string();
+                    if !callee.is_empty() {
+                        let caller = find_enclosing_scope(scopes, child.start_position().row)
+                            .unwrap_or_else(|| "<module>".to_string());
+                        calls.push(CallDep {
+                            caller_entity: caller,
+                            callee,
+                        });
+                    }
+                }
+            }
+            "scoped_call_expression" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let callee = source[name_node.byte_range()].to_string();
+                    if !callee.is_empty() {
+                        let caller = find_enclosing_scope(scopes, child.start_position().row)
+                            .unwrap_or_else(|| "<module>".to_string());
+                        calls.push(CallDep {
+                            caller_entity: caller,
+                            callee,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+        collect_php_calls(&child, source, scopes, calls);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ruby
+// ---------------------------------------------------------------------------
+
+/// Extract deps from Ruby source.
+pub fn extract_ruby_deps(_path: &Path, source: &str) -> RawDeps {
+    let lang = Language::RUBY.ts_language();
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&lang).is_err() {
+        return RawDeps::default();
+    }
+    let Some(tree) = parser.parse(source.as_bytes(), None) else {
+        return RawDeps::default();
+    };
+
+    let mut deps = RawDeps::default();
+    let root = tree.root_node();
+
+    // Collect scopes
+    let mut scopes: Vec<FunctionScope> = Vec::new();
+    collect_ruby_scopes(&root, source, &mut scopes, None);
+
+    // Collect imports, inheritance, and calls
+    collect_ruby_imports_and_inheritance(&root, source, &mut deps);
+    collect_ruby_calls(&root, source, &scopes, &mut deps);
+
+    deps
+}
+
+fn collect_ruby_scopes(
+    node: &tree_sitter::Node,
+    source: &str,
+    scopes: &mut Vec<FunctionScope>,
+    parent_class: Option<&str>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "method" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let name = source[name_node.byte_range()].to_string();
+                    let scope_name = match parent_class {
+                        Some(cls) => format!("{}.{}", cls, name),
+                        None => name,
+                    };
+                    scopes.push(FunctionScope {
+                        name: scope_name,
+                        start_row: child.start_position().row,
+                        end_row: child.end_position().row,
+                    });
+                }
+            }
+            "singleton_method" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let name = source[name_node.byte_range()].to_string();
+                    let scope_name = match parent_class {
+                        Some(cls) => format!("{}.{}", cls, name),
+                        None => name,
+                    };
+                    scopes.push(FunctionScope {
+                        name: scope_name,
+                        start_row: child.start_position().row,
+                        end_row: child.end_position().row,
+                    });
+                }
+            }
+            "class" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let cls = source[name_node.byte_range()].to_string();
+                    collect_ruby_scopes(&child, source, scopes, Some(&cls));
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        collect_ruby_scopes(&child, source, scopes, parent_class);
+    }
+}
+
+fn collect_ruby_imports_and_inheritance(
+    node: &tree_sitter::Node,
+    source: &str,
+    deps: &mut RawDeps,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "call" => {
+                // require 'foo' or require_relative 'bar'
+                if let Some(method_node) = child.child_by_field_name("method") {
+                    let method_name = &source[method_node.byte_range()];
+                    if (method_name == "require" || method_name == "require_relative")
+                        && let Some(args) = child.child_by_field_name("arguments")
+                    {
+                        let text = source[args.byte_range()]
+                            .trim_matches(|c: char| {
+                                c == '(' || c == ')' || c == '\'' || c == '"' || c == ' '
+                            })
+                            .to_string();
+                        if !text.is_empty() {
+                            deps.imports.push(ImportDep {
+                                module: text,
+                                symbols: Vec::new(),
+                            });
+                        }
+                    }
+                }
+            }
+            "class" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let class_name = source[name_node.byte_range()].to_string();
+                    // Check for superclass
+                    if let Some(superclass) = child.child_by_field_name("superclass") {
+                        let parent = source[superclass.byte_range()].trim().to_string();
+                        if !parent.is_empty() {
+                            deps.inherits.push(InheritDep {
+                                child_class: class_name.clone(),
+                                parent_class: parent,
+                            });
+                        }
+                    }
+                    // Check for include/extend inside class body
+                    collect_ruby_mixins(&child, source, &class_name, deps);
+                }
+                collect_ruby_imports_and_inheritance(&child, source, deps);
+            }
+            _ => {
+                collect_ruby_imports_and_inheritance(&child, source, deps);
+            }
+        }
+    }
+}
+
+/// Collect `include Module` and `extend Module` calls inside a class body.
+fn collect_ruby_mixins(
+    node: &tree_sitter::Node,
+    source: &str,
+    class_name: &str,
+    deps: &mut RawDeps,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "call"
+            && let Some(method_node) = child.child_by_field_name("method")
+        {
+            let method_name = &source[method_node.byte_range()];
+            if (method_name == "include" || method_name == "extend")
+                && let Some(args) = child.child_by_field_name("arguments")
+            {
+                let mut ac = args.walk();
+                for arg in args.children(&mut ac) {
+                    if arg.kind() == "constant" || arg.kind() == "scope_resolution" {
+                        let mixin = source[arg.byte_range()].trim().to_string();
+                        if !mixin.is_empty() {
+                            deps.inherits.push(InheritDep {
+                                child_class: class_name.to_string(),
+                                parent_class: mixin,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        collect_ruby_mixins(&child, source, class_name, deps);
+    }
+}
+
+fn collect_ruby_calls(
+    node: &tree_sitter::Node,
+    source: &str,
+    scopes: &[FunctionScope],
+    deps: &mut RawDeps,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "call"
+            && let Some(method_node) = child.child_by_field_name("method")
+        {
+            let callee = source[method_node.byte_range()].to_string();
+            // Skip require/require_relative/include/extend — already handled
+            if !callee.is_empty()
+                && callee != "require"
+                && callee != "require_relative"
+                && callee != "include"
+                && callee != "extend"
+            {
+                let caller = find_enclosing_scope(scopes, child.start_position().row)
+                    .unwrap_or_else(|| "<module>".to_string());
+                deps.calls.push(CallDep {
+                    caller_entity: caller,
+                    callee,
+                });
+            }
+        }
+        collect_ruby_calls(&child, source, scopes, deps);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Kotlin
+// ---------------------------------------------------------------------------
+
+/// Extract deps from Kotlin source.
+pub fn extract_kotlin_deps(_path: &Path, source: &str) -> RawDeps {
+    let lang = Language::KOTLIN.ts_language();
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&lang).is_err() {
+        return RawDeps::default();
+    }
+    let Some(tree) = parser.parse(source.as_bytes(), None) else {
+        return RawDeps::default();
+    };
+
+    let mut deps = RawDeps::default();
+    let root = tree.root_node();
+
+    // Collect scopes
+    let mut scopes: Vec<FunctionScope> = Vec::new();
+    collect_kotlin_scopes(&root, source, &mut scopes, None);
+
+    // Collect imports and inheritance
+    collect_kotlin_imports_and_inheritance(&root, source, &mut deps);
+
+    // Collect calls
+    collect_kotlin_calls(&root, source, &scopes, &mut deps.calls);
+
+    deps
+}
+
+fn collect_kotlin_scopes(
+    node: &tree_sitter::Node,
+    source: &str,
+    scopes: &mut Vec<FunctionScope>,
+    parent_class: Option<&str>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "function_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let name = source[name_node.byte_range()].to_string();
+                    let scope_name = match parent_class {
+                        Some(cls) => format!("{}.{}", cls, name),
+                        None => name,
+                    };
+                    scopes.push(FunctionScope {
+                        name: scope_name,
+                        start_row: child.start_position().row,
+                        end_row: child.end_position().row,
+                    });
+                }
+            }
+            "class_declaration" | "object_declaration" | "interface_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let cls = source[name_node.byte_range()].to_string();
+                    collect_kotlin_scopes(&child, source, scopes, Some(&cls));
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        collect_kotlin_scopes(&child, source, scopes, parent_class);
+    }
+}
+
+fn collect_kotlin_imports_and_inheritance(
+    node: &tree_sitter::Node,
+    source: &str,
+    deps: &mut RawDeps,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            // "import_header" (old grammar) / "import" (kotlin-ng grammar)
+            "import_header" | "import" if child.is_named() => {
+                let text = source[child.byte_range()].trim().to_string();
+                let module = text.trim_start_matches("import ").trim().to_string();
+                if !module.is_empty() {
+                    let parts: Vec<&str> = module.rsplitn(2, '.').collect();
+                    if parts.len() == 2 {
+                        deps.imports.push(ImportDep {
+                            module: parts[1].to_string(),
+                            symbols: vec![parts[0].to_string()],
+                        });
+                    } else {
+                        deps.imports.push(ImportDep {
+                            module,
+                            symbols: Vec::new(),
+                        });
+                    }
+                }
+            }
+            "class_declaration" | "object_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let class_name = source[name_node.byte_range()].to_string();
+                    // Look for delegation_specifier nodes in the class
+                    collect_kotlin_supertypes(&child, source, &class_name, &mut deps.inherits);
+                }
+                collect_kotlin_imports_and_inheritance(&child, source, deps);
+            }
+            _ => {
+                collect_kotlin_imports_and_inheritance(&child, source, deps);
+            }
+        }
+    }
+}
+
+fn collect_kotlin_supertypes(
+    node: &tree_sitter::Node,
+    source: &str,
+    class_name: &str,
+    inherits: &mut Vec<InheritDep>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "delegation_specifier" {
+            let text = source[child.byte_range()].trim().to_string();
+            // Strip constructor args and generic params
+            let parent = text
+                .split('(')
+                .next()
+                .unwrap_or("")
+                .split('<')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !parent.is_empty() {
+                inherits.push(InheritDep {
+                    child_class: class_name.to_string(),
+                    parent_class: parent,
+                });
+            }
+        } else {
+            collect_kotlin_supertypes(&child, source, class_name, inherits);
+        }
+    }
+}
+
+fn collect_kotlin_calls(
+    node: &tree_sitter::Node,
+    source: &str,
+    scopes: &[FunctionScope],
+    calls: &mut Vec<CallDep>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "call_expression" {
+            // The function reference is typically the first child
+            if let Some(func_node) = child.child(0) {
+                let callee = match func_node.kind() {
+                    "simple_identifier" => source[func_node.byte_range()].to_string(),
+                    "navigation_expression" => {
+                        // obj.method — take the last identifier
+                        let text = &source[func_node.byte_range()];
+                        text.rsplit('.').next().unwrap_or("").trim().to_string()
+                    }
+                    _ => {
+                        let text = &source[func_node.byte_range()];
+                        text.rsplit('.').next().unwrap_or("").trim().to_string()
+                    }
+                };
+                if !callee.is_empty() {
+                    let caller = find_enclosing_scope(scopes, child.start_position().row)
+                        .unwrap_or_else(|| "<module>".to_string());
+                    calls.push(CallDep {
+                        caller_entity: caller,
+                        callee,
+                    });
+                }
+            }
+        }
+        collect_kotlin_calls(&child, source, scopes, calls);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Swift
+// ---------------------------------------------------------------------------
+
+/// Extract deps from Swift source.
+pub fn extract_swift_deps(_path: &Path, source: &str) -> RawDeps {
+    let lang = Language::SWIFT.ts_language();
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&lang).is_err() {
+        return RawDeps::default();
+    }
+    let Some(tree) = parser.parse(source.as_bytes(), None) else {
+        return RawDeps::default();
+    };
+
+    let mut deps = RawDeps::default();
+    let root = tree.root_node();
+
+    // Collect scopes
+    let mut scopes: Vec<FunctionScope> = Vec::new();
+    collect_swift_scopes(&root, source, &mut scopes, None);
+
+    // Collect imports and inheritance
+    collect_swift_imports_and_inheritance(&root, source, &mut deps);
+
+    // Collect calls
+    collect_swift_calls(&root, source, &scopes, &mut deps.calls);
+
+    deps
+}
+
+fn collect_swift_scopes(
+    node: &tree_sitter::Node,
+    source: &str,
+    scopes: &mut Vec<FunctionScope>,
+    parent_class: Option<&str>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "function_declaration" | "init_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let name = source[name_node.byte_range()].to_string();
+                    let scope_name = match parent_class {
+                        Some(cls) => format!("{}.{}", cls, name),
+                        None => name,
+                    };
+                    scopes.push(FunctionScope {
+                        name: scope_name,
+                        start_row: child.start_position().row,
+                        end_row: child.end_position().row,
+                    });
+                } else if child.kind() == "init_declaration" {
+                    // init doesn't always have a "name" field
+                    let scope_name = match parent_class {
+                        Some(cls) => format!("{}.init", cls),
+                        None => "init".to_string(),
+                    };
+                    scopes.push(FunctionScope {
+                        name: scope_name,
+                        start_row: child.start_position().row,
+                        end_row: child.end_position().row,
+                    });
+                }
+            }
+            "class_declaration"
+            | "struct_declaration"
+            | "protocol_declaration"
+            | "enum_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let cls = source[name_node.byte_range()].to_string();
+                    collect_swift_scopes(&child, source, scopes, Some(&cls));
+                    continue;
+                }
+            }
+            "extension_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let ext_name = source[name_node.byte_range()].to_string();
+                    collect_swift_scopes(&child, source, scopes, Some(&ext_name));
+                }
+                continue;
+            }
+            _ => {}
+        }
+        collect_swift_scopes(&child, source, scopes, parent_class);
+    }
+}
+
+fn collect_swift_imports_and_inheritance(
+    node: &tree_sitter::Node,
+    source: &str,
+    deps: &mut RawDeps,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "import_declaration" => {
+                let text = source[child.byte_range()].trim().to_string();
+                let module = text.trim_start_matches("import ").trim().to_string();
+                if !module.is_empty() {
+                    deps.imports.push(ImportDep {
+                        module,
+                        symbols: Vec::new(),
+                    });
+                }
+            }
+            "class_declaration" | "struct_declaration" | "enum_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let class_name = source[name_node.byte_range()].to_string();
+                    // Look for inheritance specifiers (type_identifier after ":")
+                    collect_swift_supertypes(&child, source, &class_name, &mut deps.inherits);
+                }
+                collect_swift_imports_and_inheritance(&child, source, deps);
+            }
+            _ => {
+                collect_swift_imports_and_inheritance(&child, source, deps);
+            }
+        }
+    }
+}
+
+fn collect_swift_supertypes(
+    node: &tree_sitter::Node,
+    source: &str,
+    class_name: &str,
+    inherits: &mut Vec<InheritDep>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "inheritance_specifier" || child.kind() == "type_identifier" {
+            // Only top-level type_identifiers that are direct children of the class
+            // header are supertypes. Check if this is within an inheritance clause.
+            if child.kind() == "inheritance_specifier" {
+                // inheritance_specifier wraps a type; split by comma in case
+                // the grammar bundles multiple conformances into one node
+                let text = source[child.byte_range()].trim().to_string();
+                for part in text.split(',') {
+                    let parent = part.split('<').next().unwrap_or("").trim().to_string();
+                    if !parent.is_empty() {
+                        inherits.push(InheritDep {
+                            child_class: class_name.to_string(),
+                            parent_class: parent,
+                        });
+                    }
+                }
+            }
+        } else {
+            collect_swift_supertypes(&child, source, class_name, inherits);
+        }
+    }
+}
+
+fn collect_swift_calls(
+    node: &tree_sitter::Node,
+    source: &str,
+    scopes: &[FunctionScope],
+    calls: &mut Vec<CallDep>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "call_expression" {
+            // The callee is the first child
+            if let Some(func_node) = child.child(0) {
+                let callee = match func_node.kind() {
+                    "simple_identifier" => source[func_node.byte_range()].to_string(),
+                    "navigation_expression" => {
+                        // obj.method — extract method name
+                        let text = &source[func_node.byte_range()];
+                        text.rsplit('.').next().unwrap_or("").trim().to_string()
+                    }
+                    _ => {
+                        let text = &source[func_node.byte_range()];
+                        text.rsplit('.').next().unwrap_or("").trim().to_string()
+                    }
+                };
+                if !callee.is_empty() {
+                    let caller = find_enclosing_scope(scopes, child.start_position().row)
+                        .unwrap_or_else(|| "<module>".to_string());
+                    calls.push(CallDep {
+                        caller_entity: caller,
+                        callee,
+                    });
+                }
+            }
+        }
+        collect_swift_calls(&child, source, scopes, calls);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scala
+// ---------------------------------------------------------------------------
+
+/// Extract deps from Scala source.
+pub fn extract_scala_deps(_path: &Path, source: &str) -> RawDeps {
+    let lang = Language::SCALA.ts_language();
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&lang).is_err() {
+        return RawDeps::default();
+    }
+    let Some(tree) = parser.parse(source.as_bytes(), None) else {
+        return RawDeps::default();
+    };
+
+    let mut deps = RawDeps::default();
+    let root = tree.root_node();
+
+    // Collect scopes
+    let mut scopes: Vec<FunctionScope> = Vec::new();
+    collect_scala_scopes(&root, source, &mut scopes, None);
+
+    // Collect imports and inheritance
+    collect_scala_imports_and_inheritance(&root, source, &mut deps);
+
+    // Collect calls
+    collect_scala_calls(&root, source, &scopes, &mut deps.calls);
+
+    deps
+}
+
+fn collect_scala_scopes(
+    node: &tree_sitter::Node,
+    source: &str,
+    scopes: &mut Vec<FunctionScope>,
+    parent_class: Option<&str>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "function_definition" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let name = source[name_node.byte_range()].to_string();
+                    let scope_name = match parent_class {
+                        Some(cls) => format!("{}.{}", cls, name),
+                        None => name,
+                    };
+                    scopes.push(FunctionScope {
+                        name: scope_name,
+                        start_row: child.start_position().row,
+                        end_row: child.end_position().row,
+                    });
+                }
+            }
+            "class_definition" | "trait_definition" | "object_definition" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let cls = source[name_node.byte_range()].to_string();
+                    collect_scala_scopes(&child, source, scopes, Some(&cls));
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        collect_scala_scopes(&child, source, scopes, parent_class);
+    }
+}
+
+fn collect_scala_imports_and_inheritance(
+    node: &tree_sitter::Node,
+    source: &str,
+    deps: &mut RawDeps,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "import_declaration" => {
+                let text = source[child.byte_range()].trim().to_string();
+                let module = text.trim_start_matches("import ").trim().to_string();
+                if !module.is_empty() {
+                    deps.imports.push(ImportDep {
+                        module,
+                        symbols: Vec::new(),
+                    });
+                }
+            }
+            "class_definition" | "trait_definition" | "object_definition" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let class_name = source[name_node.byte_range()].to_string();
+                    // Look for extends_clause
+                    let mut ic = child.walk();
+                    for c in child.children(&mut ic) {
+                        if c.kind() == "extends_clause" {
+                            let text = &source[c.byte_range()];
+                            let text = text.trim_start_matches("extends").trim();
+                            // May contain "with" for trait mixing
+                            for part in text.split(" with ") {
+                                let parent = part
+                                    .trim()
+                                    .split('(')
+                                    .next()
+                                    .unwrap_or("")
+                                    .split('[')
+                                    .next()
+                                    .unwrap_or("")
+                                    .trim()
+                                    .to_string();
+                                if !parent.is_empty() {
+                                    deps.inherits.push(InheritDep {
+                                        child_class: class_name.clone(),
+                                        parent_class: parent,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                collect_scala_imports_and_inheritance(&child, source, deps);
+            }
+            _ => {
+                collect_scala_imports_and_inheritance(&child, source, deps);
+            }
+        }
+    }
+}
+
+fn collect_scala_calls(
+    node: &tree_sitter::Node,
+    source: &str,
+    scopes: &[FunctionScope],
+    calls: &mut Vec<CallDep>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "call_expression" {
+            if let Some(func_node) = child.child_by_field_name("function") {
+                let callee = extract_callee_name(&func_node, source);
+                if !callee.is_empty() {
+                    let caller = find_enclosing_scope(scopes, child.start_position().row)
+                        .unwrap_or_else(|| "<module>".to_string());
+                    calls.push(CallDep {
+                        caller_entity: caller,
+                        callee,
+                    });
+                }
+            } else if let Some(func_node) = child.child(0) {
+                // Fallback: first child is the callee
+                let callee = extract_callee_name(&func_node, source);
+                if !callee.is_empty() {
+                    let caller = find_enclosing_scope(scopes, child.start_position().row)
+                        .unwrap_or_else(|| "<module>".to_string());
+                    calls.push(CallDep {
+                        caller_entity: caller,
+                        callee,
+                    });
+                }
+            }
+        }
+        collect_scala_calls(&child, source, scopes, calls);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bash
+// ---------------------------------------------------------------------------
+
+/// Extract deps from Bash/Shell source.
+pub fn extract_bash_deps(_path: &Path, source: &str) -> RawDeps {
+    let lang = Language::BASH.ts_language();
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&lang).is_err() {
+        return RawDeps::default();
+    }
+    let Some(tree) = parser.parse(source.as_bytes(), None) else {
+        return RawDeps::default();
+    };
+
+    let mut deps = RawDeps::default();
+    let root = tree.root_node();
+
+    // Collect function scopes
+    let mut scopes: Vec<FunctionScope> = Vec::new();
+    collect_bash_scopes(&root, source, &mut scopes);
+
+    // Collect source/. imports and command calls
+    collect_bash_deps_recursive(&root, source, &scopes, &mut deps);
+
+    deps
+}
+
+fn collect_bash_scopes(node: &tree_sitter::Node, source: &str, scopes: &mut Vec<FunctionScope>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "function_definition"
+            && let Some(name_node) = child.child_by_field_name("name")
+        {
+            scopes.push(FunctionScope {
+                name: source[name_node.byte_range()].to_string(),
+                start_row: child.start_position().row,
+                end_row: child.end_position().row,
+            });
+        }
+        collect_bash_scopes(&child, source, scopes);
+    }
+}
+
+fn collect_bash_deps_recursive(
+    node: &tree_sitter::Node,
+    source: &str,
+    scopes: &[FunctionScope],
+    deps: &mut RawDeps,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "command"
+            && let Some(name_node) = child.child_by_field_name("name")
+        {
+            let cmd_name = source[name_node.byte_range()].to_string();
+            match cmd_name.as_str() {
+                "source" | "." => {
+                    // source ./file.sh or . ./file.sh
+                    // Get the first argument
+                    let mut ac = child.walk();
+                    let arg = child.children(&mut ac).find(|c| {
+                        (c.kind() == "word" || c.kind() == "string" || c.kind() == "raw_string")
+                            && c.id() != name_node.id()
+                    });
+                    if let Some(arg_node) = arg {
+                        let sourced_file = source[arg_node.byte_range()]
+                            .trim_matches('"')
+                            .trim_matches('\'')
+                            .to_string();
+                        if !sourced_file.is_empty() {
+                            deps.imports.push(ImportDep {
+                                module: sourced_file,
+                                symbols: Vec::new(),
+                            });
+                        }
+                    }
+                }
+                _ => {
+                    // Regular command call
+                    if !cmd_name.is_empty() {
+                        let caller = find_enclosing_scope(scopes, child.start_position().row)
+                            .unwrap_or_else(|| "<module>".to_string());
+                        deps.calls.push(CallDep {
+                            caller_entity: caller,
+                            callee: cmd_name,
+                        });
+                    }
+                }
+            }
+        }
+        collect_bash_deps_recursive(&child, source, scopes, deps);
     }
 }

@@ -1,0 +1,47 @@
+schema_version = 1
+name = "express"
+priority = 25
+languages = ["typescript", "javascript"]
+
+[detect]
+deps = ["express"]
+
+[[classify]]
+id = "express.middleware"
+action = { reclassify = "middleware" }
+[classify.match]
+kind = "function"
+source_contains_any = ["(req, res, next)", "(req, res,"]
+file_path_contains = "middleware"
+
+[[classify]]
+id = "express.route"
+action = { reclassify = "route" }
+[classify.match]
+kind = "function"
+source_contains_any = [
+  "router.get(",
+  "router.post(",
+  "router.put(",
+  "router.delete(",
+  "app.get(",
+  "app.post(",
+]
+
+[prompt_hints]
+lifting = """
+- **Route handlers**: describe the HTTP endpoint purpose. "list all users" not "handle GET request"
+- **Middleware** (req, res, next): describe the request/response transformation. "authenticate JWT token" not "call next()"
+"""
+synthesis = """
+- For route files: capture the resource and CRUD operations exposed
+- For middleware files: capture the cross-cutting concern (auth, logging, validation)
+"""
+hierarchy = """
+- Route handlers: "WebEndpoints/resource management/list users"
+- Middleware: "CrossCutting/request pipeline/authenticate requests"
+"""
+discovery = """
+- Group route handlers by resource type (Users, Posts, Auth)
+- Middleware forms a CrossCutting area
+"""

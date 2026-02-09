@@ -1,0 +1,43 @@
+schema_version = 1
+name = "vue"
+priority = 12
+languages = ["typescript", "javascript"]
+
+[detect]
+deps = ["vue"]
+config_files = ["vue.config.js", "nuxt.config.ts"]
+
+[[classify]]
+id = "vue.component"
+action = { reclassify = "component" }
+[classify.match]
+kind = "function"
+source_contains_any = ["defineComponent("]
+name_starts_uppercase = true
+
+[[classify]]
+id = "vue.composable"
+action = { reclassify = "hook" }
+[classify.match]
+kind = "function"
+name_regex = "^use[A-Z]"
+name_min_length = 4
+
+[prompt_hints]
+lifting = """
+- **Components** (defineComponent / PascalCase SFCs): describe what the user sees or does
+- **Composables** (use* functions): describe the reactive state they encapsulate
+- **Store modules** (Pinia/Vuex): describe the state domain they manage
+"""
+synthesis = """
+- For component files: capture the user-facing purpose
+- For composable files: capture the cross-cutting reactive concern
+"""
+hierarchy = """
+- Components: "UserInterface/feature domain/render specific widget"
+- Composables: "StateManagement/feature domain/provide reactive state"
+"""
+discovery = """
+- Group Vue components by feature domain, not by technical layer
+- Composables and their consuming components belong to the same feature area
+"""

@@ -1,0 +1,51 @@
+schema_version = 1
+name = "fastapi"
+priority = 15
+languages = ["python"]
+
+[detect]
+deps = ["fastapi"]
+
+[[classify]]
+id = "fastapi.route"
+action = { reclassify = "route" }
+[classify.match]
+kind = "function"
+source_contains_any = [
+  "@app.get",
+  "@app.post",
+  "@app.put",
+  "@app.delete",
+  "@app.patch",
+  "@router.get",
+  "@router.post",
+  "@router.put",
+  "@router.delete",
+  "@router.patch",
+]
+
+[[classify]]
+id = "fastapi.model"
+action = { reclassify = "model" }
+[classify.match]
+kind = "class"
+source_contains_any = ["BaseModel)"]
+
+[prompt_hints]
+lifting = """
+- **Route handlers** (@router.get / @app.post etc.): describe the API endpoint purpose
+- **Models** (BaseModel subclasses): describe the request/response schema
+- **Dependencies** (Depends()): describe the injected service or validation
+"""
+synthesis = """
+- For router files: capture the API resource and operations
+- For model/schema files: capture the data shape and validation rules
+"""
+hierarchy = """
+- Routes: "WebEndpoints/resource management/list items"
+- Models: "DataModel/request schemas/validate creation input"
+"""
+discovery = """
+- Group FastAPI routers by resource domain
+- Pydantic models form a DataModel area
+"""

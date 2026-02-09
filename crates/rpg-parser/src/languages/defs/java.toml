@@ -1,0 +1,11 @@
+schema_version = 1
+name = "java"
+extensions = ["java"]
+glob = "**/*.java"
+
+[grammar]
+crate_path = "tree_sitter_java::LANGUAGE"
+
+[builtin]
+entity_extractor = "extract_java_entities"
+dep_extractor = "extract_java_deps"

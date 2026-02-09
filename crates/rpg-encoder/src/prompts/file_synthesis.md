@@ -8,12 +8,6 @@ You are a senior software analyst. Given the individual entity features from a s
 5. Preserve domain-specific terms (HTTP, SQL, JSON, etc.)
 6. If the file has a single dominant purpose, the summary can have fewer features
 7. Do NOT simply concatenate or repeat the entity features — synthesize them
-8. For Redux slices: capture the state domain they manage (e.g., "manage authentication state")
-9. For React components: capture what the user sees or does (e.g., "render login form, dispatch authentication")
-10. For pages (Next.js page.tsx): capture the route and user journey step (e.g., "render login page, redirect authenticated users")
-11. For custom hook files: capture the cross-cutting concern they abstract (e.g., "provide authentication state and logout action")
-12. For store configuration files: capture which domains are combined (e.g., "compose root reducer from auth and posts slices")
-13. For API layer files (RTK Query, tRPC): capture the external integrations and data shape (e.g., "fetch posts and user data from REST API")
 
 ## Output Format
 A single line with comma-separated features representing the file's overall functionality:

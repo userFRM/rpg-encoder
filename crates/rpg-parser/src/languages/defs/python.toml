@@ -1,0 +1,11 @@
+schema_version = 1
+name = "python"
+extensions = ["py"]
+glob = "**/*.py"
+
+[grammar]
+crate_path = "tree_sitter_python::LANGUAGE"
+
+[builtin]
+entity_extractor = "extract_python_entities"
+dep_extractor = "extract_python_deps"

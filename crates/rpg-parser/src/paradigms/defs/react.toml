@@ -1,0 +1,75 @@
+schema_version = 1
+name = "react"
+priority = 30
+languages = ["typescript", "javascript"]
+
+[detect]
+deps = ["react"]
+files = ["*.tsx", "*.jsx"]
+
+[[classify]]
+id = "react.class_component"
+action = { reclassify = "component" }
+[classify.match]
+kind = "class"
+source_contains_any = [
+  "extends React.Component",
+  "extends React.PureComponent",
+  "extends Component",
+  "extends PureComponent",
+]
+
+[[classify]]
+id = "react.hook"
+action = { reclassify = "hook" }
+[classify.match]
+kind = "function"
+name_regex = "^use[A-Z]"
+name_min_length = 4
+
+[[classify]]
+id = "react.fn_component"
+action = { reclassify = "component" }
+[classify.match]
+kind = "function"
+name_starts_uppercase = true
+source_contains_any = ["return <", "return (", "=> <", "=> (", "React.FC", "<>"]
+
+# JSX component usage → Renders edges
+# Only in TSX/JSX grammars (TSX has jsx_opening_element, plain TS does not)
+[[dep_queries]]
+id = "react.jsx_renders"
+edge_kind = "renders"
+languages = ["tsx", "javascript"]
+caller = "enclosing_scope"
+callee = "@callee"
+filter_callee = "starts_uppercase"
+query = """
+[
+  (jsx_opening_element name: (identifier) @callee)
+  (jsx_self_closing_element name: (identifier) @callee)
+  (jsx_opening_element name: (member_expression property: (property_identifier) @callee))
+  (jsx_self_closing_element name: (member_expression property: (property_identifier) @callee))
+]
+"""
+
+[prompt_hints]
+lifting = """
+- **Components** (PascalCase functions returning JSX): describe what the user sees or does. "render login form, dispatch authentication" not "return JSX element"
+- **Hooks** (use* functions): describe the state or effect they encapsulate. "track authentication status" not "call useSelector"
+- **Higher-order components**: describe the wrapping behavior. "add authentication guard" not "wrap component"
+"""
+synthesis = """
+- For component files: capture what the user sees and the interactions available
+- For hook files: capture the cross-cutting concern they abstract (e.g., "provide authentication state and logout action")
+"""
+hierarchy = """
+- Components: "UserInterface/feature domain/render specific widget"
+- Hooks: "StateManagement/feature domain/access specific state via hook"
+- Shared UI: "SharedComponents/form controls/render button variants"
+"""
+discovery = """
+- Group UI components by feature domain (Authentication, Dashboard, Settings), NOT by technical type (Hooks, Components, Utils)
+- A login form and its hooks belong to the same area as the auth slice
+- Shared UI components (buttons, icons, layout primitives) form a separate SharedComponents area
+"""

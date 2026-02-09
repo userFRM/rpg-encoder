@@ -1,0 +1,11 @@
+schema_version = 1
+name = "scala"
+extensions = ["scala", "sc"]
+glob = "**/*.{scala,sc}"
+
+[grammar]
+crate_path = "tree_sitter_scala::LANGUAGE"
+
+[builtin]
+entity_extractor = "extract_scala_entities"
+dep_extractor = "extract_scala_deps"

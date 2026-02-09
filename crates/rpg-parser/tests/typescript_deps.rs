@@ -2,10 +2,39 @@ use rpg_parser::deps::extract_deps;
 use rpg_parser::languages::Language;
 use std::path::Path;
 
+/// Helper that runs base `extract_deps` followed by the TOML-driven paradigm
+/// pipeline (dep queries + built-in dep features like Redux state signals).
+/// Use this for tests that exercise paradigm-specific extraction (JSX renders,
+/// Redux dispatches/selectors, RTK Query hooks, state signals).
+fn extract_deps_with_paradigms(
+    path: &Path,
+    source: &str,
+    language: Language,
+) -> rpg_parser::deps::RawDeps {
+    let mut deps = extract_deps(path, source, language);
+    let defs = rpg_parser::paradigms::defs::load_builtin_defs().unwrap();
+    let qcache = rpg_parser::paradigms::query_engine::QueryCache::compile_all(&defs).unwrap();
+    let active: Vec<&_> = defs.iter().collect();
+    let scopes = rpg_parser::deps::build_scopes(source, language);
+    rpg_parser::paradigms::query_engine::execute_dep_queries(
+        &qcache, &active, path, source, language, &scopes, &mut deps,
+    );
+    let raw_entities: Vec<rpg_parser::entities::RawEntity> = vec![];
+    rpg_parser::paradigms::features::apply_builtin_dep_features(
+        &active,
+        path,
+        source,
+        language,
+        &raw_entities,
+        &mut deps,
+    );
+    deps
+}
+
 #[test]
 fn test_ts_named_import() {
     let source = "import { foo, bar } from './module';";
-    let deps = extract_deps(Path::new("test.ts"), source, Language::TypeScript);
+    let deps = extract_deps(Path::new("test.ts"), source, Language::TYPESCRIPT);
     assert_eq!(deps.imports.len(), 1);
     assert_eq!(deps.imports[0].module, "./module");
     assert!(deps.imports[0].symbols.contains(&"foo".to_string()));
@@ -16,7 +45,7 @@ fn test_ts_named_import() {
 #[test]
 fn test_ts_namespace_import() {
     let source = "import * as utils from 'utils';";
-    let deps = extract_deps(Path::new("test.ts"), source, Language::TypeScript);
+    let deps = extract_deps(Path::new("test.ts"), source, Language::TYPESCRIPT);
     assert_eq!(deps.imports.len(), 1);
     assert_eq!(deps.imports[0].module, "utils");
 }
@@ -24,7 +53,7 @@ fn test_ts_namespace_import() {
 #[test]
 fn test_ts_default_import() {
     let source = "import React from 'react';";
-    let deps = extract_deps(Path::new("test.ts"), source, Language::TypeScript);
+    let deps = extract_deps(Path::new("test.ts"), source, Language::TYPESCRIPT);
     assert_eq!(deps.imports.len(), 1);
     assert_eq!(deps.imports[0].module, "react");
 }
@@ -32,7 +61,7 @@ fn test_ts_default_import() {
 #[test]
 fn test_ts_class_inheritance() {
     let source = "class Dog extends Animal {}";
-    let deps = extract_deps(Path::new("test.ts"), source, Language::TypeScript);
+    let deps = extract_deps(Path::new("test.ts"), source, Language::TYPESCRIPT);
     assert!(
         !deps.inherits.is_empty(),
         "expected at least one inherit dep"
@@ -48,7 +77,7 @@ function greet() {
     console.log(\"hello\");
 }
 ";
-    let deps = extract_deps(Path::new("test.ts"), source, Language::TypeScript);
+    let deps = extract_deps(Path::new("test.ts"), source, Language::TYPESCRIPT);
     assert!(!deps.calls.is_empty(), "expected at least one call dep");
     let log_call = deps.calls.iter().find(|c| c.callee == "log");
     assert!(
@@ -61,7 +90,7 @@ function greet() {
 
 #[test]
 fn test_ts_empty_source() {
-    let deps = extract_deps(Path::new("test.ts"), "", Language::TypeScript);
+    let deps = extract_deps(Path::new("test.ts"), "", Language::TYPESCRIPT);
     assert!(deps.imports.is_empty());
     assert!(deps.calls.is_empty());
     assert!(deps.inherits.is_empty());
@@ -79,7 +108,7 @@ import { useState } from 'react';
 import { Router } from 'react-router';
 import axios from 'axios';
 ";
-    let deps = extract_deps(Path::new("test.ts"), source, Language::TypeScript);
+    let deps = extract_deps(Path::new("test.ts"), source, Language::TYPESCRIPT);
     assert_eq!(deps.imports.len(), 3);
     let modules: Vec<&str> = deps.imports.iter().map(|i| i.module.as_str()).collect();
     assert!(modules.contains(&"react"));
@@ -96,7 +125,7 @@ function App(): JSX.Element {
     return <div className="app"><h1>Hello</h1></div>;
 }
 "#;
-    let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
+    let deps = extract_deps(Path::new("test.tsx"), source, Language::TYPESCRIPT);
     // Should parse without errors — imports and calls still extracted
     assert!(!deps.imports.is_empty());
 }
@@ -104,7 +133,7 @@ function App(): JSX.Element {
 #[test]
 fn test_barrel_reexport_named() {
     let source = "export { Foo, Bar } from './foo';";
-    let deps = extract_deps(Path::new("index.ts"), source, Language::TypeScript);
+    let deps = extract_deps(Path::new("index.ts"), source, Language::TYPESCRIPT);
     assert_eq!(
         deps.composes.len(),
         2,
@@ -136,7 +165,7 @@ fn test_barrel_reexport_named() {
 #[test]
 fn test_barrel_reexport_star() {
     let source = "export * from './utils';";
-    let deps = extract_deps(Path::new("index.ts"), source, Language::TypeScript);
+    let deps = extract_deps(Path::new("index.ts"), source, Language::TYPESCRIPT);
     assert_eq!(
         deps.composes.len(),
         1,
@@ -156,7 +185,7 @@ function App() {
     return <Button onClick={handleClick}>Click me</Button>;
 }
 ";
-    let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
+    let deps = extract_deps_with_paradigms(Path::new("test.tsx"), source, Language::TYPESCRIPT);
     let button_call = deps.renders.iter().find(|c| c.callee == "Button");
     assert!(
         button_call.is_some(),
@@ -173,7 +202,7 @@ function App() {
     return <Icon name="star" />;
 }
 "#;
-    let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
+    let deps = extract_deps_with_paradigms(Path::new("test.tsx"), source, Language::TYPESCRIPT);
     let icon_call = deps.renders.iter().find(|c| c.callee == "Icon");
     assert!(
         icon_call.is_some(),
@@ -189,7 +218,7 @@ function App() {
     return <div><span>text</span></div>;
 }
 ";
-    let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
+    let deps = extract_deps(Path::new("test.tsx"), source, Language::TYPESCRIPT);
     let html_calls: Vec<_> = deps
         .renders
         .iter()
@@ -210,7 +239,7 @@ const App = () => {
     return <Button />;
 };
 ";
-    let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
+    let deps = extract_deps_with_paradigms(Path::new("test.tsx"), source, Language::TYPESCRIPT);
     let fetch_call = deps.calls.iter().find(|c| c.callee == "fetchData");
     assert!(
         fetch_call.is_some(),
@@ -233,7 +262,7 @@ const App = () => {
 #[test]
 fn test_barrel_reexport_aliased() {
     let source = "export { default as Foo } from './mod';";
-    let deps = extract_deps(Path::new("index.ts"), source, Language::TypeScript);
+    let deps = extract_deps(Path::new("index.ts"), source, Language::TYPESCRIPT);
     assert_eq!(
         deps.composes.len(),
         1,
@@ -251,7 +280,7 @@ function App() {
     return <Router.Route path='/' />;
 }
 ";
-    let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
+    let deps = extract_deps_with_paradigms(Path::new("test.tsx"), source, Language::TYPESCRIPT);
     // Dotted component: extracts last segment for resolution
     let route_call = deps.renders.iter().find(|c| c.callee == "Route");
     assert!(
@@ -269,7 +298,7 @@ function Layout() {
     return <Container><Header /><Content /></Container>;
 }
 ";
-    let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
+    let deps = extract_deps_with_paradigms(Path::new("test.tsx"), source, Language::TYPESCRIPT);
     let component_calls: Vec<&str> = deps.renders.iter().map(|c| c.callee.as_str()).collect();
     assert!(
         component_calls.contains(&"Container"),
@@ -300,10 +329,10 @@ function LoginPage() {
 }
 ";
 
-    let deps = extract_deps(
+    let deps = extract_deps_with_paradigms(
         Path::new("app/login/page.tsx"),
         source,
-        Language::TypeScript,
+        Language::TYPESCRIPT,
     );
 
     let render = deps.renders.iter().find(|d| d.callee == "LoginForm");
@@ -347,10 +376,10 @@ function ProfilePage() {
     return <div>{user.name}</div>;
 }
 ";
-    let deps = extract_deps(
+    let deps = extract_deps_with_paradigms(
         Path::new("app/profile/page.tsx"),
         source,
-        Language::TypeScript,
+        Language::TYPESCRIPT,
     );
 
     // Should have both useSelector and selectUser as reads_state entries
@@ -375,7 +404,7 @@ function MyComponent() {
     return <div />;
 }
 ";
-    let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
+    let deps = extract_deps(Path::new("test.tsx"), source, Language::TYPESCRIPT);
     // useDispatch acquires dispatch capability — it does NOT read state.
     // It should NOT appear in reads_state.
     let dispatch_read = deps.reads_state.iter().find(|d| d.callee == "useDispatch");
@@ -394,7 +423,7 @@ function PostList() {
     return <ul />;
 }
 ";
-    let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
+    let deps = extract_deps_with_paradigms(Path::new("test.tsx"), source, Language::TYPESCRIPT);
     let query_read = deps
         .reads_state
         .iter()
@@ -418,7 +447,7 @@ function LoginForm() {
     return <form />;
 }
 ";
-    let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
+    let deps = extract_deps_with_paradigms(Path::new("test.tsx"), source, Language::TYPESCRIPT);
 
     // dispatch(loginUser(...)) is inside handleSubmit arrow, but since handleSubmit
     // is not an entity, it should bubble up to the enclosing LoginForm scope.
@@ -446,7 +475,7 @@ function Dashboard() {
     return <PostList />;
 }
 ";
-    let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
+    let deps = extract_deps_with_paradigms(Path::new("test.tsx"), source, Language::TYPESCRIPT);
 
     // useSelector at component level should be attributed to Dashboard
     let selector_read = deps.reads_state.iter().find(|d| d.callee == "useSelector");
@@ -479,7 +508,7 @@ function MyComponent() {
     return <div />;
 }
 "#;
-    let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
+    let deps = extract_deps(Path::new("test.tsx"), source, Language::TYPESCRIPT);
     // Object literal arguments should NOT produce a dispatch target —
     // only action creator calls (dispatch(actionCreator())) or identifier
     // references (dispatch(someAction)) are valid targets.
@@ -501,10 +530,10 @@ function ProfilePage() {
     return <div>{user.name}</div>;
 }
 "#;
-    let deps = extract_deps(
+    let deps = extract_deps_with_paradigms(
         Path::new("app/profile/page.tsx"),
         source,
-        Language::TypeScript,
+        Language::TYPESCRIPT,
     );
     let callees: Vec<&str> = deps.reads_state.iter().map(|d| d.callee.as_str()).collect();
     assert!(
@@ -530,7 +559,7 @@ function LoginForm() {
     return <form />;
 }
 "#;
-    let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
+    let deps = extract_deps_with_paradigms(Path::new("test.tsx"), source, Language::TYPESCRIPT);
     let login_dispatch = deps.dispatches.iter().find(|d| d.callee == "loginUser");
     assert!(
         login_dispatch.is_some(),
@@ -548,7 +577,7 @@ fn test_destructured_hooks_require_identifier_rhs() {
 export const { useFoo, useBar } = createSomething();
 ";
     let entities =
-        rpg_parser::entities::extract_entities(Path::new("test.ts"), source, Language::TypeScript);
+        rpg_parser::entities::extract_entities(Path::new("test.ts"), source, Language::TYPESCRIPT);
     let hooks: Vec<&str> = entities
         .iter()
         .filter(|e| e.kind == rpg_core::graph::EntityKind::Hook)

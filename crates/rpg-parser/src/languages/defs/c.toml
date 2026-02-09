@@ -1,0 +1,11 @@
+schema_version = 1
+name = "c"
+extensions = ["c", "h"]
+glob = "**/*.{c,h}"
+
+[grammar]
+crate_path = "tree_sitter_c::LANGUAGE"
+
+[builtin]
+entity_extractor = "extract_c_entities"
+dep_extractor = "extract_c_deps"

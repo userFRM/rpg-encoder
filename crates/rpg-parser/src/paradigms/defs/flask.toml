@@ -1,0 +1,43 @@
+schema_version = 1
+name = "flask"
+priority = 20
+languages = ["python"]
+
+[detect]
+deps = ["flask"]
+
+[[classify]]
+id = "flask.route"
+action = { reclassify = "route" }
+[classify.match]
+kind = "function"
+source_contains_any = [
+  "@app.route",
+  "@bp.route",
+  "@blueprint.route",
+]
+
+[[classify]]
+id = "flask.view"
+action = { reclassify = "controller" }
+[classify.match]
+kind = "class"
+source_contains_any = ["MethodView)"]
+
+[prompt_hints]
+lifting = """
+- **Route handlers** (@app.route / @bp.route): describe the HTTP endpoint purpose
+- **View classes** (MethodView): describe the resource CRUD operations
+"""
+synthesis = """
+- For route files: capture the resource and operations exposed
+- For blueprint files: capture the feature domain they group
+"""
+hierarchy = """
+- Routes: "WebEndpoints/resource management/handle user requests"
+- Blueprints: "WebEndpoints/feature domain/group related routes"
+"""
+discovery = """
+- Group Flask blueprints by feature domain
+- Route handlers are the primary organizational unit
+"""

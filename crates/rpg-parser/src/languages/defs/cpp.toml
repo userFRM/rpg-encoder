@@ -1,0 +1,11 @@
+schema_version = 1
+name = "cpp"
+extensions = ["cpp", "cc", "cxx", "hpp", "hxx", "hh"]
+glob = "**/*.{cpp,cc,cxx,hpp,hxx,hh}"
+
+[grammar]
+crate_path = "tree_sitter_cpp::LANGUAGE"
+
+[builtin]
+entity_extractor = "extract_cpp_entities"
+dep_extractor = "extract_c_deps"

@@ -1,0 +1,71 @@
+schema_version = 1
+name = "nextjs"
+priority = 10
+languages = ["typescript", "javascript"]
+
+[detect]
+config_files = ["next.config.js", "next.config.mjs", "next.config.ts"]
+
+[[detect.dir_with_files]]
+dir = "app"
+pattern = "page.*"
+
+[[classify]]
+id = "nextjs.page"
+action = { reclassify = "page" }
+[classify.match]
+kind = "function"
+file_name_stem = "page"
+file_path_contains = "app/"
+name_starts_uppercase = true
+source_contains_any = ["return <", "return (", "=> <", "=> (", "React.FC", "<>"]
+
+[[classify]]
+id = "nextjs.page_class"
+action = { reclassify = "page" }
+[classify.match]
+kind = "class"
+file_name_stem = "page"
+file_path_contains = "app/"
+source_contains_any = ["return <", "return (", "=> <", "=> (", "React.FC", "<>"]
+
+[[classify]]
+id = "nextjs.layout"
+action = { reclassify = "layout" }
+[classify.match]
+kind = "function"
+file_name_stem = "layout"
+file_path_contains = "app/"
+name_starts_uppercase = true
+source_contains_any = ["return <", "return (", "=> <", "=> (", "React.FC", "<>"]
+
+[[classify]]
+id = "nextjs.layout_class"
+action = { reclassify = "layout" }
+[classify.match]
+kind = "class"
+file_name_stem = "layout"
+file_path_contains = "app/"
+source_contains_any = ["return <", "return (", "=> <", "=> (", "React.FC", "<>"]
+
+[prompt_hints]
+lifting = """
+- **Pages** (page.tsx in app/ directory): describe the route purpose and user journey step. "render login page, gate unauthenticated access"
+- **Layouts** (layout.tsx): describe the structural role. "wrap pages with navigation shell"
+- **Server components**: describe the data-fetching and rendering purpose
+- **API routes** (route.ts): describe the API endpoint behavior
+"""
+synthesis = """
+- For page files: capture the route and user journey step (e.g., "render login page, redirect authenticated users")
+- For layout files: capture which pages they wrap and the structural role
+- For API route files: capture the HTTP method and resource handling
+"""
+hierarchy = """
+- Pages: "UserInterface/authentication flow/render login page"
+- Layouts: "UserInterface/application shell/wrap pages with navigation"
+- API routes: "WebEndpoints/resource management/handle CRUD operations"
+"""
+discovery = """
+- Pages and layouts define feature boundaries — use the route structure as a signal
+- Pages under app/auth/* and app/dashboard/* suggest distinct feature areas
+"""

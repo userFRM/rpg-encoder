@@ -1,0 +1,40 @@
+schema_version = 1
+name = "gin"
+priority = 10
+languages = ["go"]
+
+[detect]
+deps = ["github.com/gin-gonic/gin"]
+
+[[classify]]
+id = "gin.handler"
+action = { reclassify = "controller" }
+[classify.match]
+kind = "function"
+source_contains_any = ["*gin.Context"]
+
+[[classify]]
+id = "gin.middleware"
+action = { reclassify = "middleware" }
+[classify.match]
+kind = "function"
+source_contains_any = ["gin.HandlerFunc"]
+name_regex = "(?i)middleware"
+
+[prompt_hints]
+lifting = """
+- **Handlers** (functions taking *gin.Context): describe the HTTP endpoint purpose
+- **Middleware** (gin.HandlerFunc): describe the request pipeline behavior
+"""
+synthesis = """
+- For handler files: capture the resource and operations exposed
+- For middleware files: capture the cross-cutting concern
+"""
+hierarchy = """
+- Handlers: "WebEndpoints/resource management/handle user requests"
+- Middleware: "CrossCutting/request pipeline/authenticate requests"
+"""
+discovery = """
+- Group Gin handlers by resource domain
+- Middleware forms a CrossCutting area
+"""

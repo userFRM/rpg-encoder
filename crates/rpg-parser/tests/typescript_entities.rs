@@ -1,12 +1,38 @@
 use rpg_core::graph::EntityKind;
-use rpg_parser::entities::extract_entities;
+use rpg_parser::entities::{RawEntity, extract_entities};
 use rpg_parser::languages::Language;
 use std::path::Path;
+
+/// Extract entities with the full TOML paradigm pipeline (classify + entity queries + builtins).
+/// Uses all built-in paradigm defs (React, NextJs, Redux) — suitable for unit tests.
+fn extract_entities_with_paradigms(
+    file: &Path,
+    source: &str,
+    language: Language,
+) -> Vec<RawEntity> {
+    let mut entities = extract_entities(file, source, language);
+    let defs = rpg_parser::paradigms::defs::load_builtin_defs().unwrap();
+    let qcache = rpg_parser::paradigms::query_engine::QueryCache::compile_all(&defs).unwrap();
+    let active: Vec<&_> = defs.iter().collect();
+    rpg_parser::paradigms::classify::classify_entities(&active, file, &mut entities);
+    let extra = rpg_parser::paradigms::query_engine::execute_entity_queries(
+        &qcache, &active, file, source, language, &entities,
+    );
+    entities.extend(extra);
+    rpg_parser::paradigms::features::apply_builtin_entity_features(
+        &active,
+        file,
+        source,
+        language,
+        &mut entities,
+    );
+    entities
+}
 
 #[test]
 fn test_function_declaration() {
     let source = r#"function greet(name: string): string { return "hi"; }"#;
-    let entities = extract_entities(Path::new("test.ts"), source, Language::TypeScript);
+    let entities = extract_entities(Path::new("test.ts"), source, Language::TYPESCRIPT);
     assert_eq!(entities.len(), 1);
     assert_eq!(entities[0].name, "greet");
     assert_eq!(entities[0].kind, EntityKind::Function);
@@ -21,7 +47,7 @@ class Foo {
     bar(): void {}
 }
 ";
-    let entities = extract_entities(Path::new("test.ts"), source, Language::TypeScript);
+    let entities = extract_entities(Path::new("test.ts"), source, Language::TYPESCRIPT);
     assert!(
         entities.len() >= 2,
         "expected at least 2 entities, got {}",
@@ -50,7 +76,7 @@ interface Animal {
     speak(): void;
 }
 ";
-    let entities = extract_entities(Path::new("test.ts"), source, Language::TypeScript);
+    let entities = extract_entities(Path::new("test.ts"), source, Language::TYPESCRIPT);
     let iface = entities
         .iter()
         .find(|e| e.name == "Animal")
@@ -62,7 +88,7 @@ interface Animal {
 #[test]
 fn test_named_arrow_function() {
     let source = "const add = (a: number, b: number): number => a + b;";
-    let entities = extract_entities(Path::new("test.ts"), source, Language::TypeScript);
+    let entities = extract_entities(Path::new("test.ts"), source, Language::TYPESCRIPT);
     assert_eq!(entities.len(), 1);
     assert_eq!(entities[0].name, "add");
     assert_eq!(entities[0].kind, EntityKind::Function);
@@ -71,7 +97,7 @@ fn test_named_arrow_function() {
 #[test]
 fn test_exported_function() {
     let source = "export function doStuff() {}";
-    let entities = extract_entities(Path::new("test.ts"), source, Language::TypeScript);
+    let entities = extract_entities(Path::new("test.ts"), source, Language::TYPESCRIPT);
     assert_eq!(entities.len(), 1);
     assert_eq!(entities[0].name, "doStuff");
     assert_eq!(entities[0].kind, EntityKind::Function);
@@ -99,7 +125,8 @@ export function App() {
     );
 }
 "#;
-    let entities = extract_entities(Path::new("test.tsx"), source, Language::TypeScript);
+    let entities =
+        extract_entities_with_paradigms(Path::new("test.tsx"), source, Language::TYPESCRIPT);
     let iface = entities.iter().find(|e| e.name == "ButtonProps");
     assert!(
         iface.is_some(),
@@ -132,10 +159,10 @@ export default function Page() {
     return <LoginForm />;
 }
 ";
-    let page_entities = extract_entities(
+    let page_entities = extract_entities_with_paradigms(
         Path::new("app/auth/login/page.tsx"),
         page_source,
-        Language::TypeScript,
+        Language::TYPESCRIPT,
     );
     let page = page_entities
         .iter()
@@ -148,10 +175,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     return <html><body>{children}</body></html>;
 }
 ";
-    let layout_entities = extract_entities(
+    let layout_entities = extract_entities_with_paradigms(
         Path::new("app/layout.tsx"),
         layout_source,
-        Language::TypeScript,
+        Language::TYPESCRIPT,
     );
     let layout = layout_entities
         .iter()
@@ -176,7 +203,8 @@ function LoginForm() {
 }
 "#;
 
-    let entities = extract_entities(Path::new("src/auth.tsx"), source, Language::TypeScript);
+    let entities =
+        extract_entities_with_paradigms(Path::new("src/auth.tsx"), source, Language::TYPESCRIPT);
 
     let store = entities
         .iter()
@@ -210,10 +238,10 @@ const authSlice = createSlice({
     },
 });
 "#;
-    let entities = extract_entities(
+    let entities = extract_entities_with_paradigms(
         Path::new("src/state/authSlice.ts"),
         source,
-        Language::TypeScript,
+        Language::TYPESCRIPT,
     );
 
     // The slice itself should be a Store entity
@@ -263,7 +291,8 @@ const loginUser = createAsyncThunk(
     }
 );
 "#;
-    let entities = extract_entities(Path::new("src/thunks.ts"), source, Language::TypeScript);
+    let entities =
+        extract_entities_with_paradigms(Path::new("src/thunks.ts"), source, Language::TYPESCRIPT);
     let thunk = entities.iter().find(|e| e.name == "loginUser");
     assert!(
         thunk.is_some(),
@@ -284,7 +313,8 @@ const postsApi = createApi({
     }),
 });
 "#;
-    let entities = extract_entities(Path::new("src/api.ts"), source, Language::TypeScript);
+    let entities =
+        extract_entities_with_paradigms(Path::new("src/api.ts"), source, Language::TYPESCRIPT);
     let api = entities.iter().find(|e| e.name == "postsApi");
     assert!(
         api.is_some(),
@@ -299,7 +329,8 @@ fn test_rtk_query_destructured_hooks() {
     let source = r"
 export const { useGetPostsQuery, useGetUserQuery } = postsApi;
 ";
-    let entities = extract_entities(Path::new("src/api.ts"), source, Language::TypeScript);
+    let entities =
+        extract_entities_with_paradigms(Path::new("src/api.ts"), source, Language::TYPESCRIPT);
     let hook_names: Vec<&str> = entities
         .iter()
         .filter(|e| e.kind == EntityKind::Hook)

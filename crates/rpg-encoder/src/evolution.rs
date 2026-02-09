@@ -7,7 +7,17 @@ use anyhow::{Context, Result};
 use rpg_core::graph::RPGraph;
 use rpg_parser::entities::RawEntity;
 use rpg_parser::languages::Language;
+use rpg_parser::paradigms::defs::ParadigmDef;
+use rpg_parser::paradigms::query_engine::QueryCache;
 use std::path::{Path, PathBuf};
+
+/// Paradigm pipeline context for incremental updates.
+/// When provided, newly-extracted entities get classified, queried, and
+/// feature-enriched the same way they would in a full `build_rpg`.
+pub struct ParadigmPipeline<'a> {
+    pub active_defs: Vec<&'a ParadigmDef>,
+    pub qcache: &'a QueryCache,
+}
 
 /// Classification of a file change.
 #[derive(Debug, Clone)]
@@ -243,6 +253,7 @@ pub fn apply_modifications(
     graph: &mut RPGraph,
     modified_files: &[PathBuf],
     project_root: &Path,
+    paradigm: Option<&ParadigmPipeline<'_>>,
 ) -> Result<(usize, usize, usize, Vec<String>)> {
     let mut modified_count = 0;
     let mut added_count = 0;
@@ -261,8 +272,33 @@ pub fn apply_modifications(
         let source = std::fs::read_to_string(&abs_path)
             .with_context(|| format!("failed to read {}", abs_path.display()))?;
 
-        let new_raw: Vec<RawEntity> =
+        let mut new_raw: Vec<RawEntity> =
             rpg_parser::entities::extract_entities(file, &source, language);
+
+        // Apply paradigm pipeline: classify → entity queries → builtin features
+        if let Some(ctx) = paradigm {
+            rpg_parser::paradigms::classify::classify_entities(
+                &ctx.active_defs,
+                file,
+                &mut new_raw,
+            );
+            let extra = rpg_parser::paradigms::query_engine::execute_entity_queries(
+                ctx.qcache,
+                &ctx.active_defs,
+                file,
+                &source,
+                language,
+                &new_raw,
+            );
+            new_raw.extend(extra);
+            rpg_parser::paradigms::features::apply_builtin_entity_features(
+                &ctx.active_defs,
+                file,
+                &source,
+                language,
+                &mut new_raw,
+            );
+        }
 
         let new_ids: std::collections::HashSet<String> = new_raw.iter().map(|e| e.id()).collect();
 
@@ -278,7 +314,7 @@ pub fn apply_modifications(
             }
         }
 
-        // Update existing entities (line numbers)
+        // Update existing entities (structural fields)
         let modified_raws: Vec<&RawEntity> = new_raw
             .iter()
             .filter(|e| old_ids_set.contains(&e.id()))
@@ -289,6 +325,9 @@ pub fn apply_modifications(
             if let Some(entity) = graph.entities.get_mut(&id) {
                 entity.line_start = raw.line_start;
                 entity.line_end = raw.line_end;
+                // Refresh structural fields that paradigm reclassification may change
+                entity.kind = raw.kind;
+                entity.parent_class = raw.parent_class.clone();
                 modified_count += 1;
                 // Track entities with existing features that need re-lifting
                 if !entity.semantic_features.is_empty() {
@@ -349,6 +388,7 @@ pub fn apply_additions(
     graph: &mut RPGraph,
     added_files: &[PathBuf],
     project_root: &Path,
+    paradigm: Option<&ParadigmPipeline<'_>>,
 ) -> Result<usize> {
     let mut added_count = 0;
 
@@ -364,8 +404,33 @@ pub fn apply_additions(
         let source = std::fs::read_to_string(&abs_path)
             .with_context(|| format!("failed to read {}", abs_path.display()))?;
 
-        let raw_entities: Vec<RawEntity> =
+        let mut raw_entities: Vec<RawEntity> =
             rpg_parser::entities::extract_entities(file, &source, language);
+
+        // Apply paradigm pipeline: classify → entity queries → builtin features
+        if let Some(ctx) = paradigm {
+            rpg_parser::paradigms::classify::classify_entities(
+                &ctx.active_defs,
+                file,
+                &mut raw_entities,
+            );
+            let extra = rpg_parser::paradigms::query_engine::execute_entity_queries(
+                ctx.qcache,
+                &ctx.active_defs,
+                file,
+                &source,
+                language,
+                &raw_entities,
+            );
+            raw_entities.extend(extra);
+            rpg_parser::paradigms::features::apply_builtin_entity_features(
+                &ctx.active_defs,
+                file,
+                &source,
+                language,
+                &mut raw_entities,
+            );
+        }
 
         // Compute structural hierarchy path from file path
         let hierarchy_path = file_path_hierarchy(file);
@@ -526,6 +591,7 @@ pub fn run_update(
     graph: &mut RPGraph,
     project_root: &Path,
     since: Option<&str>,
+    paradigm: Option<&ParadigmPipeline<'_>>,
 ) -> Result<UpdateSummary> {
     // Resolve all indexed languages (multi-language support)
     let languages: Vec<Language> = if graph.metadata.languages.is_empty() {
@@ -583,14 +649,14 @@ pub fn run_update(
 
     // Step 3: Modifications
     let (modified, mod_added, mod_removed, mod_stale_ids) =
-        apply_modifications(graph, &modified_files, project_root)?;
+        apply_modifications(graph, &modified_files, project_root, paradigm)?;
     summary.entities_modified = modified;
     summary.modified_entity_ids = mod_stale_ids;
     summary.entities_added += mod_added;
     summary.entities_removed += mod_removed;
 
     // Step 4: Additions
-    let added = apply_additions(graph, &added_files, project_root)?;
+    let added = apply_additions(graph, &added_files, project_root, paradigm)?;
     summary.entities_added += added;
 
     // Step 5: Re-populate deps (scoped to changed files) and re-resolve globally
@@ -598,7 +664,19 @@ pub fn run_update(
     changed_file_list.extend(modified_files.iter().cloned());
     changed_file_list.extend(added_files.iter().cloned());
     changed_file_list.extend(renames.iter().map(|(_, to)| to.clone()));
-    grounding::populate_entity_deps(graph, project_root, false, Some(&changed_file_list));
+
+    // Convert ParadigmPipeline to grounding::ParadigmContext for dep extraction
+    let grounding_ctx = paradigm.map(|p| grounding::ParadigmContext {
+        active_defs: p.active_defs.clone(),
+        qcache: p.qcache,
+    });
+    grounding::populate_entity_deps(
+        graph,
+        project_root,
+        false,
+        Some(&changed_file_list),
+        grounding_ctx.as_ref(),
+    );
     grounding::resolve_dependencies(graph);
 
     // Step 6: Re-ground hierarchy

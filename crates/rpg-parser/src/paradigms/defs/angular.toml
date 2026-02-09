@@ -1,0 +1,50 @@
+schema_version = 1
+name = "angular"
+priority = 8
+languages = ["typescript"]
+
+[detect]
+deps = ["@angular/core"]
+config_files = ["angular.json"]
+
+[[classify]]
+id = "angular.component"
+action = { reclassify = "component" }
+[classify.match]
+kind = "class"
+source_contains_any = ["@Component({", "@Component("]
+
+[[classify]]
+id = "angular.service"
+action = { reclassify = "service" }
+[classify.match]
+kind = "class"
+source_contains_any = ["@Injectable({", "@Injectable("]
+
+[[classify]]
+id = "angular.test"
+action = { reclassify = "test" }
+[classify.match]
+kind = "class"
+source_contains_any = ["describe(", "it("]
+file_path_contains = ".spec"
+
+[prompt_hints]
+lifting = """
+- **Components** (@Component classes): describe what the user sees or interacts with
+- **Services** (@Injectable classes): describe the business logic or data access they provide
+- **Pipes** (@Pipe classes): describe the data transformation
+- **Guards**: describe the route protection logic
+"""
+synthesis = """
+- For component files: capture the template purpose and user interaction
+- For service files: capture the domain logic they encapsulate
+"""
+hierarchy = """
+- Components: "UserInterface/feature domain/render specific view"
+- Services: "BusinessLogic/feature domain/provide specific service"
+"""
+discovery = """
+- Group Angular modules by feature domain, not by type (components vs services)
+- Shared modules form a separate SharedComponents area
+"""

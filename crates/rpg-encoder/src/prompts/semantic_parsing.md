@@ -25,16 +25,6 @@ You are a senior software analyst. For each function/method/class in the input, 
 7. If multiple definitions share the same method name (e.g., property getter and setter), output that name only once and merge their semantic features
 8. Include error-handling behavior when it is a significant part of the entity
 
-## Frontend Entity Guidelines
-When analyzing frontend code (React, Next.js, Vue, etc.), tailor features to the user-facing purpose:
-- **Components**: describe what the user sees or does. "render login form, dispatch authentication" not "return JSX element"
-- **Hooks** (use* functions): describe the state or effect they encapsulate. "track authentication status" not "call useSelector"
-- **Store/Slice** (Redux createSlice, configureStore, Zustand create): describe the state domain. "manage authentication state" not "create Redux slice"
-- **Selectors** (select* functions): describe the derived state they compute. "compute logged-in status" not "select from state tree"
-- **Thunks** (createAsyncThunk): describe the async operation. "authenticate user credentials" not "dispatch async action"
-- **Pages** (Next.js app router page.tsx): describe the route purpose. "render login page, gate unauthenticated access"
-- **Layouts** (Next.js layout.tsx): describe the structural role. "wrap pages with navigation shell"
-
 ## Output Format
 One entity per line. Format: entity_name | feature1, feature2, feature3
 

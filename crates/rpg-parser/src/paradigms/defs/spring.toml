@@ -1,0 +1,75 @@
+schema_version = 1
+name = "spring"
+priority = 10
+languages = ["java", "kotlin"]
+
+[detect]
+deps = ["spring-boot", "org.springframework"]
+config_files = ["application.properties", "application.yml"]
+
+[[classify]]
+id = "spring.controller"
+action = { reclassify = "controller" }
+[classify.match]
+kind = "class"
+source_contains_any = ["@Controller", "@RestController"]
+
+[[classify]]
+id = "spring.service"
+action = { reclassify = "service" }
+[classify.match]
+kind = "class"
+source_contains_any = ["@Service"]
+
+[[classify]]
+id = "spring.entity"
+action = { reclassify = "model" }
+[classify.match]
+kind = "class"
+source_contains_any = ["@Entity"]
+
+[[classify]]
+id = "spring.component"
+action = { reclassify = "service" }
+[classify.match]
+kind = "class"
+source_contains_any = ["@Component"]
+
+[[classify]]
+id = "spring.middleware"
+action = { reclassify = "middleware" }
+[classify.match]
+kind = "class"
+source_contains_any = ["HandlerInterceptor", "WebMvcConfigurer"]
+
+[[classify]]
+id = "spring.test"
+action = { reclassify = "test" }
+[classify.match]
+kind = "class"
+source_contains_any = ["@SpringBootTest", "@DataJpaTest", "@WebMvcTest"]
+
+[prompt_hints]
+lifting = """
+- **Controllers** (@Controller / @RestController): describe the API endpoint and resource
+- **Services** (@Service): describe the business logic operation
+- **Entities** (@Entity): describe the domain data and relationships
+- **Repositories**: describe the data access pattern
+- **Components** (@Component): describe the infrastructure concern
+"""
+synthesis = """
+- For controller files: capture the HTTP resource and operations
+- For service files: capture the domain operations provided
+- For entity files: capture the data model and JPA relationships
+"""
+hierarchy = """
+- Controllers: "WebEndpoints/resource management/handle user CRUD"
+- Services: "BusinessLogic/feature domain/manage user accounts"
+- Entities: "DataModel/domain entities/define user schema"
+- Repositories: "DataAccess/persistence/query user records"
+"""
+discovery = """
+- Group Spring beans by feature domain (Users, Orders, Auth)
+- A controller, its service, entity, and repository for the same domain belong together
+- Configuration and security classes form a CrossCutting area
+"""

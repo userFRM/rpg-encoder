@@ -13,7 +13,7 @@ use rpg_core::storage;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
 /// Cached lifting session — holds raw entities for stable batch indexing.
@@ -101,6 +101,35 @@ impl RpgServer {
                 .into_iter()
                 .collect()
         }
+    }
+
+    /// Collect paradigm-specific prompt hints for detected frameworks.
+    ///
+    /// Uses a cached copy of the builtin paradigm defs (parsed once via OnceLock),
+    /// filters by the paradigm names stored in `graph.metadata.paradigms`, and
+    /// concatenates the requested hint type from each active paradigm.
+    fn collect_paradigm_hints(
+        paradigm_names: &[String],
+        hint_selector: fn(&rpg_parser::paradigms::defs::PromptHints) -> &Option<String>,
+    ) -> String {
+        static PARADIGM_DEFS: OnceLock<Vec<rpg_parser::paradigms::defs::ParadigmDef>> =
+            OnceLock::new();
+        let defs = PARADIGM_DEFS
+            .get_or_init(|| rpg_parser::paradigms::defs::load_builtin_defs().unwrap_or_default());
+        let mut hints = String::new();
+        for name in paradigm_names {
+            if let Some(def) = defs.iter().find(|d| &d.name == name)
+                && let Some(hint) = hint_selector(&def.prompt_hints)
+            {
+                if !hints.is_empty() {
+                    hints.push('\n');
+                }
+                hints.push_str(&format!("### {} Guidelines\n", def.name));
+                hints.push_str(hint.trim());
+                hints.push('\n');
+            }
+        }
+        hints
     }
 
     async fn ensure_graph(&self) -> Result<(), String> {
@@ -428,6 +457,12 @@ fn parse_entity_type_filter(filter: &str) -> Vec<rpg_core::graph::EntityKind> {
             "hook" => Some(rpg_core::graph::EntityKind::Hook),
             "store" => Some(rpg_core::graph::EntityKind::Store),
             "module" | "file" => Some(rpg_core::graph::EntityKind::Module),
+            "controller" => Some(rpg_core::graph::EntityKind::Controller),
+            "model" => Some(rpg_core::graph::EntityKind::Model),
+            "service" => Some(rpg_core::graph::EntityKind::Service),
+            "middleware" => Some(rpg_core::graph::EntityKind::Middleware),
+            "route" => Some(rpg_core::graph::EntityKind::Route),
+            "test" => Some(rpg_core::graph::EntityKind::Test),
             _ => None,
         })
         .collect()
@@ -654,6 +689,24 @@ impl RpgServer {
         let mut graph = RPGraph::new(primary);
         graph.metadata.languages = languages.iter().map(|l| l.name().to_string()).collect();
 
+        // Load TOML paradigm definitions + compile tree-sitter queries
+        let paradigm_defs = rpg_parser::paradigms::defs::load_builtin_defs().map_err(|errs| {
+            format!(
+                "paradigm definition errors: {}",
+                errs.iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )
+        })?;
+        let qcache = rpg_parser::paradigms::query_engine::QueryCache::compile_all(&paradigm_defs)
+            .map_err(|errs| format!("query compile errors: {}", errs.join("; ")))?;
+
+        // Detect paradigms using TOML-driven engine
+        let active_defs =
+            rpg_parser::paradigms::detect_paradigms_toml(project_root, &languages, &paradigm_defs);
+        graph.metadata.paradigms = active_defs.iter().map(|d| d.name.clone()).collect();
+
         // Parse code entities (all detected languages)
         let include_glob = params
             .include
@@ -699,7 +752,32 @@ impl RpgServer {
             };
 
             let rel_path = path.strip_prefix(project_root).unwrap_or(path);
-            let raw_entities = rpg_parser::entities::extract_entities(rel_path, &source, file_lang);
+            let mut raw_entities =
+                rpg_parser::entities::extract_entities(rel_path, &source, file_lang);
+
+            // TOML-driven paradigm pipeline: classify + entity queries + builtin features
+            rpg_parser::paradigms::classify::classify_entities(
+                &active_defs,
+                rel_path,
+                &mut raw_entities,
+            );
+            let extra = rpg_parser::paradigms::query_engine::execute_entity_queries(
+                &qcache,
+                &active_defs,
+                rel_path,
+                &source,
+                file_lang,
+                &raw_entities,
+            );
+            raw_entities.extend(extra);
+            rpg_parser::paradigms::features::apply_builtin_entity_features(
+                &active_defs,
+                rel_path,
+                &source,
+                file_lang,
+                &mut raw_entities,
+            );
+
             for raw in raw_entities {
                 graph.insert_entity(raw.into_entity());
             }
@@ -718,11 +796,16 @@ impl RpgServer {
 
         // Artifact grounding + dependency resolution
         let cfg = self.get_config_blocking();
+        let paradigm_ctx = rpg_encoder::grounding::ParadigmContext {
+            active_defs: active_defs.clone(),
+            qcache: &qcache,
+        };
         rpg_encoder::grounding::populate_entity_deps(
             &mut graph,
             project_root,
             cfg.encoding.broadcast_imports,
             None,
+            Some(&paradigm_ctx),
         );
         rpg_encoder::grounding::ground_hierarchy(&mut graph);
         rpg_encoder::grounding::resolve_dependencies(&mut graph);
@@ -927,6 +1010,14 @@ impl RpgServer {
             output.push_str("\n\n");
             output.push_str(rpg_encoder::semantic_lifting::SEMANTIC_PARSING_SYSTEM);
             output.push('\n');
+
+            // Inject paradigm-specific lifting hints
+            let lifting_hints =
+                Self::collect_paradigm_hints(&graph.metadata.paradigms, |h| &h.lifting);
+            if !lifting_hints.is_empty() {
+                output.push_str("\n## Framework-Specific Guidelines\n\n");
+                output.push_str(&lifting_hints);
+            }
         }
         output.push_str("\n## Code\n\n");
 
@@ -1150,9 +1241,31 @@ impl RpgServer {
         let mut graph = self.graph.write().await;
         let g = graph.as_mut().ok_or("No RPG loaded")?;
 
-        let summary =
-            rpg_encoder::evolution::run_update(g, &self.project_root, params.since.as_deref())
-                .map_err(|e| format!("Update failed: {}", e))?;
+        // Detect paradigms BEFORE running update so entities get classified
+        let detected_langs = Self::resolve_languages(&g.metadata);
+        let paradigm_defs = rpg_parser::paradigms::defs::load_builtin_defs()
+            .map_err(|e| format!("Failed to load paradigm defs: {:?}", e))?;
+        let qcache = rpg_parser::paradigms::query_engine::QueryCache::compile_all(&paradigm_defs)
+            .map_err(|errs| format!("query compile errors: {}", errs.join("; ")))?;
+        let active_defs = rpg_parser::paradigms::detect_paradigms_toml(
+            &self.project_root,
+            &detected_langs,
+            &paradigm_defs,
+        );
+        g.metadata.paradigms = active_defs.iter().map(|d| d.name.clone()).collect();
+
+        let paradigm_pipeline = rpg_encoder::evolution::ParadigmPipeline {
+            active_defs,
+            qcache: &qcache,
+        };
+
+        let summary = rpg_encoder::evolution::run_update(
+            g,
+            &self.project_root,
+            params.since.as_deref(),
+            Some(&paradigm_pipeline),
+        )
+        .map_err(|e| format!("Update failed: {}", e))?;
 
         storage::save(&self.project_root, g).map_err(|e| format!("Failed to save RPG: {}", e))?;
 
@@ -1382,6 +1495,15 @@ impl RpgServer {
                 "the individual entity features into higher-level file responsibilities.\n\n",
             );
             output.push_str("Submit as: `submit_file_syntheses({\"path/to/file.rs\": \"feature1, feature2, feature3\", ...})`\n\n");
+
+            // Inject paradigm-specific synthesis hints
+            let synthesis_hints =
+                Self::collect_paradigm_hints(&graph.metadata.paradigms, |h| &h.synthesis);
+            if !synthesis_hints.is_empty() {
+                output.push_str("## Framework-Specific Synthesis Guidelines\n\n");
+                output.push_str(&synthesis_hints);
+                output.push('\n');
+            }
         }
 
         output.push_str("## Files\n\n");
@@ -1600,11 +1722,28 @@ impl RpgServer {
 
         output.push_str("## Step 1: Domain Discovery\n\n");
         output.push_str(domain_prompt);
+
+        // Inject paradigm-specific discovery hints
+        let discovery_hints =
+            Self::collect_paradigm_hints(&graph.metadata.paradigms, |h| &h.discovery);
+        if !discovery_hints.is_empty() {
+            output.push_str("\n\n## Framework-Specific Discovery Guidelines\n\n");
+            output.push_str(&discovery_hints);
+        }
+
         output.push_str("\n\n### File-Level Features\n");
         output.push_str(&file_features);
 
         output.push_str("\n\n## Step 2: Hierarchy Assignment\n\n");
         output.push_str(hierarchy_prompt);
+
+        // Inject paradigm-specific hierarchy hints
+        let hierarchy_hints =
+            Self::collect_paradigm_hints(&graph.metadata.paradigms, |h| &h.hierarchy);
+        if !hierarchy_hints.is_empty() {
+            output.push_str("\n\n## Framework-Specific Hierarchy Patterns\n\n");
+            output.push_str(&hierarchy_hints);
+        }
 
         output.push_str("\n\n---\n\n");
         output.push_str("## Instructions\n\n");
@@ -1793,8 +1932,34 @@ async fn main() -> Result<()> {
                     &base[..8.min(base.len())],
                     &head[..8.min(head.len())]
                 );
-                match rpg_encoder::evolution::run_update(graph, &server.project_root, None) {
+                // Detect paradigms for framework-aware classification
+                let detected_langs = RpgServer::resolve_languages(&graph.metadata);
+                let paradigm_defs =
+                    rpg_parser::paradigms::defs::load_builtin_defs().unwrap_or_default();
+                let qcache_result =
+                    rpg_parser::paradigms::query_engine::QueryCache::compile_all(&paradigm_defs);
+                let active_defs = rpg_parser::paradigms::detect_paradigms_toml(
+                    &server.project_root,
+                    &detected_langs,
+                    &paradigm_defs,
+                );
+                let paradigm_names: Vec<String> =
+                    active_defs.iter().map(|d| d.name.clone()).collect();
+                let pipeline_and_result = qcache_result.ok().map(|qcache| (qcache, active_defs));
+                let pipeline = pipeline_and_result.as_ref().map(|(qcache, active_defs)| {
+                    rpg_encoder::evolution::ParadigmPipeline {
+                        active_defs: active_defs.clone(),
+                        qcache,
+                    }
+                });
+                match rpg_encoder::evolution::run_update(
+                    graph,
+                    &server.project_root,
+                    None,
+                    pipeline.as_ref(),
+                ) {
                     Ok(s) => {
+                        graph.metadata.paradigms = paradigm_names;
                         let _ = storage::save(&server.project_root, graph);
                         eprintln!(
                             "  Auto-update complete: +{} -{} ~{}",

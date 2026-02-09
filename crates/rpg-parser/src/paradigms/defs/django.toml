@@ -1,0 +1,85 @@
+schema_version = 1
+name = "django"
+priority = 10
+languages = ["python"]
+
+[detect]
+deps = ["django"]
+files = ["manage.py"]
+
+[[classify]]
+id = "django.model"
+action = { reclassify = "model" }
+[classify.match]
+kind = "class"
+source_contains_any = [
+  "models.Model",
+  "Model)",
+  "models.Model)",
+]
+
+[[classify]]
+id = "django.view_func"
+action = { reclassify = "controller" }
+[classify.match]
+kind = "function"
+file_path_contains = "views"
+
+[[classify]]
+id = "django.view_class"
+action = { reclassify = "controller" }
+[classify.match]
+kind = "class"
+source_contains_any = [
+  "View)",
+  "TemplateView)",
+  "ListView)",
+  "DetailView)",
+  "CreateView)",
+  "UpdateView)",
+  "DeleteView)",
+  "FormView)",
+]
+
+[[classify]]
+id = "django.middleware"
+action = { reclassify = "middleware" }
+[classify.match]
+kind = "class"
+source_contains_any = ["MiddlewareMixin)"]
+
+[[classify]]
+id = "django.test"
+action = { reclassify = "test" }
+[classify.match]
+kind = "class"
+source_contains_any = [
+  "TestCase)",
+  "SimpleTestCase)",
+  "TransactionTestCase)",
+]
+
+[prompt_hints]
+lifting = """
+- **Views** (functions in views.py or class-based views): describe the HTTP endpoint purpose. "list blog posts" not "handle GET request"
+- **Models** (classes extending models.Model): describe the domain entity and its relationships. "represent user profile with email and avatar"
+- **Forms**: describe the validation and data transformation
+- **Middleware**: describe the request/response transformation
+- **Management commands**: describe the admin operation
+"""
+synthesis = """
+- For view files: capture the HTTP endpoints and business logic
+- For model files: capture the domain entities and field relationships
+- For form files: capture the validation rules and data transformations
+"""
+hierarchy = """
+- Views: "WebEndpoints/resource management/list blog posts"
+- Models: "DataModel/domain entities/define user schema"
+- Forms: "DataValidation/user input/validate registration data"
+- Middleware: "CrossCutting/request pipeline/authenticate requests"
+"""
+discovery = """
+- Group views and models by feature domain (Users, Posts, Auth), not by type
+- A view, its model, and its form for the same resource belong to the same feature area
+- Middleware and management commands form a CrossCutting area
+"""

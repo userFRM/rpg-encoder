@@ -315,6 +315,27 @@ fn cmd_build(
     let mut graph = rpg_core::graph::RPGraph::new(languages[0].name());
     graph.metadata.languages = languages.iter().map(|l| l.name().to_string()).collect();
 
+    // Load TOML paradigm definitions + compile tree-sitter queries
+    let paradigm_defs = rpg_parser::paradigms::defs::load_builtin_defs().map_err(|errs| {
+        anyhow::anyhow!(
+            "paradigm definition errors: {}",
+            errs.iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+    })?;
+    let qcache = rpg_parser::paradigms::query_engine::QueryCache::compile_all(&paradigm_defs)
+        .map_err(|errs| anyhow::anyhow!("query compile errors: {}", errs.join("; ")))?;
+    let active_defs =
+        rpg_parser::paradigms::detect_paradigms_toml(project_root, &languages, &paradigm_defs);
+    graph.metadata.paradigms = active_defs.iter().map(|d| d.name.clone()).collect();
+
+    if !active_defs.is_empty() {
+        let names: Vec<&str> = active_defs.iter().map(|d| d.name.as_str()).collect();
+        eprintln!("  Paradigms detected: {}", names.join(", "));
+    }
+
     // Collect and parse source files
     let files_to_parse = collect_source_files(project_root, &languages, &include, &exclude);
     let file_count = files_to_parse.len();
@@ -327,8 +348,12 @@ fn cmd_build(
             .progress_chars("##-"),
     );
 
-    // Parse all files in parallel (determines language per-file from extension)
-    let all_raw_entities = rpg_parser::parse_files_parallel(files_to_parse);
+    // Parse all files in parallel with paradigm pipeline (classify/query/features)
+    let all_raw_entities = if active_defs.is_empty() {
+        rpg_parser::parse_files_parallel(files_to_parse)
+    } else {
+        rpg_parser::parse_files_with_paradigms(files_to_parse, &active_defs, &qcache)
+    };
     pb.finish_and_clear();
 
     eprintln!(
@@ -353,11 +378,16 @@ fn cmd_build(
 
     // Artifact Grounding
     eprintln!("  Artifact grounding...");
+    let paradigm_ctx = rpg_encoder::grounding::ParadigmContext {
+        active_defs,
+        qcache: &qcache,
+    };
     rpg_encoder::grounding::populate_entity_deps(
         &mut graph,
         project_root,
         config.encoding.broadcast_imports,
         None,
+        Some(&paradigm_ctx),
     );
     rpg_encoder::grounding::ground_hierarchy(&mut graph);
     rpg_encoder::grounding::resolve_dependencies(&mut graph);
@@ -409,8 +439,47 @@ fn cmd_update(project_root: &Path, since: Option<String>) -> Result<()> {
     let mut graph = rpg_core::storage::load(project_root)?;
     let config = RpgConfig::load(project_root)?;
 
+    // Detect paradigms for framework-aware entity classification
+    // Backward compat: fall back to singular `language` field for older graphs
+    let detected_langs: Vec<rpg_parser::languages::Language> =
+        if !graph.metadata.languages.is_empty() {
+            graph
+                .metadata
+                .languages
+                .iter()
+                .filter_map(|l| rpg_parser::languages::Language::from_name(l))
+                .collect()
+        } else {
+            rpg_parser::languages::Language::from_name(&graph.metadata.language)
+                .into_iter()
+                .collect()
+        };
+    let paradigm_defs = rpg_parser::paradigms::defs::load_builtin_defs().map_err(|errs| {
+        anyhow::anyhow!(
+            "paradigm definition errors: {}",
+            errs.iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+    })?;
+    let qcache = rpg_parser::paradigms::query_engine::QueryCache::compile_all(&paradigm_defs)
+        .map_err(|errs| anyhow::anyhow!("query compile errors: {}", errs.join("; ")))?;
+    let active_defs =
+        rpg_parser::paradigms::detect_paradigms_toml(project_root, &detected_langs, &paradigm_defs);
+    graph.metadata.paradigms = active_defs.iter().map(|d| d.name.clone()).collect();
+    let paradigm_pipeline = rpg_encoder::evolution::ParadigmPipeline {
+        active_defs,
+        qcache: &qcache,
+    };
+
     eprintln!("Running incremental update...");
-    let summary = rpg_encoder::evolution::run_update(&mut graph, project_root, since.as_deref())?;
+    let summary = rpg_encoder::evolution::run_update(
+        &mut graph,
+        project_root,
+        since.as_deref(),
+        Some(&paradigm_pipeline),
+    )?;
 
     rpg_core::storage::save_with_config(project_root, &graph, &config.storage)?;
 

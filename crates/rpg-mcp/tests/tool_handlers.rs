@@ -159,17 +159,53 @@ fn build_nextjs_fixture_graph() -> RPGraph {
         root.display()
     );
 
+    // Load TOML paradigm defs + compile queries
+    let paradigm_defs = rpg_parser::paradigms::defs::load_builtin_defs().unwrap();
+    let qcache =
+        rpg_parser::paradigms::query_engine::QueryCache::compile_all(&paradigm_defs).unwrap();
+    let languages = vec![Language::TYPESCRIPT];
+    let active_defs =
+        rpg_parser::paradigms::detect_paradigms_toml(&root, &languages, &paradigm_defs);
+
     let mut graph = RPGraph::new("typescript");
     for (rel_path, source) in &files {
-        let entities = extract_entities(rel_path, source, Language::TypeScript);
-        for entity in entities {
+        let mut raw_entities = extract_entities(rel_path, source, Language::TYPESCRIPT);
+
+        // TOML-driven paradigm pipeline: classify + entity queries + builtin features
+        rpg_parser::paradigms::classify::classify_entities(
+            &active_defs,
+            rel_path,
+            &mut raw_entities,
+        );
+        let extra = rpg_parser::paradigms::query_engine::execute_entity_queries(
+            &qcache,
+            &active_defs,
+            rel_path,
+            source,
+            Language::TYPESCRIPT,
+            &raw_entities,
+        );
+        raw_entities.extend(extra);
+        rpg_parser::paradigms::features::apply_builtin_entity_features(
+            &active_defs,
+            rel_path,
+            source,
+            Language::TYPESCRIPT,
+            &mut raw_entities,
+        );
+
+        for entity in raw_entities {
             graph.insert_entity(entity.into_entity());
         }
     }
 
     graph.create_module_entities();
     graph.build_file_path_hierarchy();
-    grounding::populate_entity_deps(&mut graph, &root, false, None);
+    let paradigm_ctx = grounding::ParadigmContext {
+        active_defs: active_defs.clone(),
+        qcache: &qcache,
+    };
+    grounding::populate_entity_deps(&mut graph, &root, false, None, Some(&paradigm_ctx));
     grounding::resolve_dependencies(&mut graph);
     graph.assign_hierarchy_ids();
     graph.aggregate_hierarchy_features();

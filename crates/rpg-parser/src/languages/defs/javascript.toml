@@ -1,0 +1,11 @@
+schema_version = 1
+name = "javascript"
+extensions = ["js", "jsx", "mjs", "cjs"]
+glob = "**/*.{js,jsx,mjs,cjs}"
+
+[grammar]
+crate_path = "tree_sitter_javascript::LANGUAGE"
+
+[builtin]
+entity_extractor = "extract_javascript_entities"
+dep_extractor = "extract_js_deps"

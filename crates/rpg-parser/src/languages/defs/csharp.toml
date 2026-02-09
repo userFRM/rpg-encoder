@@ -1,0 +1,11 @@
+schema_version = 1
+name = "csharp"
+extensions = ["cs"]
+glob = "**/*.cs"
+
+[grammar]
+crate_path = "tree_sitter_c_sharp::LANGUAGE"
+
+[builtin]
+entity_extractor = "extract_csharp_entities"
+dep_extractor = "extract_csharp_deps"

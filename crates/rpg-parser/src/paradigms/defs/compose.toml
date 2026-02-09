@@ -1,0 +1,39 @@
+schema_version = 1
+name = "compose"
+priority = 10
+languages = ["kotlin"]
+
+[detect]
+deps = ["androidx.compose"]
+
+[[classify]]
+id = "compose.composable"
+action = { reclassify = "component" }
+[classify.match]
+kind = "function"
+source_contains_any = ["@Composable"]
+
+[[classify]]
+id = "compose.viewmodel"
+action = { reclassify = "service" }
+[classify.match]
+kind = "class"
+source_contains_any = [": ViewModel(", "ViewModel()"]
+
+[prompt_hints]
+lifting = """
+- **Composables** (@Composable functions): describe what the user sees or interacts with
+- **ViewModels** (ViewModel subclasses): describe the screen state and business logic
+"""
+synthesis = """
+- For composable files: capture the screen purpose and user interactions
+- For ViewModel files: capture the state management and data operations
+"""
+hierarchy = """
+- Composables: "UserInterface/feature screen/render specific view"
+- ViewModels: "StateManagement/feature domain/manage screen state"
+"""
+discovery = """
+- Group Compose screens by feature domain
+- ViewModels and their composables belong to the same feature area
+"""

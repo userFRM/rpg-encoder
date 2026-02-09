@@ -1,0 +1,11 @@
+schema_version = 1
+name = "ruby"
+extensions = ["rb"]
+glob = "**/*.rb"
+
+[grammar]
+crate_path = "tree_sitter_ruby::LANGUAGE"
+
+[builtin]
+entity_extractor = "extract_ruby_entities"
+dep_extractor = "extract_ruby_deps"

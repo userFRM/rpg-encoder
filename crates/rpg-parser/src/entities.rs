@@ -216,17 +216,16 @@ fn extract_rust_node(
 }
 
 /// Generic entity extraction dispatching to the correct language extractor.
+///
+/// Tries the builtin extractor registered in the language TOML first.
+/// Falls back to an empty result for languages without a builtin extractor.
 pub fn extract_entities(path: &Path, source: &str, language: Language) -> Vec<RawEntity> {
-    match language {
-        Language::Python => extract_python_entities(path, source),
-        Language::Rust => extract_rust_entities(path, source),
-        Language::TypeScript => extract_typescript_entities(path, source),
-        Language::JavaScript => extract_javascript_entities(path, source),
-        Language::Go => extract_go_entities(path, source),
-        Language::Java => extract_java_entities(path, source),
-        Language::C => extract_c_entities(path, source),
-        Language::Cpp => extract_cpp_entities(path, source),
+    if let Some(extractor_name) = crate::languages::builtin_entity_extractor_name(language)
+        && let Some(extractor) = crate::languages::builtin_entity_extractor(extractor_name)
+    {
+        return extractor(path, source);
     }
+    Vec::new()
 }
 
 // ---------------------------------------------------------------------------
@@ -235,12 +234,12 @@ pub fn extract_entities(path: &Path, source: &str, language: Language) -> Vec<Ra
 
 /// Extract entities from a TypeScript source file.
 pub fn extract_typescript_entities(path: &Path, source: &str) -> Vec<RawEntity> {
-    extract_js_like_entities(path, source, Language::TypeScript)
+    extract_js_like_entities(path, source, Language::TYPESCRIPT)
 }
 
 /// Extract entities from a JavaScript source file.
 pub fn extract_javascript_entities(path: &Path, source: &str) -> Vec<RawEntity> {
-    extract_js_like_entities(path, source, Language::JavaScript)
+    extract_js_like_entities(path, source, Language::JAVASCRIPT)
 }
 
 fn extract_js_like_entities(path: &Path, source: &str, lang: Language) -> Vec<RawEntity> {
@@ -670,7 +669,7 @@ fn extract_destructured_hooks(
 
 /// Extract entities from a Go source file.
 pub fn extract_go_entities(path: &Path, source: &str) -> Vec<RawEntity> {
-    let lang = Language::Go.ts_language();
+    let lang = Language::GO.ts_language();
     let mut parser = tree_sitter::Parser::new();
     if parser.set_language(&lang).is_err() {
         return Vec::new();
@@ -758,7 +757,7 @@ pub fn extract_go_entities(path: &Path, source: &str) -> Vec<RawEntity> {
 
 /// Extract entities from a Java source file.
 pub fn extract_java_entities(path: &Path, source: &str) -> Vec<RawEntity> {
-    let lang = Language::Java.ts_language();
+    let lang = Language::JAVA.ts_language();
     let mut parser = tree_sitter::Parser::new();
     if parser.set_language(&lang).is_err() {
         return Vec::new();
@@ -834,7 +833,7 @@ pub fn extract_c_entities(path: &Path, source: &str) -> Vec<RawEntity> {
 
 /// Extract entities from a C++ source file.
 pub fn extract_cpp_entities(path: &Path, source: &str) -> Vec<RawEntity> {
-    extract_c_like_entities(path, source, Language::Cpp)
+    extract_c_like_entities(path, source, Language::CPP)
 }
 
 fn extract_c_like_entities(path: &Path, source: &str, lang: Language) -> Vec<RawEntity> {
@@ -896,7 +895,7 @@ fn extract_c_node(
                         source_text: source[child.byte_range()].to_string(),
                     });
                     // C++: recurse into class/struct body for methods
-                    if lang == Language::Cpp
+                    if lang == Language::CPP
                         && let Some(body) = child.child_by_field_name("body")
                     {
                         extract_c_node(&body, path, source, Some(name), entities, lang);
@@ -934,5 +933,553 @@ pub fn extract_c_declarator_name(node: &tree_sitter::Node, source: &str) -> Opti
                 .map(|n| source[n.byte_range()].to_string())
         }
         _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C#
+// ---------------------------------------------------------------------------
+
+/// Extract entities from a C# source file.
+pub fn extract_csharp_entities(path: &Path, source: &str) -> Vec<RawEntity> {
+    let lang = Language::CSHARP.ts_language();
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&lang).is_err() {
+        return Vec::new();
+    }
+    let Some(tree) = parser.parse(source.as_bytes(), None) else {
+        return Vec::new();
+    };
+    let mut entities = Vec::new();
+    extract_csharp_node(&tree.root_node(), path, source, None, &mut entities);
+    entities
+}
+
+fn extract_csharp_node(
+    node: &tree_sitter::Node,
+    path: &Path,
+    source: &str,
+    parent_class: Option<&str>,
+    entities: &mut Vec<RawEntity>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "class_declaration"
+            | "interface_declaration"
+            | "struct_declaration"
+            | "enum_declaration"
+            | "record_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let class_name = &source[name_node.byte_range()];
+                    entities.push(RawEntity {
+                        name: class_name.to_string(),
+                        kind: EntityKind::Class,
+                        file: path.to_path_buf(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_class: parent_class.map(String::from),
+                        source_text: source[child.byte_range()].to_string(),
+                    });
+                    if let Some(body) = child.child_by_field_name("body") {
+                        extract_csharp_node(&body, path, source, Some(class_name), entities);
+                    }
+                }
+            }
+            "method_declaration" | "constructor_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let name = &source[name_node.byte_range()];
+                    entities.push(RawEntity {
+                        name: name.to_string(),
+                        kind: EntityKind::Method,
+                        file: path.to_path_buf(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_class: parent_class.map(String::from),
+                        source_text: source[child.byte_range()].to_string(),
+                    });
+                }
+            }
+            "namespace_declaration" | "file_scoped_namespace_declaration" => {
+                extract_csharp_node(&child, path, source, parent_class, entities);
+            }
+            _ => {
+                if parent_class.is_none() {
+                    extract_csharp_node(&child, path, source, None, entities);
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PHP
+// ---------------------------------------------------------------------------
+
+/// Extract entities from a PHP source file.
+pub fn extract_php_entities(path: &Path, source: &str) -> Vec<RawEntity> {
+    let lang = Language::PHP.ts_language();
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&lang).is_err() {
+        return Vec::new();
+    }
+    let Some(tree) = parser.parse(source.as_bytes(), None) else {
+        return Vec::new();
+    };
+    let mut entities = Vec::new();
+    extract_php_node(&tree.root_node(), path, source, None, &mut entities);
+    entities
+}
+
+fn extract_php_node(
+    node: &tree_sitter::Node,
+    path: &Path,
+    source: &str,
+    parent_class: Option<&str>,
+    entities: &mut Vec<RawEntity>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "class_declaration"
+            | "interface_declaration"
+            | "trait_declaration"
+            | "enum_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let class_name = &source[name_node.byte_range()];
+                    entities.push(RawEntity {
+                        name: class_name.to_string(),
+                        kind: EntityKind::Class,
+                        file: path.to_path_buf(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_class: parent_class.map(String::from),
+                        source_text: source[child.byte_range()].to_string(),
+                    });
+                    if let Some(body) = child.child_by_field_name("body") {
+                        extract_php_node(&body, path, source, Some(class_name), entities);
+                    }
+                }
+            }
+            "function_definition" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let name = &source[name_node.byte_range()];
+                    entities.push(RawEntity {
+                        name: name.to_string(),
+                        kind: EntityKind::Function,
+                        file: path.to_path_buf(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_class: parent_class.map(String::from),
+                        source_text: source[child.byte_range()].to_string(),
+                    });
+                }
+            }
+            "method_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let name = &source[name_node.byte_range()];
+                    entities.push(RawEntity {
+                        name: name.to_string(),
+                        kind: EntityKind::Method,
+                        file: path.to_path_buf(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_class: parent_class.map(String::from),
+                        source_text: source[child.byte_range()].to_string(),
+                    });
+                }
+            }
+            _ => {
+                extract_php_node(&child, path, source, parent_class, entities);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ruby
+// ---------------------------------------------------------------------------
+
+/// Extract entities from a Ruby source file.
+pub fn extract_ruby_entities(path: &Path, source: &str) -> Vec<RawEntity> {
+    let lang = Language::RUBY.ts_language();
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&lang).is_err() {
+        return Vec::new();
+    }
+    let Some(tree) = parser.parse(source.as_bytes(), None) else {
+        return Vec::new();
+    };
+    let mut entities = Vec::new();
+    extract_ruby_node(&tree.root_node(), path, source, None, &mut entities);
+    entities
+}
+
+fn extract_ruby_node(
+    node: &tree_sitter::Node,
+    path: &Path,
+    source: &str,
+    parent_class: Option<&str>,
+    entities: &mut Vec<RawEntity>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "class" | "module" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let class_name = &source[name_node.byte_range()];
+                    entities.push(RawEntity {
+                        name: class_name.to_string(),
+                        kind: EntityKind::Class,
+                        file: path.to_path_buf(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_class: parent_class.map(String::from),
+                        source_text: source[child.byte_range()].to_string(),
+                    });
+                    // Recurse into class/module body for methods
+                    if let Some(body) = child.child_by_field_name("body") {
+                        extract_ruby_node(&body, path, source, Some(class_name), entities);
+                    }
+                }
+            }
+            "method" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let name = &source[name_node.byte_range()];
+                    let kind = if parent_class.is_some() {
+                        EntityKind::Method
+                    } else {
+                        EntityKind::Function
+                    };
+                    entities.push(RawEntity {
+                        name: name.to_string(),
+                        kind,
+                        file: path.to_path_buf(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_class: parent_class.map(String::from),
+                        source_text: source[child.byte_range()].to_string(),
+                    });
+                }
+            }
+            "singleton_method" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let name = &source[name_node.byte_range()];
+                    entities.push(RawEntity {
+                        name: name.to_string(),
+                        kind: EntityKind::Method,
+                        file: path.to_path_buf(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_class: parent_class.map(String::from),
+                        source_text: source[child.byte_range()].to_string(),
+                    });
+                }
+            }
+            _ => {
+                extract_ruby_node(&child, path, source, parent_class, entities);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Kotlin
+// ---------------------------------------------------------------------------
+
+/// Extract entities from a Kotlin source file.
+pub fn extract_kotlin_entities(path: &Path, source: &str) -> Vec<RawEntity> {
+    let lang = Language::KOTLIN.ts_language();
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&lang).is_err() {
+        return Vec::new();
+    }
+    let Some(tree) = parser.parse(source.as_bytes(), None) else {
+        return Vec::new();
+    };
+    let mut entities = Vec::new();
+    extract_kotlin_node(&tree.root_node(), path, source, None, &mut entities);
+    entities
+}
+
+fn extract_kotlin_node(
+    node: &tree_sitter::Node,
+    path: &Path,
+    source: &str,
+    parent_class: Option<&str>,
+    entities: &mut Vec<RawEntity>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "class_declaration" | "object_declaration" | "interface_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let class_name = &source[name_node.byte_range()];
+                    entities.push(RawEntity {
+                        name: class_name.to_string(),
+                        kind: EntityKind::Class,
+                        file: path.to_path_buf(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_class: parent_class.map(String::from),
+                        source_text: source[child.byte_range()].to_string(),
+                    });
+                    // kotlin-ng uses "class_body" / "enum_class_body" child nodes (not a "body" field)
+                    let body = child.child_by_field_name("body").or_else(|| {
+                        let mut c = child.walk();
+                        child
+                            .children(&mut c)
+                            .find(|n| n.kind() == "class_body" || n.kind() == "enum_class_body")
+                    });
+                    if let Some(body) = body {
+                        extract_kotlin_node(&body, path, source, Some(class_name), entities);
+                    }
+                }
+            }
+            "function_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let name = &source[name_node.byte_range()];
+                    let kind = if parent_class.is_some() {
+                        EntityKind::Method
+                    } else {
+                        EntityKind::Function
+                    };
+                    entities.push(RawEntity {
+                        name: name.to_string(),
+                        kind,
+                        file: path.to_path_buf(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_class: parent_class.map(String::from),
+                        source_text: source[child.byte_range()].to_string(),
+                    });
+                }
+            }
+            _ => {
+                extract_kotlin_node(&child, path, source, parent_class, entities);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Swift
+// ---------------------------------------------------------------------------
+
+/// Extract entities from a Swift source file.
+pub fn extract_swift_entities(path: &Path, source: &str) -> Vec<RawEntity> {
+    let lang = Language::SWIFT.ts_language();
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&lang).is_err() {
+        return Vec::new();
+    }
+    let Some(tree) = parser.parse(source.as_bytes(), None) else {
+        return Vec::new();
+    };
+    let mut entities = Vec::new();
+    extract_swift_node(&tree.root_node(), path, source, None, &mut entities);
+    entities
+}
+
+fn extract_swift_node(
+    node: &tree_sitter::Node,
+    path: &Path,
+    source: &str,
+    parent_class: Option<&str>,
+    entities: &mut Vec<RawEntity>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "class_declaration"
+            | "struct_declaration"
+            | "protocol_declaration"
+            | "enum_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let class_name = &source[name_node.byte_range()];
+                    entities.push(RawEntity {
+                        name: class_name.to_string(),
+                        kind: EntityKind::Class,
+                        file: path.to_path_buf(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_class: parent_class.map(String::from),
+                        source_text: source[child.byte_range()].to_string(),
+                    });
+                    if let Some(body) = child.child_by_field_name("body") {
+                        extract_swift_node(&body, path, source, Some(class_name), entities);
+                    }
+                }
+            }
+            "function_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let name = &source[name_node.byte_range()];
+                    let kind = if parent_class.is_some() {
+                        EntityKind::Method
+                    } else {
+                        EntityKind::Function
+                    };
+                    entities.push(RawEntity {
+                        name: name.to_string(),
+                        kind,
+                        file: path.to_path_buf(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_class: parent_class.map(String::from),
+                        source_text: source[child.byte_range()].to_string(),
+                    });
+                }
+            }
+            "init_declaration" => {
+                // Swift initializer — use "init" as the method name
+                entities.push(RawEntity {
+                    name: "init".to_string(),
+                    kind: EntityKind::Method,
+                    file: path.to_path_buf(),
+                    line_start: child.start_position().row + 1,
+                    line_end: child.end_position().row + 1,
+                    parent_class: parent_class.map(String::from),
+                    source_text: source[child.byte_range()].to_string(),
+                });
+            }
+            "extension_declaration" => {
+                // Recurse into extension body, treating it like a class extension
+                let ext_name = child
+                    .child_by_field_name("name")
+                    .map(|n| &source[n.byte_range()]);
+                let effective_parent = ext_name.or(parent_class);
+                if let Some(body) = child.child_by_field_name("body") {
+                    extract_swift_node(&body, path, source, effective_parent, entities);
+                }
+            }
+            _ => {
+                extract_swift_node(&child, path, source, parent_class, entities);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scala
+// ---------------------------------------------------------------------------
+
+/// Extract entities from a Scala source file.
+pub fn extract_scala_entities(path: &Path, source: &str) -> Vec<RawEntity> {
+    let lang = Language::SCALA.ts_language();
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&lang).is_err() {
+        return Vec::new();
+    }
+    let Some(tree) = parser.parse(source.as_bytes(), None) else {
+        return Vec::new();
+    };
+    let mut entities = Vec::new();
+    extract_scala_node(&tree.root_node(), path, source, None, &mut entities);
+    entities
+}
+
+fn extract_scala_node(
+    node: &tree_sitter::Node,
+    path: &Path,
+    source: &str,
+    parent_class: Option<&str>,
+    entities: &mut Vec<RawEntity>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "class_definition" | "object_definition" | "trait_definition" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let class_name = &source[name_node.byte_range()];
+                    entities.push(RawEntity {
+                        name: class_name.to_string(),
+                        kind: EntityKind::Class,
+                        file: path.to_path_buf(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_class: parent_class.map(String::from),
+                        source_text: source[child.byte_range()].to_string(),
+                    });
+                    if let Some(body) = child.child_by_field_name("body") {
+                        extract_scala_node(&body, path, source, Some(class_name), entities);
+                    }
+                }
+            }
+            "function_definition" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let name = &source[name_node.byte_range()];
+                    let kind = if parent_class.is_some() {
+                        EntityKind::Method
+                    } else {
+                        EntityKind::Function
+                    };
+                    entities.push(RawEntity {
+                        name: name.to_string(),
+                        kind,
+                        file: path.to_path_buf(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_class: parent_class.map(String::from),
+                        source_text: source[child.byte_range()].to_string(),
+                    });
+                }
+            }
+            _ => {
+                extract_scala_node(&child, path, source, parent_class, entities);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bash
+// ---------------------------------------------------------------------------
+
+/// Extract entities from a Bash/shell script source file.
+pub fn extract_bash_entities(path: &Path, source: &str) -> Vec<RawEntity> {
+    let lang = Language::BASH.ts_language();
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&lang).is_err() {
+        return Vec::new();
+    }
+    let Some(tree) = parser.parse(source.as_bytes(), None) else {
+        return Vec::new();
+    };
+    let mut entities = Vec::new();
+    extract_bash_node(&tree.root_node(), path, source, &mut entities);
+    entities
+}
+
+fn extract_bash_node(
+    node: &tree_sitter::Node,
+    path: &Path,
+    source: &str,
+    entities: &mut Vec<RawEntity>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "function_definition" {
+            // Try field name "name" first, then fall back to finding a "word" child
+            let name = child
+                .child_by_field_name("name")
+                .or_else(|| {
+                    let mut c = child.walk();
+                    child.children(&mut c).find(|n| n.kind() == "word")
+                })
+                .map(|n| source[n.byte_range()].to_string());
+            if let Some(name) = name {
+                entities.push(RawEntity {
+                    name,
+                    kind: EntityKind::Function,
+                    file: path.to_path_buf(),
+                    line_start: child.start_position().row + 1,
+                    line_end: child.end_position().row + 1,
+                    parent_class: None,
+                    source_text: source[child.byte_range()].to_string(),
+                });
+            }
+        } else {
+            extract_bash_node(&child, path, source, entities);
+        }
     }
 }

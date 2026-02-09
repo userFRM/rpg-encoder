@@ -6,7 +6,7 @@ use std::path::Path;
 #[test]
 fn test_extract_cpp_function() {
     let source = "int main() { return 0; }\n";
-    let entities = extract_entities(Path::new("test.cpp"), source, Language::Cpp);
+    let entities = extract_entities(Path::new("test.cpp"), source, Language::CPP);
     assert_eq!(entities.len(), 1);
     assert_eq!(entities[0].name, "main");
     assert_eq!(entities[0].kind, EntityKind::Function);
@@ -16,7 +16,7 @@ fn test_extract_cpp_function() {
 #[test]
 fn test_extract_cpp_class_with_method() {
     let source = "class Foo { public: void bar() {} };\n";
-    let entities = extract_entities(Path::new("test.cpp"), source, Language::Cpp);
+    let entities = extract_entities(Path::new("test.cpp"), source, Language::CPP);
     assert!(
         entities
             .iter()
@@ -30,7 +30,7 @@ fn test_extract_cpp_class_with_method() {
 #[test]
 fn test_extract_cpp_struct() {
     let source = "struct Point { int x; int y; };\n";
-    let entities = extract_entities(Path::new("test.cpp"), source, Language::Cpp);
+    let entities = extract_entities(Path::new("test.cpp"), source, Language::CPP);
     assert_eq!(entities.len(), 1);
     assert_eq!(entities[0].name, "Point");
     assert_eq!(entities[0].kind, EntityKind::Class);
@@ -39,7 +39,7 @@ fn test_extract_cpp_struct() {
 #[test]
 fn test_extract_cpp_standalone_function() {
     let source = "void greet() {}\n";
-    let entities = extract_entities(Path::new("test.cpp"), source, Language::Cpp);
+    let entities = extract_entities(Path::new("test.cpp"), source, Language::CPP);
     assert_eq!(entities.len(), 1);
     assert_eq!(entities[0].name, "greet");
     assert_eq!(entities[0].kind, EntityKind::Function);
@@ -55,7 +55,7 @@ public:
     int sub(int a, int b) { return a - b; }
 };
 ";
-    let entities = extract_entities(Path::new("test.cpp"), source, Language::Cpp);
+    let entities = extract_entities(Path::new("test.cpp"), source, Language::CPP);
     assert!(
         entities
             .iter()

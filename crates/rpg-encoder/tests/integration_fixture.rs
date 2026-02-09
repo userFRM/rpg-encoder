@@ -52,7 +52,7 @@ fn build_fixture_graph() -> RPGraph {
     // Parse all files
     let mut all_entities: Vec<RawEntity> = Vec::new();
     for (rel_path, source) in &files {
-        let raw = extract_entities(rel_path, source, Language::Python);
+        let raw = extract_entities(rel_path, source, Language::PYTHON);
         all_entities.extend(raw);
     }
 

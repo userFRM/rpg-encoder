@@ -1,0 +1,62 @@
+schema_version = 1
+name = "rails"
+priority = 10
+languages = ["ruby"]
+
+[detect]
+deps = ["rails"]
+config_files = ["config/application.rb"]
+
+[[classify]]
+id = "rails.controller"
+action = { reclassify = "controller" }
+[classify.match]
+kind = "class"
+source_contains_any = [
+  "ApplicationController",
+  "ActionController::Base",
+  "< ApplicationController",
+  "< ActionController::Base",
+]
+
+[[classify]]
+id = "rails.model"
+action = { reclassify = "model" }
+[classify.match]
+kind = "class"
+source_contains_any = [
+  "ApplicationRecord",
+  "ActiveRecord::Base",
+  "< ApplicationRecord",
+  "< ActiveRecord::Base",
+]
+
+[[classify]]
+id = "rails.test"
+action = { reclassify = "test" }
+[classify.match]
+kind = "class"
+source_contains_any = [
+  "ActiveSupport::TestCase",
+  "ActionDispatch::IntegrationTest",
+  "< ActiveSupport::TestCase",
+]
+
+[prompt_hints]
+lifting = """
+- **Controllers** (ApplicationController subclasses): describe the HTTP action and resource
+- **Models** (ActiveRecord): describe the domain entity, validations, and associations
+- **Concerns**: describe the shared behavior they mix in
+"""
+synthesis = """
+- For controller files: capture the resource actions (index, show, create, etc.)
+- For model files: capture the domain entity, validations, and associations
+"""
+hierarchy = """
+- Controllers: "WebEndpoints/resource management/handle user actions"
+- Models: "DataModel/domain entities/define user schema"
+"""
+discovery = """
+- Group Rails controllers and models by resource domain
+- Concerns and initializers form a CrossCutting area
+"""

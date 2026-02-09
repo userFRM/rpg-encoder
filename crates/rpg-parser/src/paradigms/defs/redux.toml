@@ -1,0 +1,117 @@
+schema_version = 1
+name = "redux"
+priority = 20
+languages = ["typescript", "javascript"]
+
+[detect]
+deps = ["@reduxjs/toolkit", "redux"]
+
+# Skip createAsyncThunk (keep as Function, not Store) — terminal freeze
+[[classify]]
+id = "redux.skip_thunk"
+action = "skip"
+[classify.match]
+kind = "function"
+source_contains_any = ["createAsyncThunk("]
+
+# Store entities: configureStore, createSlice, createApi, createStore
+[[classify]]
+id = "redux.store_by_call"
+action = { reclassify = "store" }
+[classify.match]
+kind = "function"
+source_contains_any = ["configureStore(", "createStore(", "createSlice(", "createApi("]
+
+# Store entities: name contains store/slice
+[[classify]]
+id = "redux.store_by_name"
+action = { reclassify = "store" }
+[classify.match]
+kind = "function"
+name_regex = "(?i)(^store|store$|Store|slice$)"
+
+# Entity queries: extract store/slice/api entities via tree-sitter
+[[entity_queries]]
+id = "redux.store_entities"
+languages = ["typescript", "javascript"]
+entity_kind = "store"
+entity_name = "@name"
+query = """
+(variable_declarator
+  name: (identifier) @name
+  value: (call_expression
+    function: (identifier) @callee
+    (#match? @callee "^(configureStore|createStore|createSlice|createApi)$")))
+"""
+
+[[entity_queries]]
+id = "redux.async_thunk"
+languages = ["typescript", "javascript"]
+entity_kind = "function"
+entity_name = "@name"
+query = """
+(variable_declarator
+  name: (identifier) @name
+  value: (call_expression
+    function: (identifier) @callee
+    (#eq? @callee "createAsyncThunk")))
+"""
+
+# Extract reducer functions from createSlice({ reducers: { ... } })
+[[entity_queries]]
+id = "redux.slice_reducers"
+languages = ["typescript", "javascript"]
+entity_kind = "function"
+entity_name = "@reducer_name"
+parent = "@parent_name"
+query = """
+(variable_declarator
+  name: (identifier) @parent_name
+  value: (call_expression
+    function: (identifier) @fn (#eq? @fn "createSlice")
+    arguments: (arguments (object (pair
+      key: (property_identifier) @key (#eq? @key "reducers")
+      value: (object (pair
+        key: (property_identifier) @reducer_name)))))))
+"""
+
+# Extract destructured hooks: const { useGetPostsQuery } = postsApi;
+[[entity_queries]]
+id = "redux.destructured_hooks"
+languages = ["typescript", "javascript"]
+entity_kind = "hook"
+entity_name = "@hook_name"
+query = """
+(variable_declarator
+  name: (object_pattern
+    (shorthand_property_identifier_pattern) @hook_name
+    (#match? @hook_name "^use[A-Z]"))
+  value: (identifier))
+"""
+
+[features]
+redux_state_signals = true
+
+[prompt_hints]
+lifting = """
+- **Store/Slice** (createSlice, configureStore): describe the state domain. "manage authentication state" not "create Redux slice"
+- **Selectors** (select* functions): describe the derived state they compute. "compute logged-in status" not "select from state tree"
+- **Thunks** (createAsyncThunk): describe the async operation. "authenticate user credentials" not "dispatch async action"
+- **RTK Query APIs** (createApi): describe the data-fetching domain. "fetch posts from REST API"
+"""
+synthesis = """
+- For slice files: capture the state domain they manage (e.g., "manage authentication state, track login status")
+- For store configuration files: capture which domains are combined (e.g., "compose root reducer from auth and posts slices")
+- For API layer files (RTK Query): capture the external integrations and data shape
+"""
+hierarchy = """
+- Slices/stores: "StateManagement/authentication state/define auth reducers"
+- Selectors: "StateManagement/authentication queries/compute logged-in status"
+- Thunks: "StateManagement/authentication operations/authenticate user credentials"
+- RTK Query APIs: "DataFetching/post retrieval/fetch posts from API"
+- Store config: "StateManagement/store configuration/compose root reducer"
+"""
+discovery = """
+- State management (stores, slices, selectors, thunks, reducers) should form a dedicated StateManagement area
+- Data-fetching layers (RTK Query, React Query) may warrant their own DataFetching area if substantial
+"""

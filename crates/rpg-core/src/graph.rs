@@ -53,6 +53,9 @@ pub struct GraphMetadata {
     /// High-level architectural summary of the repository.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_summary: Option<String>,
+    /// Detected paradigms/frameworks (e.g., "react", "nextjs", "redux").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paradigms: Vec<String>,
 }
 
 /// A code entity (V_L node): function, class, or method.
@@ -101,6 +104,85 @@ pub struct EntityDeps {
     pub state_written_by: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dispatched_by: Vec<String>,
+}
+
+impl EntityDeps {
+    /// Clear all forward dependency vectors.
+    pub fn clear_forward(&mut self) {
+        self.imports.clear();
+        self.invokes.clear();
+        self.inherits.clear();
+        self.composes.clear();
+        self.renders.clear();
+        self.reads_state.clear();
+        self.writes_state.clear();
+        self.dispatches.clear();
+    }
+
+    /// Clear all reverse dependency vectors.
+    pub fn clear_reverse(&mut self) {
+        self.imported_by.clear();
+        self.invoked_by.clear();
+        self.inherited_by.clear();
+        self.composed_by.clear();
+        self.rendered_by.clear();
+        self.state_read_by.clear();
+        self.state_written_by.clear();
+        self.dispatched_by.clear();
+    }
+
+    /// Iterate all forward dep vectors with their edge kinds.
+    pub fn forward_deps(&self) -> [(EdgeKind, &Vec<String>); 8] {
+        [
+            (EdgeKind::Imports, &self.imports),
+            (EdgeKind::Invokes, &self.invokes),
+            (EdgeKind::Inherits, &self.inherits),
+            (EdgeKind::Composes, &self.composes),
+            (EdgeKind::Renders, &self.renders),
+            (EdgeKind::ReadsState, &self.reads_state),
+            (EdgeKind::WritesState, &self.writes_state),
+            (EdgeKind::Dispatches, &self.dispatches),
+        ]
+    }
+
+    /// Push a source ID to the correct reverse dep vector for the given edge kind.
+    pub fn push_reverse(&mut self, kind: EdgeKind, source_id: String) {
+        let vec = match kind {
+            EdgeKind::Imports => &mut self.imported_by,
+            EdgeKind::Invokes => &mut self.invoked_by,
+            EdgeKind::Inherits => &mut self.inherited_by,
+            EdgeKind::Composes => &mut self.composed_by,
+            EdgeKind::Renders => &mut self.rendered_by,
+            EdgeKind::ReadsState => &mut self.state_read_by,
+            EdgeKind::WritesState => &mut self.state_written_by,
+            EdgeKind::Dispatches => &mut self.dispatched_by,
+            EdgeKind::Contains => return,
+        };
+        if !vec.contains(&source_id) {
+            vec.push(source_id);
+        }
+    }
+
+    /// Whether this entity has any call-site dependency info (invokes, inherits, or
+    /// paradigm-specific edges like renders/reads_state/writes_state/dispatches).
+    pub fn has_callsite_info(&self) -> bool {
+        !self.invokes.is_empty()
+            || !self.inherits.is_empty()
+            || !self.renders.is_empty()
+            || !self.reads_state.is_empty()
+            || !self.writes_state.is_empty()
+            || !self.dispatches.is_empty()
+    }
+
+    /// Whether any forward dep vector (excluding imports) contains the given symbol.
+    pub fn references_symbol(&self, sym: &str) -> bool {
+        self.invokes.iter().any(|s| s == sym)
+            || self.inherits.iter().any(|s| s == sym)
+            || self.renders.iter().any(|s| s == sym)
+            || self.reads_state.iter().any(|s| s == sym)
+            || self.writes_state.iter().any(|s| s == sym)
+            || self.dispatches.iter().any(|s| s == sym)
+    }
 }
 
 /// A node in the semantic hierarchy tree (V_H node).
@@ -262,6 +344,12 @@ pub enum EntityKind {
     Hook,
     Store,
     Module,
+    Controller,
+    Model,
+    Service,
+    Middleware,
+    Route,
+    Test,
 }
 
 impl RPGraph {
@@ -285,6 +373,7 @@ impl RPGraph {
                 lifted_entities: 0,
                 semantic_hierarchy: false,
                 repo_summary: None,
+                paradigms: Vec::new(),
             },
             hierarchy: BTreeMap::new(),
             entities: BTreeMap::new(),

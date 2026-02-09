@@ -1,0 +1,22 @@
+schema_version = 1
+name = "typescript"
+extensions = ["ts", "tsx"]
+glob = "**/*.{ts,tsx}"
+
+[grammar]
+crate_path = "tree_sitter_typescript::LANGUAGE_TSX"
+
+[[grammar.aliases]]
+name = "tsx"
+crate_path = "tree_sitter_typescript::LANGUAGE_TSX"
+for_extensions = ["tsx", "jsx"]
+expand = true
+
+[[grammar.aliases]]
+name = "typescript_strict"
+crate_path = "tree_sitter_typescript::LANGUAGE_TYPESCRIPT"
+for_extensions = ["ts"]
+
+[builtin]
+entity_extractor = "extract_typescript_entities"
+dep_extractor = "extract_js_deps"

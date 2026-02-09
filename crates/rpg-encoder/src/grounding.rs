@@ -4,8 +4,18 @@ use rpg_core::graph::{DependencyEdge, EdgeKind, HierarchyNode, RPGraph};
 use rpg_core::lca;
 use rpg_parser::deps;
 use rpg_parser::languages::Language;
+use rpg_parser::paradigms::defs::ParadigmDef;
+use rpg_parser::paradigms::query_engine::QueryCache;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
+
+/// Paradigm context for TOML-driven dependency extraction.
+/// When provided to `populate_entity_deps`, the TOML dep pipeline
+/// (query engine + built-in features) runs after base `extract_deps()`.
+pub struct ParadigmContext<'a> {
+    pub active_defs: Vec<&'a ParadigmDef>,
+    pub qcache: &'a QueryCache,
+}
 
 /// Ground all hierarchy nodes by computing LCA-based directory paths.
 pub fn ground_hierarchy(graph: &mut RPGraph) {
@@ -44,6 +54,7 @@ pub fn populate_entity_deps(
     project_root: &Path,
     broadcast_imports: bool,
     changed_files: Option<&[std::path::PathBuf]>,
+    paradigm_ctx: Option<&ParadigmContext<'_>>,
 ) {
     // Scope to changed files or all files
     let file_list: Vec<_> = match changed_files {
@@ -56,14 +67,7 @@ pub fn populate_entity_deps(
         if let Some(ids) = graph.file_index.get(rel_path) {
             for id in ids.clone() {
                 if let Some(entity) = graph.entities.get_mut(&id) {
-                    entity.deps.imports.clear();
-                    entity.deps.invokes.clear();
-                    entity.deps.inherits.clear();
-                    entity.deps.composes.clear();
-                    entity.deps.renders.clear();
-                    entity.deps.reads_state.clear();
-                    entity.deps.writes_state.clear();
-                    entity.deps.dispatches.clear();
+                    entity.deps.clear_forward();
                 }
             }
         }
@@ -82,7 +86,49 @@ pub fn populate_entity_deps(
             continue;
         };
 
-        let raw_deps = deps::extract_deps(rel_path, &source, language);
+        let mut raw_deps = deps::extract_deps(rel_path, &source, language);
+
+        // TOML-driven paradigm dep pipeline: dep queries + builtin features
+        if let Some(ctx) = paradigm_ctx {
+            let scopes = deps::build_scopes(&source, language);
+
+            rpg_parser::paradigms::query_engine::execute_dep_queries(
+                ctx.qcache,
+                &ctx.active_defs,
+                rel_path,
+                &source,
+                language,
+                &scopes,
+                &mut raw_deps,
+            );
+
+            // Collect entity snapshot for builtin dep features
+            let raw_entities: Vec<rpg_parser::entities::RawEntity> = graph
+                .file_index
+                .get(rel_path)
+                .into_iter()
+                .flat_map(|ids| ids.iter())
+                .filter_map(|id| graph.entities.get(id))
+                .map(|e| rpg_parser::entities::RawEntity {
+                    name: e.name.clone(),
+                    kind: e.kind,
+                    file: e.file.clone(),
+                    line_start: e.line_start,
+                    line_end: e.line_end,
+                    parent_class: e.parent_class.clone(),
+                    source_text: String::new(),
+                })
+                .collect();
+
+            rpg_parser::paradigms::features::apply_builtin_dep_features(
+                &ctx.active_defs,
+                rel_path,
+                &source,
+                language,
+                &raw_entities,
+                &mut raw_deps,
+            );
+        }
 
         // Get entity IDs for this file
         let entity_ids = match graph.file_index.get(rel_path) {
@@ -111,78 +157,18 @@ pub fn populate_entity_deps(
             })
             .collect();
 
-        // Map calls: match caller_entity name to actual entity
-        for call in &raw_deps.calls {
-            // Find the entity whose name matches the caller
-            for id in &entity_ids {
-                if let Some(entity) = graph.entities.get_mut(id) {
-                    let matches = entity.name == call.caller_entity
-                        || call.caller_entity.ends_with(&format!(".{}", entity.name))
-                        || call.caller_entity.ends_with(&format!("::{}", entity.name));
-                    if matches && !entity.deps.invokes.contains(&call.callee) {
-                        entity.deps.invokes.push(call.callee.clone());
-                    }
-                }
-            }
-        }
-
-        // Map renders: caller component/page -> rendered component
-        for render in &raw_deps.renders {
-            for id in &entity_ids {
-                if let Some(entity) = graph.entities.get_mut(id) {
-                    let matches = entity.name == render.caller_entity
-                        || render.caller_entity.ends_with(&format!(".{}", entity.name))
-                        || render
-                            .caller_entity
-                            .ends_with(&format!("::{}", entity.name));
-                    if matches && !entity.deps.renders.contains(&render.callee) {
-                        entity.deps.renders.push(render.callee.clone());
-                    }
-                }
-            }
-        }
-
-        // Map state reads: caller -> store/selector symbol
-        for read in &raw_deps.reads_state {
-            for id in &entity_ids {
-                if let Some(entity) = graph.entities.get_mut(id) {
-                    let matches = entity.name == read.caller_entity
-                        || read.caller_entity.ends_with(&format!(".{}", entity.name))
-                        || read.caller_entity.ends_with(&format!("::{}", entity.name));
-                    if matches && !entity.deps.reads_state.contains(&read.callee) {
-                        entity.deps.reads_state.push(read.callee.clone());
-                    }
-                }
-            }
-        }
-
-        // Map state writes: caller -> setter/update symbol
-        for write in &raw_deps.writes_state {
-            for id in &entity_ids {
-                if let Some(entity) = graph.entities.get_mut(id) {
-                    let matches = entity.name == write.caller_entity
-                        || write.caller_entity.ends_with(&format!(".{}", entity.name))
-                        || write.caller_entity.ends_with(&format!("::{}", entity.name));
-                    if matches && !entity.deps.writes_state.contains(&write.callee) {
-                        entity.deps.writes_state.push(write.callee.clone());
-                    }
-                }
-            }
-        }
-
-        // Map dispatches: caller -> action/event symbol
-        for dispatch in &raw_deps.dispatches {
-            for id in &entity_ids {
-                if let Some(entity) = graph.entities.get_mut(id) {
-                    let matches = entity.name == dispatch.caller_entity
-                        || dispatch
-                            .caller_entity
-                            .ends_with(&format!(".{}", entity.name))
-                        || dispatch
-                            .caller_entity
-                            .ends_with(&format!("::{}", entity.name));
-                    if matches && !entity.deps.dispatches.contains(&dispatch.callee) {
-                        entity.deps.dispatches.push(dispatch.callee.clone());
+        // Map call-like deps (calls, renders, reads_state, writes_state, dispatches)
+        // generically: match caller_entity name to actual entity, push to correct dep vector.
+        for (edge_kind, call_deps) in raw_deps.call_dep_vectors() {
+            for call in call_deps {
+                for id in &entity_ids {
+                    if let Some(entity) = graph.entities.get_mut(id) {
+                        let matches = entity.name == call.caller_entity
+                            || call.caller_entity.ends_with(&format!(".{}", entity.name))
+                            || call.caller_entity.ends_with(&format!("::{}", entity.name));
+                        if matches {
+                            push_forward_dep(&mut entity.deps, edge_kind, &call.callee);
+                        }
                     }
                 }
             }
@@ -217,29 +203,14 @@ pub fn populate_entity_deps(
         // Fall back to broadcast if the entity has no call-site info.
         for id in &entity_ids {
             if let Some(entity) = graph.entities.get_mut(id) {
-                let has_callsite_info = !entity.deps.invokes.is_empty()
-                    || !entity.deps.inherits.is_empty()
-                    || !entity.deps.renders.is_empty()
-                    || !entity.deps.reads_state.is_empty()
-                    || !entity.deps.writes_state.is_empty()
-                    || !entity.deps.dispatches.is_empty();
-
-                if has_callsite_info {
-                    // Only assign imports that the entity actually references
+                if entity.deps.has_callsite_info() {
                     for sym in &import_symbols {
-                        let referenced = entity.deps.invokes.contains(sym)
-                            || entity.deps.inherits.contains(sym)
-                            || entity.deps.renders.contains(sym)
-                            || entity.deps.reads_state.contains(sym)
-                            || entity.deps.writes_state.contains(sym)
-                            || entity.deps.dispatches.contains(sym);
-                        if referenced && !entity.deps.imports.contains(sym) {
+                        if entity.deps.references_symbol(sym) && !entity.deps.imports.contains(sym)
+                        {
                             entity.deps.imports.push(sym.clone());
                         }
                     }
                 } else if broadcast_imports {
-                    // Fallback: broadcast all imports when no call-site info available
-                    // (only when broadcast_imports is enabled)
                     for sym in &import_symbols {
                         if !entity.deps.imports.contains(sym) {
                             entity.deps.imports.push(sym.clone());
@@ -248,6 +219,22 @@ pub fn populate_entity_deps(
                 }
             }
         }
+    }
+}
+
+/// Push a callee to the correct forward dep vector for the given edge kind.
+fn push_forward_dep(deps: &mut rpg_core::graph::EntityDeps, kind: EdgeKind, callee: &str) {
+    let vec = match kind {
+        EdgeKind::Invokes => &mut deps.invokes,
+        EdgeKind::Renders => &mut deps.renders,
+        EdgeKind::ReadsState => &mut deps.reads_state,
+        EdgeKind::WritesState => &mut deps.writes_state,
+        EdgeKind::Dispatches => &mut deps.dispatches,
+        // These edge kinds are not call-like and are handled separately
+        EdgeKind::Imports | EdgeKind::Inherits | EdgeKind::Composes | EdgeKind::Contains => return,
+    };
+    if !vec.contains(&callee.to_string()) {
+        vec.push(callee.to_string());
     }
 }
 
@@ -282,183 +269,34 @@ pub fn resolve_dependencies(graph: &mut RPGraph) {
         .collect();
 
     for (source_id, deps, source_file) in &entity_pairs {
-        // Resolve invokes
-        for callee_name in &deps.invokes {
-            resolve_dep(
-                source_id,
-                callee_name,
-                source_file,
-                EdgeKind::Invokes,
-                &qualified_index,
-                &name_to_ids,
-                &mut edges,
-            );
-        }
-
-        // Resolve inherits
-        for parent_name in &deps.inherits {
-            resolve_dep(
-                source_id,
-                parent_name,
-                source_file,
-                EdgeKind::Inherits,
-                &qualified_index,
-                &name_to_ids,
-                &mut edges,
-            );
-        }
-
-        // Resolve imports (match by symbol name within project)
-        for import in &deps.imports {
-            resolve_dep(
-                source_id,
-                import,
-                source_file,
-                EdgeKind::Imports,
-                &qualified_index,
-                &name_to_ids,
-                &mut edges,
-            );
-        }
-
-        // Resolve composes (composition/aggregation relationships)
-        for compose_name in &deps.composes {
-            resolve_dep(
-                source_id,
-                compose_name,
-                source_file,
-                EdgeKind::Composes,
-                &qualified_index,
-                &name_to_ids,
-                &mut edges,
-            );
-        }
-
-        // Resolve renders (JSX/component composition relationships)
-        for rendered_name in &deps.renders {
-            resolve_dep(
-                source_id,
-                rendered_name,
-                source_file,
-                EdgeKind::Renders,
-                &qualified_index,
-                &name_to_ids,
-                &mut edges,
-            );
-        }
-
-        // Resolve reads_state (selector/store reads)
-        for read_name in &deps.reads_state {
-            resolve_dep(
-                source_id,
-                read_name,
-                source_file,
-                EdgeKind::ReadsState,
-                &qualified_index,
-                &name_to_ids,
-                &mut edges,
-            );
-        }
-
-        // Resolve writes_state (setters/store writes)
-        for write_name in &deps.writes_state {
-            resolve_dep(
-                source_id,
-                write_name,
-                source_file,
-                EdgeKind::WritesState,
-                &qualified_index,
-                &name_to_ids,
-                &mut edges,
-            );
-        }
-
-        // Resolve dispatches (action/event dispatch)
-        for dispatch_name in &deps.dispatches {
-            resolve_dep(
-                source_id,
-                dispatch_name,
-                source_file,
-                EdgeKind::Dispatches,
-                &qualified_index,
-                &name_to_ids,
-                &mut edges,
-            );
+        // Resolve all forward dep kinds generically
+        for (edge_kind, dep_names) in deps.forward_deps() {
+            for target_name in dep_names {
+                resolve_dep(
+                    source_id,
+                    target_name,
+                    source_file,
+                    edge_kind,
+                    &qualified_index,
+                    &name_to_ids,
+                    &mut edges,
+                );
+            }
         }
     }
 
     // Clear all reverse dep vectors before repopulating (prevents stale refs on re-resolve)
     for entity in graph.entities.values_mut() {
-        entity.deps.invoked_by.clear();
-        entity.deps.inherited_by.clear();
-        entity.deps.imported_by.clear();
-        entity.deps.composed_by.clear();
-        entity.deps.rendered_by.clear();
-        entity.deps.state_read_by.clear();
-        entity.deps.state_written_by.clear();
-        entity.deps.dispatched_by.clear();
+        entity.deps.clear_reverse();
     }
 
     // Build reverse edges in entity deps
     for edge in &edges {
-        match edge.kind {
-            EdgeKind::Invokes => {
-                if let Some(target) = graph.entities.get_mut(&edge.target)
-                    && !target.deps.invoked_by.contains(&edge.source)
-                {
-                    target.deps.invoked_by.push(edge.source.clone());
-                }
-            }
-            EdgeKind::Inherits => {
-                if let Some(target) = graph.entities.get_mut(&edge.target)
-                    && !target.deps.inherited_by.contains(&edge.source)
-                {
-                    target.deps.inherited_by.push(edge.source.clone());
-                }
-            }
-            EdgeKind::Imports => {
-                if let Some(target) = graph.entities.get_mut(&edge.target)
-                    && !target.deps.imported_by.contains(&edge.source)
-                {
-                    target.deps.imported_by.push(edge.source.clone());
-                }
-            }
-            EdgeKind::Composes => {
-                if let Some(target) = graph.entities.get_mut(&edge.target)
-                    && !target.deps.composed_by.contains(&edge.source)
-                {
-                    target.deps.composed_by.push(edge.source.clone());
-                }
-            }
-            EdgeKind::Renders => {
-                if let Some(target) = graph.entities.get_mut(&edge.target)
-                    && !target.deps.rendered_by.contains(&edge.source)
-                {
-                    target.deps.rendered_by.push(edge.source.clone());
-                }
-            }
-            EdgeKind::ReadsState => {
-                if let Some(target) = graph.entities.get_mut(&edge.target)
-                    && !target.deps.state_read_by.contains(&edge.source)
-                {
-                    target.deps.state_read_by.push(edge.source.clone());
-                }
-            }
-            EdgeKind::WritesState => {
-                if let Some(target) = graph.entities.get_mut(&edge.target)
-                    && !target.deps.state_written_by.contains(&edge.source)
-                {
-                    target.deps.state_written_by.push(edge.source.clone());
-                }
-            }
-            EdgeKind::Dispatches => {
-                if let Some(target) = graph.entities.get_mut(&edge.target)
-                    && !target.deps.dispatched_by.contains(&edge.source)
-                {
-                    target.deps.dispatched_by.push(edge.source.clone());
-                }
-            }
-            EdgeKind::Contains => {} // Containment edges don't have reverse dep entries
+        if edge.kind == EdgeKind::Contains {
+            continue;
+        }
+        if let Some(target) = graph.entities.get_mut(&edge.target) {
+            target.deps.push_reverse(edge.kind, edge.source.clone());
         }
     }
 

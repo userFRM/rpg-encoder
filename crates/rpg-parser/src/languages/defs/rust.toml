@@ -1,0 +1,11 @@
+schema_version = 1
+name = "rust"
+extensions = ["rs"]
+glob = "**/*.rs"
+
+[grammar]
+crate_path = "tree_sitter_rust::LANGUAGE"
+
+[builtin]
+entity_extractor = "extract_rust_entities"
+dep_extractor = "extract_rust_deps"

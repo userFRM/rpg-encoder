@@ -12,7 +12,7 @@ import "fmt"
 
 func main() { fmt.Println("hello") }
 "#;
-    let entities = extract_entities(Path::new("test.go"), source, Language::Go);
+    let entities = extract_entities(Path::new("test.go"), source, Language::GO);
     assert_eq!(entities.len(), 1);
     assert_eq!(entities[0].name, "main");
     assert_eq!(entities[0].kind, EntityKind::Function);
@@ -25,7 +25,7 @@ fn go_extract_function_with_params() {
 
 func add(a int, b int) int { return a + b }
 ";
-    let entities = extract_entities(Path::new("test.go"), source, Language::Go);
+    let entities = extract_entities(Path::new("test.go"), source, Language::GO);
     assert_eq!(entities.len(), 1);
     assert_eq!(entities[0].name, "add");
     assert_eq!(entities[0].kind, EntityKind::Function);
@@ -38,7 +38,7 @@ fn go_extract_method_with_receiver() {
 
 func (s *Server) Start() error { return nil }
 ";
-    let entities = extract_entities(Path::new("test.go"), source, Language::Go);
+    let entities = extract_entities(Path::new("test.go"), source, Language::GO);
     assert_eq!(entities.len(), 1);
     assert_eq!(entities[0].name, "Start");
     assert_eq!(entities[0].kind, EntityKind::Method);
@@ -53,7 +53,7 @@ type Config struct {
     Port int
 }
 ";
-    let entities = extract_entities(Path::new("test.go"), source, Language::Go);
+    let entities = extract_entities(Path::new("test.go"), source, Language::GO);
     assert_eq!(entities.len(), 1);
     assert_eq!(entities[0].name, "Config");
     assert_eq!(entities[0].kind, EntityKind::Class);
@@ -68,7 +68,7 @@ type Reader interface {
     Read(p []byte) (n int, err error)
 }
 ";
-    let entities = extract_entities(Path::new("test.go"), source, Language::Go);
+    let entities = extract_entities(Path::new("test.go"), source, Language::GO);
     assert_eq!(entities.len(), 1);
     assert_eq!(entities[0].name, "Reader");
     assert_eq!(entities[0].kind, EntityKind::Class);

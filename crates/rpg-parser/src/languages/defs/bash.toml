@@ -1,0 +1,11 @@
+schema_version = 1
+name = "bash"
+extensions = ["sh", "bash"]
+glob = "**/*.{sh,bash}"
+
+[grammar]
+crate_path = "tree_sitter_bash::LANGUAGE"
+
+[builtin]
+entity_extractor = "extract_bash_entities"
+dep_extractor = "extract_bash_deps"
