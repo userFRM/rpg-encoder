@@ -7,6 +7,10 @@ authors.workspace = true
 repository.workspace = true
 description = "Search, fetch, explore, and TOON serialization for RPG"
 
+[features]
+default = []
+embeddings = ["dep:fastembed"]
+
 [dependencies]
 rpg-core.workspace = true
 anyhow.workspace = true
@@ -14,6 +18,8 @@ globset.workspace = true
 strsim.workspace = true
 toon-format.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+fastembed = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

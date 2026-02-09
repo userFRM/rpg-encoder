@@ -540,6 +540,7 @@ fn cmd_search(
             line_nums,
             file_pattern,
             entity_type_filter: None,
+            embedding_scores: None,
         },
     );
 

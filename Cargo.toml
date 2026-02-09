@@ -138,6 +138,9 @@ rayon = "1.11.0"
 # Compression
 zstd = "0.13.3"
 
+# Embeddings
+fastembed = "5.8.1"
+
 # TOON format
 toon-format = { version = "0.4.1", default-features = false }
 

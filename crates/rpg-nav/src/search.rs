@@ -1,7 +1,7 @@
 //! SearchNode: intent-based code entity discovery.
 
 use rpg_core::graph::{Entity, EntityKind, RPGraph};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Search mode (matching the paper's SearchNode tool).
 #[derive(Debug, Clone, Copy)]
@@ -38,6 +38,9 @@ pub struct SearchParams<'a> {
     pub file_pattern: Option<&'a str>,
     /// Filter results to specific entity kinds (function, class, method).
     pub entity_type_filter: Option<Vec<EntityKind>>,
+    /// Pre-computed embedding scores (entity_id → cosine score) for hybrid blending.
+    /// When provided, features-mode search uses rank-based hybrid scoring.
+    pub embedding_scores: Option<&'a std::collections::HashMap<String, f64>>,
 }
 
 /// Search the RPG for entities matching a query with a configurable result limit.
@@ -58,6 +61,7 @@ pub fn search(
             line_nums: None,
             file_pattern: None,
             entity_type_filter: None,
+            embedding_scores: None,
         },
     )
 }
@@ -113,8 +117,21 @@ pub fn search_with_params(graph: &RPGraph, params: &SearchParams) -> Vec<SearchR
         })
         .collect();
 
+    // Collect IDs of entities that passed all user filters (scope/file/line/type).
+    // This ensures semantic-only results from embeddings respect the same filters.
+    let candidate_ids: HashSet<&String> = entities.iter().map(|(id, _)| *id).collect();
+
     match params.mode {
-        SearchMode::Features => search_features(&entities, &query_terms, params.limit),
+        SearchMode::Features => {
+            let lexical = search_features(&entities, &query_terms, params.limit);
+            maybe_hybrid_rerank(
+                graph,
+                &candidate_ids,
+                lexical,
+                params.embedding_scores,
+                params.limit,
+            )
+        }
         SearchMode::Snippets => search_snippets(&entities, &query_terms, params.limit),
         SearchMode::Auto => {
             // Merge features + snippets.
@@ -150,7 +167,15 @@ pub fn search_with_params(graph: &RPGraph, params: &SearchParams) -> Vec<SearchR
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
             merged.truncate(params.limit);
-            merged
+
+            // Apply hybrid reranking if embeddings available
+            maybe_hybrid_rerank(
+                graph,
+                &candidate_ids,
+                merged,
+                params.embedding_scores,
+                params.limit,
+            )
         }
     }
 }
@@ -365,6 +390,125 @@ fn search_snippets(
     });
     results.truncate(result_limit);
     results
+}
+
+/// Rank-based normalization: assign scores based on rank position.
+/// Returns entity_id → normalized score (1.0 = best, 0.0 = worst).
+fn rank_normalize(scores: &HashMap<String, f64>) -> HashMap<String, f64> {
+    if scores.is_empty() {
+        return HashMap::new();
+    }
+
+    let mut sorted: Vec<(&String, &f64)> = scores.iter().collect();
+    sorted.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let total = sorted.len() as f64;
+    sorted
+        .iter()
+        .enumerate()
+        .map(|(rank, (id, _))| ((*id).clone(), 1.0 - (rank as f64 / total)))
+        .collect()
+}
+
+/// If embedding scores are available, rerank results using rank-based hybrid blending
+/// (0.6 semantic + 0.4 lexical). Otherwise, pass through unchanged.
+///
+/// Entities that only appear in semantic scores (not in lexical results) are included
+/// as stub results — enabling true semantic discovery of entities the keyword search missed.
+/// Only entities in `candidate_ids` are considered (preserves user filters like scope/file/line).
+fn maybe_hybrid_rerank(
+    graph: &RPGraph,
+    candidate_ids: &HashSet<&String>,
+    lexical_results: Vec<SearchResult>,
+    embedding_scores: Option<&HashMap<String, f64>>,
+    limit: usize,
+) -> Vec<SearchResult> {
+    let Some(sem_scores) = embedding_scores else {
+        return lexical_results;
+    };
+    if sem_scores.is_empty() {
+        return lexical_results;
+    }
+
+    // Filter semantic scores to only include entities that passed user filters
+    let filtered_sem: HashMap<String, f64> = sem_scores
+        .iter()
+        .filter(|(id, _)| candidate_ids.contains(id))
+        .map(|(id, &score)| (id.clone(), score))
+        .collect();
+
+    if filtered_sem.is_empty() {
+        return lexical_results;
+    }
+
+    // Build lexical score map from results
+    let lex_scores: HashMap<String, f64> = lexical_results
+        .iter()
+        .map(|r| (r.entity_id.clone(), r.score))
+        .collect();
+
+    // Rank-normalize both score sets
+    let sem_ranks = rank_normalize(&filtered_sem);
+    let lex_ranks = rank_normalize(&lex_scores);
+
+    // Blend: 0.6 * semantic_rank + 0.4 * lexical_rank
+    let semantic_weight = 0.6;
+    let lexical_weight = 1.0 - semantic_weight;
+
+    let mut all_ids: HashSet<&String> = HashSet::new();
+    all_ids.extend(sem_ranks.keys());
+    all_ids.extend(lex_ranks.keys());
+
+    let mut blended: Vec<(String, f64)> = all_ids
+        .into_iter()
+        .map(|id| {
+            let sem = sem_ranks.get(id).copied().unwrap_or(0.0);
+            let lex = lex_ranks.get(id).copied().unwrap_or(0.0);
+            (id.clone(), semantic_weight * sem + lexical_weight * lex)
+        })
+        .collect();
+
+    blended.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    blended.truncate(limit);
+
+    // Rebuild SearchResult vec in blended order, preserving matched_features etc.
+    let result_map: HashMap<String, SearchResult> = lexical_results
+        .into_iter()
+        .map(|r| (r.entity_id.clone(), r))
+        .collect();
+
+    blended
+        .into_iter()
+        .map(|(id, score)| {
+            if let Some(r) = result_map.get(&id) {
+                // Lexical hit — preserve matched_features
+                SearchResult { score, ..r.clone() }
+            } else {
+                // Semantic-only discovery — create stub from graph entity
+                let (name, file, line_start, lifted) = graph
+                    .entities
+                    .get(&id)
+                    .map(|e| {
+                        (
+                            e.name.clone(),
+                            e.file.display().to_string(),
+                            e.line_start,
+                            !e.semantic_features.is_empty(),
+                        )
+                    })
+                    .unwrap_or_else(|| (id.clone(), String::new(), 0, false));
+                SearchResult {
+                    entity_id: id,
+                    entity_name: name,
+                    file,
+                    line_start,
+                    score,
+                    matched_features: Vec::new(),
+                    lifted,
+                }
+            }
+        })
+        .collect()
 }
 
 /// Collect entities from one or more hierarchy scopes.
