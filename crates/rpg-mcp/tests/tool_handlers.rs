@@ -1,10 +1,13 @@
 use rpg_core::graph::*;
 use rpg_core::storage;
+use rpg_encoder::grounding;
 use rpg_nav::explore::{Direction, explore, format_tree};
 use rpg_nav::fetch::{FetchOutput, fetch};
 use rpg_nav::search::{SearchMode, search};
 use rpg_nav::toon;
-use std::path::PathBuf;
+use rpg_parser::entities::extract_entities;
+use rpg_parser::languages::Language;
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
@@ -108,6 +111,72 @@ fn make_temp_project(graph: &RPGraph) -> (TempDir, PathBuf) {
     storage::save(&root, graph).unwrap();
 
     (tmp, root)
+}
+
+fn nextjs_fixture_root() -> PathBuf {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    manifest_dir
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("tests/fixtures/nextjs_project")
+}
+
+fn collect_ts_fixture_files(root: &Path) -> Vec<(PathBuf, String)> {
+    let mut out = Vec::new();
+    collect_ts_recursive(root, root, &mut out);
+    out
+}
+
+fn collect_ts_recursive(base: &Path, dir: &Path, out: &mut Vec<(PathBuf, String)>) {
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_ts_recursive(base, &path, out);
+            continue;
+        }
+
+        let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+            continue;
+        };
+        if ext != "ts" && ext != "tsx" {
+            continue;
+        }
+
+        let rel = path.strip_prefix(base).unwrap().to_path_buf();
+        let source = std::fs::read_to_string(&path).unwrap();
+        out.push((rel, source));
+    }
+}
+
+fn build_nextjs_fixture_graph() -> RPGraph {
+    let root = nextjs_fixture_root();
+    let files = collect_ts_fixture_files(&root);
+    assert!(
+        !files.is_empty(),
+        "expected fixture TS/TSX files in {}",
+        root.display()
+    );
+
+    let mut graph = RPGraph::new("typescript");
+    for (rel_path, source) in &files {
+        let entities = extract_entities(rel_path, source, Language::TypeScript);
+        for entity in entities {
+            graph.insert_entity(entity.into_entity());
+        }
+    }
+
+    graph.create_module_entities();
+    graph.build_file_path_hierarchy();
+    grounding::populate_entity_deps(&mut graph, &root, false, None);
+    grounding::resolve_dependencies(&mut graph);
+    graph.assign_hierarchy_ids();
+    graph.aggregate_hierarchy_features();
+    graph.materialize_containment_edges();
+    grounding::ground_hierarchy(&mut graph);
+    graph.refresh_metadata();
+    graph
 }
 
 // ---------------------------------------------------------------------------
@@ -329,5 +398,189 @@ fn test_reload_rpg() {
         entity
             .semantic_features
             .contains(&"entry point".to_string())
+    );
+}
+
+#[test]
+fn test_nextjs_page_component_store_traversal() {
+    let graph = build_nextjs_fixture_graph();
+
+    let page_id = "app/login/page.tsx:Page";
+    let component_id = "src/components/LoginForm.tsx:LoginForm";
+    let store_id = "src/state/store.ts:store";
+
+    let page = graph.get_entity(page_id).expect("missing page entity");
+    assert_eq!(page.kind, EntityKind::Page);
+    assert!(
+        page.deps.renders.contains(&"LoginForm".to_string()),
+        "Page should render LoginForm, got: {:?}",
+        page.deps.renders
+    );
+
+    let component = graph
+        .get_entity(component_id)
+        .expect("missing component entity");
+    assert_eq!(component.kind, EntityKind::Component);
+    // LoginForm reads state via useSelector(selectAuthLoading)
+    assert!(
+        component
+            .deps
+            .reads_state
+            .contains(&"useSelector".to_string()),
+        "LoginForm should read state via useSelector, got: {:?}",
+        component.deps.reads_state
+    );
+    // LoginForm dispatches loginUser thunk
+    assert!(
+        component.deps.dispatches.contains(&"loginUser".to_string()),
+        "LoginForm should dispatch loginUser, got: {:?}",
+        component.deps.dispatches
+    );
+
+    let store = graph.get_entity(store_id).expect("missing store entity");
+    assert_eq!(store.kind, EntityKind::Store);
+
+    let has_page_to_component = graph
+        .edges
+        .iter()
+        .any(|e| e.source == page_id && e.target == component_id && e.kind == EdgeKind::Renders);
+    assert!(
+        has_page_to_component,
+        "expected renders edge page -> component"
+    );
+
+    let tree = explore(&graph, page_id, Direction::Downstream, 3, None)
+        .expect("expected traversal tree from page");
+    let tree_output = format_tree(&tree, 0);
+    assert!(
+        tree_output.contains("LoginForm"),
+        "traversal should include component node:\n{}",
+        tree_output
+    );
+}
+
+#[test]
+fn test_rtk_full_cycle_traversal() {
+    let graph = build_nextjs_fixture_graph();
+
+    // Verify key RTK entities exist
+    let slice_id = "src/state/authSlice.ts:authSlice";
+    let thunk_id = "src/state/thunks.ts:loginUser";
+    let selector_id = "src/state/selectors.ts:selectAuthLoading";
+    let api_id = "src/state/api.ts:postsApi";
+    let hook_id = "src/hooks/useAuth.ts:useAuth";
+    let login_page_id = "app/login/page.tsx:Page";
+    let dashboard_page_id = "app/dashboard/page.tsx:Page";
+    let login_form_id = "src/components/LoginForm.tsx:LoginForm";
+    let post_list_id = "src/components/PostList.tsx:PostList";
+
+    // authSlice is a Store entity
+    let slice = graph.get_entity(slice_id).expect("missing authSlice");
+    assert_eq!(slice.kind, EntityKind::Store);
+
+    // loginUser is a Function (thunk)
+    let thunk = graph.get_entity(thunk_id).expect("missing loginUser thunk");
+    assert_eq!(thunk.kind, EntityKind::Function);
+
+    // selectAuthLoading is a Function (selector)
+    let selector = graph
+        .get_entity(selector_id)
+        .expect("missing selectAuthLoading");
+    assert_eq!(selector.kind, EntityKind::Function);
+
+    // postsApi is a Store entity (createApi)
+    let api = graph.get_entity(api_id).expect("missing postsApi");
+    assert_eq!(api.kind, EntityKind::Store);
+
+    // useAuth is a Hook
+    let hook = graph.get_entity(hook_id).expect("missing useAuth hook");
+    assert_eq!(hook.kind, EntityKind::Hook);
+
+    // Verify slice contains reducer entities
+    let reducer_id = format!("{}::loginStarted", slice_id);
+    let reducer = graph
+        .get_entity(&reducer_id)
+        .expect("missing loginStarted reducer entity");
+    assert_eq!(reducer.kind, EntityKind::Function);
+    assert_eq!(reducer.parent_class.as_deref(), Some("authSlice"));
+
+    // LoginForm dispatches loginUser thunk
+    let login_form = graph.get_entity(login_form_id).expect("missing LoginForm");
+    assert!(
+        login_form
+            .deps
+            .dispatches
+            .contains(&"loginUser".to_string()),
+        "LoginForm should dispatch loginUser"
+    );
+    // LoginForm reads state via selector
+    assert!(
+        login_form
+            .deps
+            .reads_state
+            .contains(&"selectAuthLoading".to_string()),
+        "LoginForm should read selectAuthLoading, got: {:?}",
+        login_form.deps.reads_state
+    );
+
+    // Dispatches edge: LoginForm -> loginUser thunk
+    let has_dispatch_edge = graph.edges.iter().any(|e| {
+        e.source == login_form_id && e.target == thunk_id && e.kind == EdgeKind::Dispatches
+    });
+    assert!(
+        has_dispatch_edge,
+        "expected dispatches edge LoginForm -> loginUser"
+    );
+
+    // ReadsState edge: LoginForm -> selectAuthLoading
+    let has_reads_edge = graph.edges.iter().any(|e| {
+        e.source == login_form_id && e.target == selector_id && e.kind == EdgeKind::ReadsState
+    });
+    assert!(
+        has_reads_edge,
+        "expected reads_state edge LoginForm -> selectAuthLoading"
+    );
+
+    // Login page renders LoginForm
+    assert!(graph.get_entity(login_page_id).is_some());
+    let has_page_render = graph.edges.iter().any(|e| {
+        e.source == login_page_id && e.target == login_form_id && e.kind == EdgeKind::Renders
+    });
+    assert!(has_page_render, "expected login page -> LoginForm render");
+
+    // Dashboard page renders PostList
+    assert!(graph.get_entity(dashboard_page_id).is_some());
+    let has_dashboard_render = graph.edges.iter().any(|e| {
+        e.source == dashboard_page_id && e.target == post_list_id && e.kind == EdgeKind::Renders
+    });
+    assert!(
+        has_dashboard_render,
+        "expected dashboard page -> PostList render"
+    );
+
+    // PostList reads state via RTK Query hook
+    let post_list = graph.get_entity(post_list_id).expect("missing PostList");
+    assert!(
+        post_list
+            .deps
+            .reads_state
+            .contains(&"useGetPostsQuery".to_string()),
+        "PostList should read state via useGetPostsQuery, got: {:?}",
+        post_list.deps.reads_state
+    );
+
+    // Full traversal from login page
+    let tree = explore(&graph, login_page_id, Direction::Downstream, 4, None)
+        .expect("expected traversal tree from login page");
+    let tree_output = format_tree(&tree, 0);
+    assert!(
+        tree_output.contains("LoginForm"),
+        "traversal should reach LoginForm:\n{}",
+        tree_output
+    );
+    assert!(
+        tree_output.contains("loginUser"),
+        "traversal should reach loginUser thunk:\n{}",
+        tree_output
     );
 }

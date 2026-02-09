@@ -100,6 +100,22 @@ struct FetchEntityOutput {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     inherited_by: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    renders: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    rendered_by: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    reads_state: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    state_read_by: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    writes_state: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    state_written_by: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    dispatches: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    dispatched_by: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     siblings: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     source: Option<String>,
@@ -123,6 +139,14 @@ pub fn format_fetch_result(result: &FetchResult) -> String {
         imported_by: entity.deps.imported_by.clone(),
         inherits: entity.deps.inherits.clone(),
         inherited_by: entity.deps.inherited_by.clone(),
+        renders: entity.deps.renders.clone(),
+        rendered_by: entity.deps.rendered_by.clone(),
+        reads_state: entity.deps.reads_state.clone(),
+        state_read_by: entity.deps.state_read_by.clone(),
+        writes_state: entity.deps.writes_state.clone(),
+        state_written_by: entity.deps.state_written_by.clone(),
+        dispatches: entity.deps.dispatches.clone(),
+        dispatched_by: entity.deps.dispatched_by.clone(),
         siblings: result.hierarchy_context.clone(),
         source: result.source_code.clone(),
     };
