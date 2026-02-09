@@ -583,6 +583,168 @@ pub fn compute_drift(old: &[String], new: &[String]) -> f64 {
     }
 }
 
+/// Compute Jaccard similarity between two feature sets (inverse of drift).
+/// (1.0 = identical, 0.0 = no overlap)
+pub fn semantic_similarity(a: &[String], b: &[String]) -> f64 {
+    1.0 - compute_drift(a, b)
+}
+
+/// Find the best hierarchy path for an entity based on semantic feature similarity.
+///
+/// Implements the paper's Algorithm 4 (top-down semantic routing): starting from root,
+/// recursively select the child domain whose aggregated features best match the
+/// entity's features, drilling down until no child is a better fit than the current node.
+///
+/// Returns `None` if the hierarchy is empty or features are empty.
+pub fn find_best_hierarchy_path(graph: &RPGraph, features: &[String]) -> Option<String> {
+    if features.is_empty() || graph.hierarchy.is_empty() {
+        return None;
+    }
+
+    // Step 1: Find the best top-level area
+    let mut best_area: Option<(&str, f64)> = None;
+    for (area_name, area_node) in &graph.hierarchy {
+        let sim = semantic_similarity(features, &area_node.semantic_features);
+        if best_area.is_none() || sim > best_area.unwrap().1 {
+            best_area = Some((area_name.as_str(), sim));
+        }
+    }
+
+    let (area_name, area_sim) = best_area?;
+    // Minimum similarity threshold — if even the best area is nearly zero,
+    // don't force routing (the entity doesn't fit anywhere)
+    if area_sim < 0.05 {
+        return None;
+    }
+
+    let area_node = &graph.hierarchy[area_name];
+
+    // Step 2: Drill down into children (Algorithm 4's recursive FindBestParent)
+    let mut current_path = area_name.to_string();
+    let mut current_node = area_node;
+
+    loop {
+        if current_node.children.is_empty() {
+            break;
+        }
+
+        let mut best_child: Option<(&str, f64)> = None;
+        for (child_name, child_node) in &current_node.children {
+            let sim = semantic_similarity(features, &child_node.semantic_features);
+            if best_child.is_none() || sim > best_child.unwrap().1 {
+                best_child = Some((child_name.as_str(), sim));
+            }
+        }
+
+        match best_child {
+            Some((child_name, child_sim)) if child_sim > 0.0 => {
+                // Child is a better fit — drill deeper
+                current_path = format!("{}/{}", current_path, child_name);
+                current_node = &current_node.children[child_name];
+            }
+            _ => {
+                // No child is a good fit — stay at current level
+                break;
+            }
+        }
+    }
+
+    Some(current_path)
+}
+
+/// Move an entity from its current hierarchy position to a new path.
+///
+/// Removes from old position (with recursive pruning), updates the entity's
+/// `hierarchy_path`, and inserts at the new position.
+pub fn reroute_entity(graph: &mut RPGraph, entity_id: &str, new_path: &str) {
+    // Remove from current position
+    graph.remove_entity_from_hierarchy(entity_id);
+
+    // Update entity's hierarchy_path
+    if let Some(entity) = graph.entities.get_mut(entity_id) {
+        entity.hierarchy_path = new_path.to_string();
+    }
+
+    // Insert at new position
+    graph.insert_into_hierarchy(new_path, entity_id);
+}
+
+/// Check drift and re-route a single entity if its features have drifted
+/// beyond the threshold. Returns `Some(new_path)` if re-routed, `None` if
+/// drift was below threshold or no better path was found.
+///
+/// This implements the paper's Algorithm 3 (Section A.2.3): when semantic
+/// drift exceeds τ_drift, the modification is treated as delete + re-insert
+/// to relocate the entity to a semantically congruent domain.
+pub fn check_drift_and_reroute(
+    graph: &mut RPGraph,
+    entity_id: &str,
+    old_features: &[String],
+    new_features: &[String],
+    threshold: f64,
+) -> Option<String> {
+    let drift = compute_drift(old_features, new_features);
+    if drift <= threshold {
+        return None;
+    }
+
+    // Drift exceeds threshold — find new best path
+    let new_path = find_best_hierarchy_path(graph, new_features)?;
+
+    // Check if the new path differs from the current one
+    let current_path = graph
+        .entities
+        .get(entity_id)
+        .map(|e| e.hierarchy_path.clone())
+        .unwrap_or_default();
+
+    if new_path == current_path {
+        return None; // Already in the right place
+    }
+
+    reroute_entity(graph, entity_id, &new_path);
+    Some(new_path)
+}
+
+/// Route a newly-lifted entity to the best semantic hierarchy position.
+///
+/// This implements the paper's Algorithm 4 (Section A.2.4): for entities
+/// that were placed by file-path proximity during `apply_additions()`,
+/// find the semantically optimal position once features are available.
+///
+/// Only re-routes if: (a) the graph has a semantic hierarchy, (b) the entity
+/// has features, and (c) a better path is found.
+pub fn route_new_entity(graph: &mut RPGraph, entity_id: &str) -> Option<String> {
+    if !graph.metadata.semantic_hierarchy {
+        return None;
+    }
+
+    let features = graph
+        .entities
+        .get(entity_id)
+        .map(|e| e.semantic_features.clone())
+        .unwrap_or_default();
+
+    if features.is_empty() {
+        return None;
+    }
+
+    let new_path = find_best_hierarchy_path(graph, &features)?;
+
+    let current_path = graph
+        .entities
+        .get(entity_id)
+        .map(|e| e.hierarchy_path.clone())
+        .unwrap_or_default();
+
+    if new_path == current_path {
+        return None;
+    }
+
+    reroute_entity(graph, entity_id, &new_path);
+    Some(new_path)
+}
+
 /// Run the full incremental update pipeline (structural only).
 ///
 /// Semantic re-lifting of modified entities is left to the connected
