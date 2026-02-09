@@ -183,3 +183,164 @@ fn test_resolve_dependencies_clears_reverse_deps_on_re_resolve() {
 
     assert_eq!(graph.edges.len(), 1, "edges should not duplicate");
 }
+
+#[test]
+fn test_resolve_frontend_dependency_edges() {
+    let mut graph = RPGraph::new("typescript");
+
+    let mut page = make_entity(
+        "app/login/page.tsx:LoginPage",
+        "LoginPage",
+        "app/login/page.tsx",
+    );
+    page.kind = EntityKind::Page;
+    page.deps.renders.push("LoginForm".to_string());
+    page.deps.reads_state.push("authStore".to_string());
+    page.deps.writes_state.push("setSession".to_string());
+    page.deps.dispatches.push("loginRequested".to_string());
+    graph.insert_entity(page);
+
+    let mut component = make_entity(
+        "src/ui/LoginForm.tsx:LoginForm",
+        "LoginForm",
+        "src/ui/LoginForm.tsx",
+    );
+    component.kind = EntityKind::Component;
+    graph.insert_entity(component);
+
+    let mut store = make_entity(
+        "src/state/store.ts:authStore",
+        "authStore",
+        "src/state/store.ts",
+    );
+    store.kind = EntityKind::Store;
+    graph.insert_entity(store);
+
+    graph.insert_entity(make_entity(
+        "src/state/session.ts:setSession",
+        "setSession",
+        "src/state/session.ts",
+    ));
+    graph.insert_entity(make_entity(
+        "src/state/actions.ts:loginRequested",
+        "loginRequested",
+        "src/state/actions.ts",
+    ));
+
+    resolve_dependencies(&mut graph);
+
+    let kinds: Vec<EdgeKind> = graph.edges.iter().map(|e| e.kind).collect();
+    assert!(kinds.contains(&EdgeKind::Renders));
+    assert!(kinds.contains(&EdgeKind::ReadsState));
+    assert!(kinds.contains(&EdgeKind::WritesState));
+    assert!(kinds.contains(&EdgeKind::Dispatches));
+
+    let login_form = graph.get_entity("src/ui/LoginForm.tsx:LoginForm").unwrap();
+    assert!(
+        login_form
+            .deps
+            .rendered_by
+            .contains(&"app/login/page.tsx:LoginPage".to_string())
+    );
+
+    let auth_store = graph.get_entity("src/state/store.ts:authStore").unwrap();
+    assert!(
+        auth_store
+            .deps
+            .state_read_by
+            .contains(&"app/login/page.tsx:LoginPage".to_string())
+    );
+}
+
+#[test]
+fn test_resolve_dispatch_to_slice_reducer() {
+    let mut graph = RPGraph::new("typescript");
+
+    let mut component = make_entity(
+        "src/components/LoginForm.tsx:LoginForm",
+        "LoginForm",
+        "src/components/LoginForm.tsx",
+    );
+    component.kind = EntityKind::Component;
+    component.deps.dispatches.push("loginStarted".to_string());
+    graph.insert_entity(component);
+
+    let mut reducer = make_entity(
+        "src/state/authSlice.ts:authSlice::loginStarted",
+        "loginStarted",
+        "src/state/authSlice.ts",
+    );
+    reducer.parent_class = Some("authSlice".to_string());
+    graph.insert_entity(reducer);
+
+    resolve_dependencies(&mut graph);
+
+    let has_dispatch = graph.edges.iter().any(|e| {
+        e.source == "src/components/LoginForm.tsx:LoginForm"
+            && e.target == "src/state/authSlice.ts:authSlice::loginStarted"
+            && e.kind == EdgeKind::Dispatches
+    });
+    assert!(
+        has_dispatch,
+        "expected Dispatches edge from component to reducer, edges: {:?}",
+        graph.edges
+    );
+
+    let reducer_entity = graph
+        .get_entity("src/state/authSlice.ts:authSlice::loginStarted")
+        .unwrap();
+    assert!(
+        reducer_entity
+            .deps
+            .dispatched_by
+            .contains(&"src/components/LoginForm.tsx:LoginForm".to_string()),
+        "reducer should have dispatched_by reverse edge"
+    );
+}
+
+#[test]
+fn test_resolve_reads_state_to_selector() {
+    let mut graph = RPGraph::new("typescript");
+
+    let mut component = make_entity(
+        "src/components/LoginForm.tsx:LoginForm",
+        "LoginForm",
+        "src/components/LoginForm.tsx",
+    );
+    component.kind = EntityKind::Component;
+    component
+        .deps
+        .reads_state
+        .push("selectAuthLoading".to_string());
+    graph.insert_entity(component);
+
+    graph.insert_entity(make_entity(
+        "src/state/selectors.ts:selectAuthLoading",
+        "selectAuthLoading",
+        "src/state/selectors.ts",
+    ));
+
+    resolve_dependencies(&mut graph);
+
+    let has_reads = graph.edges.iter().any(|e| {
+        e.source == "src/components/LoginForm.tsx:LoginForm"
+            && e.target == "src/state/selectors.ts:selectAuthLoading"
+            && e.kind == EdgeKind::ReadsState
+    });
+    assert!(
+        has_reads,
+        "expected ReadsState edge from component to selector, edges: {:?}",
+        graph.edges
+    );
+
+    let selector = graph
+        .get_entity("src/state/selectors.ts:selectAuthLoading")
+        .unwrap();
+    assert!(
+        selector
+            .deps
+            .state_read_by
+            .contains(&"src/components/LoginForm.tsx:LoginForm".to_string()),
+        "selector should have state_read_by reverse edge"
+    );
+}

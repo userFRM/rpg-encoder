@@ -80,11 +80,27 @@ pub struct EntityDeps {
     pub inherits: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub composes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub renders: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reads_state: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writes_state: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dispatches: Vec<String>,
     pub imported_by: Vec<String>,
     pub invoked_by: Vec<String>,
     pub inherited_by: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub composed_by: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rendered_by: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub state_read_by: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub state_written_by: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dispatched_by: Vec<String>,
 }
 
 /// A node in the semantic hierarchy tree (V_H node).
@@ -221,6 +237,14 @@ pub enum EdgeKind {
     Inherits,
     /// E_dep: composition/aggregation (e.g., module re-exports, class composition).
     Composes,
+    /// E_dep: React/JSX render dependency (component/page renders component).
+    Renders,
+    /// E_dep: state read dependency (selector/store reads).
+    ReadsState,
+    /// E_dep: state write dependency (setters/store updates).
+    WritesState,
+    /// E_dep: state/event dispatch dependency.
+    Dispatches,
     /// E_feature: hierarchy containment (parent → child).
     Contains,
 }
@@ -232,6 +256,11 @@ pub enum EntityKind {
     Function,
     Class,
     Method,
+    Page,
+    Layout,
+    Component,
+    Hook,
+    Store,
     Module,
 }
 

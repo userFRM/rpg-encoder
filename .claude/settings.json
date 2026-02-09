@@ -4,8 +4,8 @@
       {
         "hooks": [
           {
-            "type": "agent",
-            "prompt": "If any code was modified in this session, verify the codebase is clean by running: cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace. Report any failures."
+            "type": "command",
+            "command": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace 2>&1"
           }
         ]
       }

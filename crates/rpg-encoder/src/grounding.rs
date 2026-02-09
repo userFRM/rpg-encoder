@@ -60,6 +60,10 @@ pub fn populate_entity_deps(
                     entity.deps.invokes.clear();
                     entity.deps.inherits.clear();
                     entity.deps.composes.clear();
+                    entity.deps.renders.clear();
+                    entity.deps.reads_state.clear();
+                    entity.deps.writes_state.clear();
+                    entity.deps.dispatches.clear();
                 }
             }
         }
@@ -122,6 +126,68 @@ pub fn populate_entity_deps(
             }
         }
 
+        // Map renders: caller component/page -> rendered component
+        for render in &raw_deps.renders {
+            for id in &entity_ids {
+                if let Some(entity) = graph.entities.get_mut(id) {
+                    let matches = entity.name == render.caller_entity
+                        || render.caller_entity.ends_with(&format!(".{}", entity.name))
+                        || render
+                            .caller_entity
+                            .ends_with(&format!("::{}", entity.name));
+                    if matches && !entity.deps.renders.contains(&render.callee) {
+                        entity.deps.renders.push(render.callee.clone());
+                    }
+                }
+            }
+        }
+
+        // Map state reads: caller -> store/selector symbol
+        for read in &raw_deps.reads_state {
+            for id in &entity_ids {
+                if let Some(entity) = graph.entities.get_mut(id) {
+                    let matches = entity.name == read.caller_entity
+                        || read.caller_entity.ends_with(&format!(".{}", entity.name))
+                        || read.caller_entity.ends_with(&format!("::{}", entity.name));
+                    if matches && !entity.deps.reads_state.contains(&read.callee) {
+                        entity.deps.reads_state.push(read.callee.clone());
+                    }
+                }
+            }
+        }
+
+        // Map state writes: caller -> setter/update symbol
+        for write in &raw_deps.writes_state {
+            for id in &entity_ids {
+                if let Some(entity) = graph.entities.get_mut(id) {
+                    let matches = entity.name == write.caller_entity
+                        || write.caller_entity.ends_with(&format!(".{}", entity.name))
+                        || write.caller_entity.ends_with(&format!("::{}", entity.name));
+                    if matches && !entity.deps.writes_state.contains(&write.callee) {
+                        entity.deps.writes_state.push(write.callee.clone());
+                    }
+                }
+            }
+        }
+
+        // Map dispatches: caller -> action/event symbol
+        for dispatch in &raw_deps.dispatches {
+            for id in &entity_ids {
+                if let Some(entity) = graph.entities.get_mut(id) {
+                    let matches = entity.name == dispatch.caller_entity
+                        || dispatch
+                            .caller_entity
+                            .ends_with(&format!(".{}", entity.name))
+                        || dispatch
+                            .caller_entity
+                            .ends_with(&format!("::{}", entity.name));
+                    if matches && !entity.deps.dispatches.contains(&dispatch.callee) {
+                        entity.deps.dispatches.push(dispatch.callee.clone());
+                    }
+                }
+            }
+        }
+
         // Map inherits: match child_class to entity
         for inherit in &raw_deps.inherits {
             for id in &entity_ids {
@@ -151,14 +217,22 @@ pub fn populate_entity_deps(
         // Fall back to broadcast if the entity has no call-site info.
         for id in &entity_ids {
             if let Some(entity) = graph.entities.get_mut(id) {
-                let has_callsite_info =
-                    !entity.deps.invokes.is_empty() || !entity.deps.inherits.is_empty();
+                let has_callsite_info = !entity.deps.invokes.is_empty()
+                    || !entity.deps.inherits.is_empty()
+                    || !entity.deps.renders.is_empty()
+                    || !entity.deps.reads_state.is_empty()
+                    || !entity.deps.writes_state.is_empty()
+                    || !entity.deps.dispatches.is_empty();
 
                 if has_callsite_info {
                     // Only assign imports that the entity actually references
                     for sym in &import_symbols {
-                        let referenced =
-                            entity.deps.invokes.contains(sym) || entity.deps.inherits.contains(sym);
+                        let referenced = entity.deps.invokes.contains(sym)
+                            || entity.deps.inherits.contains(sym)
+                            || entity.deps.renders.contains(sym)
+                            || entity.deps.reads_state.contains(sym)
+                            || entity.deps.writes_state.contains(sym)
+                            || entity.deps.dispatches.contains(sym);
                         if referenced && !entity.deps.imports.contains(sym) {
                             entity.deps.imports.push(sym.clone());
                         }
@@ -259,6 +333,58 @@ pub fn resolve_dependencies(graph: &mut RPGraph) {
                 &mut edges,
             );
         }
+
+        // Resolve renders (JSX/component composition relationships)
+        for rendered_name in &deps.renders {
+            resolve_dep(
+                source_id,
+                rendered_name,
+                source_file,
+                EdgeKind::Renders,
+                &qualified_index,
+                &name_to_ids,
+                &mut edges,
+            );
+        }
+
+        // Resolve reads_state (selector/store reads)
+        for read_name in &deps.reads_state {
+            resolve_dep(
+                source_id,
+                read_name,
+                source_file,
+                EdgeKind::ReadsState,
+                &qualified_index,
+                &name_to_ids,
+                &mut edges,
+            );
+        }
+
+        // Resolve writes_state (setters/store writes)
+        for write_name in &deps.writes_state {
+            resolve_dep(
+                source_id,
+                write_name,
+                source_file,
+                EdgeKind::WritesState,
+                &qualified_index,
+                &name_to_ids,
+                &mut edges,
+            );
+        }
+
+        // Resolve dispatches (action/event dispatch)
+        for dispatch_name in &deps.dispatches {
+            resolve_dep(
+                source_id,
+                dispatch_name,
+                source_file,
+                EdgeKind::Dispatches,
+                &qualified_index,
+                &name_to_ids,
+                &mut edges,
+            );
+        }
     }
 
     // Clear all reverse dep vectors before repopulating (prevents stale refs on re-resolve)
@@ -267,6 +393,10 @@ pub fn resolve_dependencies(graph: &mut RPGraph) {
         entity.deps.inherited_by.clear();
         entity.deps.imported_by.clear();
         entity.deps.composed_by.clear();
+        entity.deps.rendered_by.clear();
+        entity.deps.state_read_by.clear();
+        entity.deps.state_written_by.clear();
+        entity.deps.dispatched_by.clear();
     }
 
     // Build reverse edges in entity deps
@@ -298,6 +428,34 @@ pub fn resolve_dependencies(graph: &mut RPGraph) {
                     && !target.deps.composed_by.contains(&edge.source)
                 {
                     target.deps.composed_by.push(edge.source.clone());
+                }
+            }
+            EdgeKind::Renders => {
+                if let Some(target) = graph.entities.get_mut(&edge.target)
+                    && !target.deps.rendered_by.contains(&edge.source)
+                {
+                    target.deps.rendered_by.push(edge.source.clone());
+                }
+            }
+            EdgeKind::ReadsState => {
+                if let Some(target) = graph.entities.get_mut(&edge.target)
+                    && !target.deps.state_read_by.contains(&edge.source)
+                {
+                    target.deps.state_read_by.push(edge.source.clone());
+                }
+            }
+            EdgeKind::WritesState => {
+                if let Some(target) = graph.entities.get_mut(&edge.target)
+                    && !target.deps.state_written_by.contains(&edge.source)
+                {
+                    target.deps.state_written_by.push(edge.source.clone());
+                }
+            }
+            EdgeKind::Dispatches => {
+                if let Some(target) = graph.entities.get_mut(&edge.target)
+                    && !target.deps.dispatched_by.contains(&edge.source)
+                {
+                    target.deps.dispatched_by.push(edge.source.clone());
                 }
             }
             EdgeKind::Contains => {} // Containment edges don't have reverse dep entries

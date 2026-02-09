@@ -1,6 +1,7 @@
 //! Extract dependencies (imports, calls, inheritance) from AST.
 
 use crate::languages::Language;
+use std::collections::HashSet;
 use std::path::Path;
 
 /// Raw dependency information extracted from a single file.
@@ -10,6 +11,10 @@ pub struct RawDeps {
     pub calls: Vec<CallDep>,
     pub inherits: Vec<InheritDep>,
     pub composes: Vec<ComposeDep>,
+    pub renders: Vec<CallDep>,
+    pub reads_state: Vec<CallDep>,
+    pub writes_state: Vec<CallDep>,
+    pub dispatches: Vec<CallDep>,
 }
 
 /// A raw import dependency (module + imported symbols).
@@ -46,6 +51,13 @@ struct FunctionScope {
     name: String,
     start_row: usize,
     end_row: usize,
+}
+
+#[derive(Debug, Default)]
+struct StateSignalContext {
+    selector_hooks: HashSet<String>,
+    dispatch_hooks: HashSet<String>,
+    dispatch_call_aliases: HashSet<String>,
 }
 
 /// Extract dependency info from a Python source file.
@@ -449,10 +461,13 @@ pub fn extract_js_deps(_path: &Path, source: &str, language: Language) -> RawDep
     let mut scopes: Vec<FunctionScope> = Vec::new();
     collect_js_scopes(&root, source, &mut scopes, None);
 
-    // Collect imports, inheritance, calls, and JSX usage
+    // Collect imports, inheritance, calls, and render/state signals.
+    // JSX composition is modeled as `renders` (not `calls`) to avoid duplicate
+    // Invokes+Renders edges for the same UI relationship.
     collect_js_imports(&root, source, &mut deps);
     collect_js_calls(&root, source, &scopes, &mut deps.calls);
-    collect_js_jsx_usage(&root, source, &scopes, &mut deps.calls);
+    collect_js_jsx_usage(&root, source, &scopes, &mut deps.renders);
+    collect_js_frontend_signals(&root, source, &scopes, &mut deps);
 
     deps
 }
@@ -474,6 +489,10 @@ fn collect_js_scopes(
                         start_row: child.start_position().row,
                         end_row: child.end_position().row,
                     });
+                    // Don't recurse into function bodies — nested arrow functions
+                    // (handleSubmit, useEffect callbacks) are not entities and should
+                    // not become scopes. Deps inside them bubble up to this scope.
+                    continue;
                 }
             }
             "method_definition" => {
@@ -488,6 +507,8 @@ fn collect_js_scopes(
                         start_row: child.start_position().row,
                         end_row: child.end_position().row,
                     });
+                    // Don't recurse into method bodies (same rationale as above).
+                    continue;
                 }
             }
             "class_declaration" => {
@@ -499,6 +520,7 @@ fn collect_js_scopes(
             }
             // Arrow functions: const Foo = () => {}
             "lexical_declaration" | "variable_declaration" => {
+                let mut found_scope = false;
                 let mut inner = child.walk();
                 for decl in child.children(&mut inner) {
                     if decl.kind() == "variable_declarator" {
@@ -513,8 +535,13 @@ fn collect_js_scopes(
                                 start_row: child.start_position().row,
                                 end_row: child.end_position().row,
                             });
+                            found_scope = true;
                         }
                     }
+                }
+                // Don't recurse into arrow/function bodies (same rationale).
+                if found_scope {
+                    continue;
                 }
             }
             _ => {}
@@ -697,7 +724,7 @@ fn collect_js_jsx_usage(
     node: &tree_sitter::Node,
     source: &str,
     scopes: &[FunctionScope],
-    calls: &mut Vec<CallDep>,
+    renders: &mut Vec<CallDep>,
 ) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -713,7 +740,7 @@ fn collect_js_jsx_usage(
                         let call_row = child.start_position().row;
                         let caller = find_enclosing_scope(scopes, call_row)
                             .unwrap_or_else(|| "<module>".to_string());
-                        calls.push(CallDep {
+                        renders.push(CallDep {
                             caller_entity: caller,
                             callee,
                         });
@@ -722,8 +749,365 @@ fn collect_js_jsx_usage(
             }
             _ => {}
         }
-        collect_js_jsx_usage(&child, source, scopes, calls);
+        collect_js_jsx_usage(&child, source, scopes, renders);
     }
+}
+
+fn collect_js_frontend_signals(
+    node: &tree_sitter::Node,
+    source: &str,
+    scopes: &[FunctionScope],
+    deps: &mut RawDeps,
+) {
+    let state_context = build_state_signal_context(node, source);
+    // Note: renders are now collected inline by collect_js_jsx_usage (single traversal)
+    collect_js_state_signals(
+        node,
+        source,
+        scopes,
+        &state_context,
+        &mut deps.reads_state,
+        &mut deps.writes_state,
+        &mut deps.dispatches,
+    );
+}
+
+fn build_state_signal_context(node: &tree_sitter::Node, source: &str) -> StateSignalContext {
+    let mut ctx = StateSignalContext::default();
+    // Built-in known names.
+    ctx.selector_hooks.insert("useSelector".to_string());
+    ctx.selector_hooks.insert("useAppSelector".to_string());
+    ctx.dispatch_hooks.insert("useDispatch".to_string());
+    ctx.dispatch_hooks.insert("useAppDispatch".to_string());
+    ctx.dispatch_call_aliases.insert("dispatch".to_string());
+
+    collect_redux_hook_aliases(
+        node,
+        source,
+        &mut ctx.selector_hooks,
+        &mut ctx.dispatch_hooks,
+    );
+    collect_dispatch_call_aliases(
+        node,
+        source,
+        &ctx.dispatch_hooks,
+        &mut ctx.dispatch_call_aliases,
+    );
+    ctx
+}
+
+fn collect_redux_hook_aliases(
+    node: &tree_sitter::Node,
+    source: &str,
+    selector_hooks: &mut HashSet<String>,
+    dispatch_hooks: &mut HashSet<String>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "import_statement" {
+            let Some(src_node) = child.child_by_field_name("source") else {
+                continue;
+            };
+            let module =
+                source[src_node.byte_range()].trim_matches(|c: char| c == '\'' || c == '"');
+            if module != "react-redux" {
+                continue;
+            }
+            collect_redux_hook_aliases_from_import_clause(
+                &child,
+                source,
+                selector_hooks,
+                dispatch_hooks,
+            );
+        }
+        collect_redux_hook_aliases(&child, source, selector_hooks, dispatch_hooks);
+    }
+}
+
+fn collect_redux_hook_aliases_from_import_clause(
+    node: &tree_sitter::Node,
+    source: &str,
+    selector_hooks: &mut HashSet<String>,
+    dispatch_hooks: &mut HashSet<String>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "import_specifier" {
+            let spec_text = source[child.byte_range()].trim();
+            let (imported, local) = parse_import_specifier_alias(spec_text);
+            if imported == "useSelector" || imported == "useAppSelector" {
+                selector_hooks.insert(local.clone());
+            }
+            if imported == "useDispatch" || imported == "useAppDispatch" {
+                dispatch_hooks.insert(local);
+            }
+        }
+        collect_redux_hook_aliases_from_import_clause(
+            &child,
+            source,
+            selector_hooks,
+            dispatch_hooks,
+        );
+    }
+}
+
+fn parse_import_specifier_alias(spec_text: &str) -> (String, String) {
+    let mut parts = spec_text.splitn(2, " as ");
+    let first = parts.next().unwrap_or("").trim().to_string();
+    let second = parts.next().map(|s| s.trim().to_string());
+    match second {
+        Some(local) if !local.is_empty() => (first, local),
+        _ => (first.clone(), first),
+    }
+}
+
+fn collect_dispatch_call_aliases(
+    node: &tree_sitter::Node,
+    source: &str,
+    dispatch_hooks: &HashSet<String>,
+    dispatch_call_aliases: &mut HashSet<String>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if (child.kind() == "lexical_declaration" || child.kind() == "variable_declaration")
+            && let Some(alias) =
+                extract_dispatch_alias_from_declaration(&child, source, dispatch_hooks)
+        {
+            dispatch_call_aliases.insert(alias);
+        }
+        collect_dispatch_call_aliases(&child, source, dispatch_hooks, dispatch_call_aliases);
+    }
+}
+
+fn extract_dispatch_alias_from_declaration(
+    decl_node: &tree_sitter::Node,
+    source: &str,
+    dispatch_hooks: &HashSet<String>,
+) -> Option<String> {
+    let mut cursor = decl_node.walk();
+    for child in decl_node.children(&mut cursor) {
+        if child.kind() != "variable_declarator" {
+            continue;
+        }
+        let Some(name_node) = child.child_by_field_name("name") else {
+            continue;
+        };
+        if name_node.kind() != "identifier" {
+            continue;
+        }
+        let Some(value_node) = child.child_by_field_name("value") else {
+            continue;
+        };
+        if value_node.kind() != "call_expression" {
+            continue;
+        }
+        let Some(func_node) = value_node.child_by_field_name("function") else {
+            continue;
+        };
+        let callee = extract_callee_name(&func_node, source);
+        if dispatch_hooks.contains(&callee) {
+            return Some(source[name_node.byte_range()].to_string());
+        }
+    }
+    None
+}
+
+fn collect_js_state_signals(
+    node: &tree_sitter::Node,
+    source: &str,
+    scopes: &[FunctionScope],
+    state_context: &StateSignalContext,
+    reads_state: &mut Vec<CallDep>,
+    writes_state: &mut Vec<CallDep>,
+    dispatches: &mut Vec<CallDep>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "call_expression"
+            && let Some(func_node) = child.child_by_field_name("function")
+        {
+            let callee = extract_callee_name(&func_node, source);
+            if !callee.is_empty() {
+                let caller = find_enclosing_scope(scopes, child.start_position().row)
+                    .unwrap_or_else(|| "<module>".to_string());
+
+                if state_context.selector_hooks.contains(&callee) || is_state_reader_name(&callee) {
+                    reads_state.push(CallDep {
+                        caller_entity: caller.clone(),
+                        callee: callee.clone(),
+                    });
+                    // Also extract selector function name from useSelector(selectFoo)
+                    if state_context.selector_hooks.contains(&callee)
+                        && let Some(sel) = extract_selector_argument(&child, source)
+                    {
+                        reads_state.push(CallDep {
+                            caller_entity: caller.clone(),
+                            callee: sel,
+                        });
+                    }
+                }
+
+                if is_state_setter_name(&callee) {
+                    writes_state.push(CallDep {
+                        caller_entity: caller.clone(),
+                        callee: callee.clone(),
+                    });
+                    if let Some(normalized_store) = normalized_store_target_from_setter(&callee) {
+                        writes_state.push(CallDep {
+                            caller_entity: caller.clone(),
+                            callee: normalized_store,
+                        });
+                    }
+                }
+
+                if state_context.dispatch_call_aliases.contains(&callee) {
+                    let target = extract_dispatch_target(&child, source)
+                        .unwrap_or_else(|| "dispatch".to_string());
+                    dispatches.push(CallDep {
+                        caller_entity: caller,
+                        callee: target,
+                    });
+                }
+            }
+        }
+        collect_js_state_signals(
+            &child,
+            source,
+            scopes,
+            state_context,
+            reads_state,
+            writes_state,
+            dispatches,
+        );
+    }
+}
+
+fn is_state_reader_name(name: &str) -> bool {
+    // Note: useDispatch/useAppDispatch are NOT state readers — they acquire dispatch
+    // capability without reading state. They are handled separately via the dispatch
+    // detection path (callee == "dispatch" → extract_dispatch_target).
+    if matches!(
+        name,
+        "useSelector" | "useAppSelector" | "useStore" | "getState" | "useAtomValue"
+    ) {
+        return true;
+    }
+    // RTK Query auto-generated hooks: useGetXQuery, useUpdateXMutation
+    if name.starts_with("use")
+        && name.len() > 3
+        && name.chars().nth(3).is_some_and(|c| c.is_ascii_uppercase())
+        && (name.ends_with("Query") || name.ends_with("Mutation"))
+    {
+        return true;
+    }
+    false
+}
+
+fn is_state_setter_name(name: &str) -> bool {
+    if name == "setState" {
+        return true;
+    }
+    if !name.starts_with("set") || name.len() <= 3 {
+        return false;
+    }
+    // Exclude common JS built-ins that start with "set" + uppercase
+    if matches!(
+        name,
+        "setTimeout" | "setInterval" | "setImmediate" | "setPrototypeOf"
+    ) {
+        return false;
+    }
+    name.chars().nth(3).is_some_and(|c| c.is_ascii_uppercase())
+}
+
+fn normalized_store_target_from_setter(setter_name: &str) -> Option<String> {
+    if !(setter_name.ends_with("Store") || setter_name.ends_with("Slice")) {
+        return None;
+    }
+    if !setter_name.starts_with("set") || setter_name.len() <= 3 {
+        return None;
+    }
+    let mut chars = setter_name[3..].chars();
+    let first = chars.next()?;
+    let mut normalized = String::new();
+    normalized.push(first.to_ascii_lowercase());
+    normalized.extend(chars);
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn extract_dispatch_target(call_expr: &tree_sitter::Node, source: &str) -> Option<String> {
+    let args_node = call_expr.child_by_field_name("arguments")?;
+    let mut cursor = args_node.walk();
+    for arg in args_node.children(&mut cursor) {
+        if !arg.is_named() {
+            continue;
+        }
+        // Best case: dispatch(actionCreator(...)) — extract the function name
+        if arg.kind() == "call_expression"
+            && let Some(func_node) = arg.child_by_field_name("function")
+        {
+            let callee = extract_callee_name(&func_node, source);
+            if !callee.is_empty() {
+                return Some(callee);
+            }
+        }
+
+        // Identifier reference: dispatch(someAction) — plain variable
+        if arg.kind() == "identifier" {
+            let text = source[arg.byte_range()].trim();
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
+        }
+
+        // Member expression: dispatch(actions.login)
+        if arg.kind() == "member_expression"
+            && let Some(prop) = arg.child_by_field_name("property")
+        {
+            let text = source[prop.byte_range()].trim();
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
+        }
+
+        // Skip object literals, template strings, and other non-identifier arguments
+        // to avoid producing noisy unresolved symbols.
+        break;
+    }
+    None
+}
+
+/// Extract the selector function name from useSelector(selectFoo) calls.
+fn extract_selector_argument(call_expr: &tree_sitter::Node, source: &str) -> Option<String> {
+    let args_node = call_expr.child_by_field_name("arguments")?;
+    let mut cursor = args_node.walk();
+    for arg in args_node.children(&mut cursor) {
+        if !arg.is_named() {
+            continue;
+        }
+        // Direct identifier: useSelector(selectUser)
+        if arg.kind() == "identifier" {
+            let text = source[arg.byte_range()].trim();
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
+        }
+        // Member expression: useSelector(selectors.selectUser) — take last segment
+        if arg.kind() == "member_expression"
+            && let Some(prop) = arg.child_by_field_name("property")
+        {
+            let text = source[prop.byte_range()].trim();
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
+        }
+        break; // Only check first argument
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------

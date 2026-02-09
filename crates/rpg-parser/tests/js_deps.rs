@@ -67,11 +67,11 @@ function App() {
 }
 ";
     let deps = extract_deps(Path::new("test.jsx"), source, Language::JavaScript);
-    let button_call = deps.calls.iter().find(|c| c.callee == "Button");
+    let button_call = deps.renders.iter().find(|c| c.callee == "Button");
     assert!(
         button_call.is_some(),
-        "expected JSX component call in .jsx file, got: {:?}",
-        deps.calls
+        "expected JSX component render in .jsx file, got: {:?}",
+        deps.renders
     );
     assert_eq!(button_call.unwrap().caller_entity, "App");
 }

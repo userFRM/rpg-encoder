@@ -114,7 +114,7 @@ export function App() {
         "expected Button arrow function, got: {:?}",
         entities.iter().map(|e| &e.name).collect::<Vec<_>>()
     );
-    assert_eq!(button.unwrap().kind, EntityKind::Function);
+    assert_eq!(button.unwrap().kind, EntityKind::Component);
 
     let app = entities.iter().find(|e| e.name == "App");
     assert!(
@@ -122,5 +122,197 @@ export function App() {
         "expected App function, got: {:?}",
         entities.iter().map(|e| &e.name).collect::<Vec<_>>()
     );
-    assert_eq!(app.unwrap().kind, EntityKind::Function);
+    assert_eq!(app.unwrap().kind, EntityKind::Component);
+}
+
+#[test]
+fn test_next_app_router_page_and_layout_kinds() {
+    let page_source = r"
+export default function Page() {
+    return <LoginForm />;
+}
+";
+    let page_entities = extract_entities(
+        Path::new("app/auth/login/page.tsx"),
+        page_source,
+        Language::TypeScript,
+    );
+    let page = page_entities
+        .iter()
+        .find(|e| e.name == "Page")
+        .expect("missing Page entity");
+    assert_eq!(page.kind, EntityKind::Page);
+
+    let layout_source = r"
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+    return <html><body>{children}</body></html>;
+}
+";
+    let layout_entities = extract_entities(
+        Path::new("app/layout.tsx"),
+        layout_source,
+        Language::TypeScript,
+    );
+    let layout = layout_entities
+        .iter()
+        .find(|e| e.name == "RootLayout")
+        .expect("missing RootLayout entity");
+    assert_eq!(layout.kind, EntityKind::Layout);
+}
+
+#[test]
+fn test_component_hook_and_store_kinds() {
+    let source = r#"
+import { configureStore } from "@reduxjs/toolkit";
+
+const authStore = configureStore({ reducer: {} });
+
+const useAuth = () => {
+    return { ok: true };
+};
+
+function LoginForm() {
+    return <form />;
+}
+"#;
+
+    let entities = extract_entities(Path::new("src/auth.tsx"), source, Language::TypeScript);
+
+    let store = entities
+        .iter()
+        .find(|e| e.name == "authStore")
+        .expect("missing authStore entity");
+    assert_eq!(store.kind, EntityKind::Store);
+
+    let hook = entities
+        .iter()
+        .find(|e| e.name == "useAuth")
+        .expect("missing useAuth entity");
+    assert_eq!(hook.kind, EntityKind::Hook);
+
+    let component = entities
+        .iter()
+        .find(|e| e.name == "LoginForm")
+        .expect("missing LoginForm entity");
+    assert_eq!(component.kind, EntityKind::Component);
+}
+
+#[test]
+fn test_create_slice_extracts_reducers() {
+    let source = r#"
+const authSlice = createSlice({
+    name: "auth",
+    initialState: { user: null },
+    reducers: {
+        loginStarted(state) { state.loading = true; },
+        loginSucceeded(state, action) { state.user = action.payload; },
+        logout(state) { state.user = null; },
+    },
+});
+"#;
+    let entities = extract_entities(
+        Path::new("src/state/authSlice.ts"),
+        source,
+        Language::TypeScript,
+    );
+
+    // The slice itself should be a Store entity
+    let slice = entities.iter().find(|e| e.name == "authSlice");
+    assert!(
+        slice.is_some(),
+        "expected authSlice entity, got: {:?}",
+        entities.iter().map(|e| &e.name).collect::<Vec<_>>()
+    );
+    assert_eq!(slice.unwrap().kind, EntityKind::Store);
+
+    // Each reducer key should be a Function entity with parent_class = "authSlice"
+    let reducer_names: Vec<&str> = entities
+        .iter()
+        .filter(|e| e.parent_class.as_deref() == Some("authSlice"))
+        .map(|e| e.name.as_str())
+        .collect();
+    assert!(
+        reducer_names.contains(&"loginStarted"),
+        "missing loginStarted reducer, got: {:?}",
+        reducer_names
+    );
+    assert!(
+        reducer_names.contains(&"loginSucceeded"),
+        "missing loginSucceeded reducer, got: {:?}",
+        reducer_names
+    );
+    assert!(
+        reducer_names.contains(&"logout"),
+        "missing logout reducer, got: {:?}",
+        reducer_names
+    );
+
+    // Verify reducer entities are Functions
+    let login_started = entities.iter().find(|e| e.name == "loginStarted").unwrap();
+    assert_eq!(login_started.kind, EntityKind::Function);
+    assert_eq!(login_started.parent_class.as_deref(), Some("authSlice"));
+}
+
+#[test]
+fn test_create_async_thunk_entity() {
+    let source = r#"
+const loginUser = createAsyncThunk(
+    "auth/loginUser",
+    async (credentials: { email: string }) => {
+        return await fetch("/api/login");
+    }
+);
+"#;
+    let entities = extract_entities(Path::new("src/thunks.ts"), source, Language::TypeScript);
+    let thunk = entities.iter().find(|e| e.name == "loginUser");
+    assert!(
+        thunk.is_some(),
+        "expected loginUser entity, got: {:?}",
+        entities.iter().map(|e| &e.name).collect::<Vec<_>>()
+    );
+    // createAsyncThunk should be classified as Function, not Store
+    assert_eq!(thunk.unwrap().kind, EntityKind::Function);
+}
+
+#[test]
+fn test_create_api_store_entity() {
+    let source = r#"
+const postsApi = createApi({
+    baseQuery: fetchBaseQuery({ baseUrl: "/api" }),
+    endpoints: (builder) => ({
+        getPosts: builder.query({ query: () => "/posts" }),
+    }),
+});
+"#;
+    let entities = extract_entities(Path::new("src/api.ts"), source, Language::TypeScript);
+    let api = entities.iter().find(|e| e.name == "postsApi");
+    assert!(
+        api.is_some(),
+        "expected postsApi entity, got: {:?}",
+        entities.iter().map(|e| &e.name).collect::<Vec<_>>()
+    );
+    assert_eq!(api.unwrap().kind, EntityKind::Store);
+}
+
+#[test]
+fn test_rtk_query_destructured_hooks() {
+    let source = r"
+export const { useGetPostsQuery, useGetUserQuery } = postsApi;
+";
+    let entities = extract_entities(Path::new("src/api.ts"), source, Language::TypeScript);
+    let hook_names: Vec<&str> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Hook)
+        .map(|e| e.name.as_str())
+        .collect();
+    assert!(
+        hook_names.contains(&"useGetPostsQuery"),
+        "missing useGetPostsQuery, got: {:?}",
+        hook_names
+    );
+    assert!(
+        hook_names.contains(&"useGetUserQuery"),
+        "missing useGetUserQuery, got: {:?}",
+        hook_names
+    );
 }

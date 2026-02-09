@@ -336,9 +336,9 @@ struct ExploreRpgParams {
     direction: Option<String>,
     /// Maximum traversal depth (default: 2). Use -1 for unlimited depth.
     depth: Option<i64>,
-    /// Filter edges by kind: 'imports', 'invokes', 'inherits', 'composes', or 'contains'
+    /// Filter edges by kind: 'imports', 'invokes', 'inherits', 'composes', 'contains', 'renders', 'reads_state', 'writes_state', or 'dispatches'
     edge_filter: Option<String>,
-    /// Comma-separated entity type filter (e.g., "function,class,method"). Valid: function, class, method, file, module.
+    /// Comma-separated entity type filter (e.g., "function,class,method"). Valid: function, class, method, file, module, page, layout, component, hook, store.
     entity_type_filter: Option<String>,
 }
 
@@ -410,7 +410,8 @@ fn truncate_source(source: &str, max_lines: usize) -> String {
 }
 
 /// Parse a comma-separated entity type filter string into EntityKind values.
-/// Accepts paper-specified names: function, class, method, file, module.
+/// Accepts entity names: function, class, method, page, layout, component,
+/// hook, store, file, module.
 /// "file" is an alias for Module (file-level entity nodes, V_L).
 /// Note: "directory" is not a V_L entity kind — hierarchy nodes (V_H) are
 /// traversed via Contains edges but are not subject to entity_type_filter.
@@ -421,6 +422,11 @@ fn parse_entity_type_filter(filter: &str) -> Vec<rpg_core::graph::EntityKind> {
             "function" => Some(rpg_core::graph::EntityKind::Function),
             "class" => Some(rpg_core::graph::EntityKind::Class),
             "method" => Some(rpg_core::graph::EntityKind::Method),
+            "page" => Some(rpg_core::graph::EntityKind::Page),
+            "layout" => Some(rpg_core::graph::EntityKind::Layout),
+            "component" => Some(rpg_core::graph::EntityKind::Component),
+            "hook" => Some(rpg_core::graph::EntityKind::Hook),
+            "store" => Some(rpg_core::graph::EntityKind::Store),
             "module" | "file" => Some(rpg_core::graph::EntityKind::Module),
             _ => None,
         })
@@ -516,7 +522,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Explore the dependency graph starting from an entity. Traverses import, invocation, inheritance, and composition edges. Use direction='downstream' to see what the entity calls, 'upstream' to see what calls it, 'both' for full picture."
+        description = "Explore the dependency graph starting from an entity. Traverses import, invocation, inheritance, composition, render, state-read/state-write, and dispatch edges. Use direction='downstream' to see what the entity calls, 'upstream' to see what calls it, 'both' for full picture."
     )]
     async fn explore_rpg(
         &self,
@@ -544,6 +550,10 @@ impl RpgServer {
             "invokes" => Some(rpg_core::graph::EdgeKind::Invokes),
             "inherits" => Some(rpg_core::graph::EdgeKind::Inherits),
             "composes" => Some(rpg_core::graph::EdgeKind::Composes),
+            "renders" => Some(rpg_core::graph::EdgeKind::Renders),
+            "reads_state" => Some(rpg_core::graph::EdgeKind::ReadsState),
+            "writes_state" => Some(rpg_core::graph::EdgeKind::WritesState),
+            "dispatches" => Some(rpg_core::graph::EdgeKind::Dispatches),
             "contains" => Some(rpg_core::graph::EdgeKind::Contains),
             _ => None,
         });

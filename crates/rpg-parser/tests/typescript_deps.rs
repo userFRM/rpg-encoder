@@ -66,6 +66,10 @@ fn test_ts_empty_source() {
     assert!(deps.calls.is_empty());
     assert!(deps.inherits.is_empty());
     assert!(deps.composes.is_empty());
+    assert!(deps.renders.is_empty());
+    assert!(deps.reads_state.is_empty());
+    assert!(deps.writes_state.is_empty());
+    assert!(deps.dispatches.is_empty());
 }
 
 #[test]
@@ -153,11 +157,11 @@ function App() {
 }
 ";
     let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
-    let button_call = deps.calls.iter().find(|c| c.callee == "Button");
+    let button_call = deps.renders.iter().find(|c| c.callee == "Button");
     assert!(
         button_call.is_some(),
-        "expected a call to 'Button' from JSX usage, got: {:?}",
-        deps.calls
+        "expected a render of 'Button' from JSX usage, got: {:?}",
+        deps.renders
     );
     assert_eq!(button_call.unwrap().caller_entity, "App");
 }
@@ -170,11 +174,11 @@ function App() {
 }
 "#;
     let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
-    let icon_call = deps.calls.iter().find(|c| c.callee == "Icon");
+    let icon_call = deps.renders.iter().find(|c| c.callee == "Icon");
     assert!(
         icon_call.is_some(),
-        "expected a call to 'Icon' from self-closing JSX, got: {:?}",
-        deps.calls
+        "expected a render of 'Icon' from self-closing JSX, got: {:?}",
+        deps.renders
     );
 }
 
@@ -187,7 +191,7 @@ function App() {
 ";
     let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
     let html_calls: Vec<_> = deps
-        .calls
+        .renders
         .iter()
         .filter(|c| c.callee == "div" || c.callee == "span")
         .collect();
@@ -218,10 +222,10 @@ const App = () => {
         "App",
         "arrow function scope should be 'App'"
     );
-    let button_call = deps.calls.iter().find(|c| c.callee == "Button");
+    let button_call = deps.renders.iter().find(|c| c.callee == "Button");
     assert!(
         button_call.is_some(),
-        "expected JSX call to Button in arrow function"
+        "expected JSX render of Button in arrow function"
     );
     assert_eq!(button_call.unwrap().caller_entity, "App");
 }
@@ -249,11 +253,11 @@ function App() {
 ";
     let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
     // Dotted component: extracts last segment for resolution
-    let route_call = deps.calls.iter().find(|c| c.callee == "Route");
+    let route_call = deps.renders.iter().find(|c| c.callee == "Route");
     assert!(
         route_call.is_some(),
-        "expected call to 'Route' from <Router.Route />, got: {:?}",
-        deps.calls
+        "expected render of 'Route' from <Router.Route />, got: {:?}",
+        deps.renders
     );
     assert_eq!(route_call.unwrap().caller_entity, "App");
 }
@@ -266,7 +270,7 @@ function Layout() {
 }
 ";
     let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
-    let component_calls: Vec<&str> = deps.calls.iter().map(|c| c.callee.as_str()).collect();
+    let component_calls: Vec<&str> = deps.renders.iter().map(|c| c.callee.as_str()).collect();
     assert!(
         component_calls.contains(&"Container"),
         "expected Container, got: {:?}",
@@ -281,5 +285,278 @@ function Layout() {
         component_calls.contains(&"Content"),
         "expected Content, got: {:?}",
         component_calls
+    );
+}
+
+#[test]
+fn test_frontend_render_and_state_signals() {
+    let source = r"
+function LoginPage() {
+    const user = useSelector(selectUser);
+    const [count, setCount] = useState(0);
+    setCount(count + 1);
+    dispatch(loginRequested());
+    return <LoginForm />;
+}
+";
+
+    let deps = extract_deps(
+        Path::new("app/login/page.tsx"),
+        source,
+        Language::TypeScript,
+    );
+
+    let render = deps.renders.iter().find(|d| d.callee == "LoginForm");
+    assert!(
+        render.is_some(),
+        "expected LoginPage to render LoginForm, got: {:?}",
+        deps.renders
+    );
+    assert_eq!(render.unwrap().caller_entity, "LoginPage");
+
+    let reads = deps.reads_state.iter().find(|d| d.callee == "useSelector");
+    assert!(
+        reads.is_some(),
+        "expected state read signal from useSelector, got: {:?}",
+        deps.reads_state
+    );
+
+    let writes = deps.writes_state.iter().find(|d| d.callee == "setCount");
+    assert!(
+        writes.is_some(),
+        "expected state write signal from setCount, got: {:?}",
+        deps.writes_state
+    );
+
+    let dispatch = deps
+        .dispatches
+        .iter()
+        .find(|d| d.callee == "loginRequested");
+    assert!(
+        dispatch.is_some(),
+        "expected dispatch signal for loginRequested, got: {:?}",
+        deps.dispatches
+    );
+}
+
+#[test]
+fn test_use_selector_extracts_selector_name() {
+    let source = r"
+function ProfilePage() {
+    const user = useSelector(selectUser);
+    return <div>{user.name}</div>;
+}
+";
+    let deps = extract_deps(
+        Path::new("app/profile/page.tsx"),
+        source,
+        Language::TypeScript,
+    );
+
+    // Should have both useSelector and selectUser as reads_state entries
+    let callees: Vec<&str> = deps.reads_state.iter().map(|d| d.callee.as_str()).collect();
+    assert!(
+        callees.contains(&"useSelector"),
+        "expected useSelector in reads_state, got: {:?}",
+        callees
+    );
+    assert!(
+        callees.contains(&"selectUser"),
+        "expected selectUser in reads_state, got: {:?}",
+        callees
+    );
+}
+
+#[test]
+fn test_use_dispatch_not_a_state_reader() {
+    let source = r"
+function MyComponent() {
+    const dispatch = useDispatch();
+    return <div />;
+}
+";
+    let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
+    // useDispatch acquires dispatch capability — it does NOT read state.
+    // It should NOT appear in reads_state.
+    let dispatch_read = deps.reads_state.iter().find(|d| d.callee == "useDispatch");
+    assert!(
+        dispatch_read.is_none(),
+        "useDispatch should NOT be a state reader, but found in reads_state: {:?}",
+        deps.reads_state
+    );
+}
+
+#[test]
+fn test_rtk_query_hook_as_state_reader() {
+    let source = r"
+function PostList() {
+    const { data } = useGetPostsQuery();
+    return <ul />;
+}
+";
+    let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
+    let query_read = deps
+        .reads_state
+        .iter()
+        .find(|d| d.callee == "useGetPostsQuery");
+    assert!(
+        query_read.is_some(),
+        "expected useGetPostsQuery as state reader, got: {:?}",
+        deps.reads_state
+    );
+}
+
+#[test]
+fn test_dispatch_inside_callback_attributed_to_component() {
+    let source = r"
+function LoginForm() {
+    const dispatch = useDispatch();
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        dispatch(loginUser({ email, password }));
+    };
+    return <form />;
+}
+";
+    let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
+
+    // dispatch(loginUser(...)) is inside handleSubmit arrow, but since handleSubmit
+    // is not an entity, it should bubble up to the enclosing LoginForm scope.
+    let login_dispatch = deps.dispatches.iter().find(|d| d.callee == "loginUser");
+    assert!(
+        login_dispatch.is_some(),
+        "expected dispatch of loginUser, got: {:?}",
+        deps.dispatches
+    );
+    assert_eq!(
+        login_dispatch.unwrap().caller_entity,
+        "LoginForm",
+        "dispatch inside handleSubmit should be attributed to LoginForm, not handleSubmit"
+    );
+}
+
+#[test]
+fn test_use_selector_inside_use_effect_attributed_to_component() {
+    let source = r"
+function Dashboard() {
+    const user = useSelector(selectUser);
+    useEffect(() => {
+        dispatch(fetchPosts());
+    }, []);
+    return <PostList />;
+}
+";
+    let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
+
+    // useSelector at component level should be attributed to Dashboard
+    let selector_read = deps.reads_state.iter().find(|d| d.callee == "useSelector");
+    assert!(
+        selector_read.is_some(),
+        "expected useSelector, got: {:?}",
+        deps.reads_state
+    );
+    assert_eq!(selector_read.unwrap().caller_entity, "Dashboard");
+
+    // dispatch inside useEffect callback should also be attributed to Dashboard
+    let fetch_dispatch = deps.dispatches.iter().find(|d| d.callee == "fetchPosts");
+    assert!(
+        fetch_dispatch.is_some(),
+        "expected dispatch of fetchPosts, got: {:?}",
+        deps.dispatches
+    );
+    assert_eq!(
+        fetch_dispatch.unwrap().caller_entity,
+        "Dashboard",
+        "dispatch inside useEffect callback should be attributed to Dashboard"
+    );
+}
+
+#[test]
+fn test_dispatch_object_literal_not_extracted() {
+    let source = r#"
+function MyComponent() {
+    dispatch({ type: "INCREMENT", payload: 1 });
+    return <div />;
+}
+"#;
+    let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
+    // Object literal arguments should NOT produce a dispatch target —
+    // only action creator calls (dispatch(actionCreator())) or identifier
+    // references (dispatch(someAction)) are valid targets.
+    let noisy = deps.dispatches.iter().find(|d| d.callee == "type");
+    assert!(
+        noisy.is_none(),
+        "object literal dispatch should not extract 'type' as target, got: {:?}",
+        deps.dispatches
+    );
+}
+
+#[test]
+fn test_use_selector_import_alias_extracts_selector_name() {
+    let source = r#"
+import { useSelector as useReduxSelector } from "react-redux";
+
+function ProfilePage() {
+    const user = useReduxSelector(selectUser);
+    return <div>{user.name}</div>;
+}
+"#;
+    let deps = extract_deps(
+        Path::new("app/profile/page.tsx"),
+        source,
+        Language::TypeScript,
+    );
+    let callees: Vec<&str> = deps.reads_state.iter().map(|d| d.callee.as_str()).collect();
+    assert!(
+        callees.contains(&"useReduxSelector"),
+        "expected aliased selector hook in reads_state, got: {:?}",
+        callees
+    );
+    assert!(
+        callees.contains(&"selectUser"),
+        "expected selector function in reads_state, got: {:?}",
+        callees
+    );
+}
+
+#[test]
+fn test_dispatch_alias_variable_from_import_alias() {
+    let source = r#"
+import { useDispatch as useReduxDispatch } from "react-redux";
+
+function LoginForm() {
+    const appDispatch = useReduxDispatch();
+    appDispatch(loginUser({ email, password }));
+    return <form />;
+}
+"#;
+    let deps = extract_deps(Path::new("test.tsx"), source, Language::TypeScript);
+    let login_dispatch = deps.dispatches.iter().find(|d| d.callee == "loginUser");
+    assert!(
+        login_dispatch.is_some(),
+        "expected dispatch target loginUser from aliased dispatch variable, got: {:?}",
+        deps.dispatches
+    );
+    assert_eq!(login_dispatch.unwrap().caller_entity, "LoginForm");
+}
+
+#[test]
+fn test_destructured_hooks_require_identifier_rhs() {
+    // Destructuring from a function call should NOT produce hook entities —
+    // only destructuring from a plain identifier (API object) should.
+    let source = r"
+export const { useFoo, useBar } = createSomething();
+";
+    let entities =
+        rpg_parser::entities::extract_entities(Path::new("test.ts"), source, Language::TypeScript);
+    let hooks: Vec<&str> = entities
+        .iter()
+        .filter(|e| e.kind == rpg_core::graph::EntityKind::Hook)
+        .map(|e| e.name.as_str())
+        .collect();
+    assert!(
+        hooks.is_empty(),
+        "destructuring from function call should not produce hook entities, got: {:?}",
+        hooks
     );
 }
