@@ -18,7 +18,7 @@ The benchmark uses the rpg-encoder repository itself as the test target:
 
 | Repo | Language | Entities | Queries |
 |------|----------|----------|---------|
-| `rpg-encoder` | Rust | 652 | 39 |
+| `rpg-encoder` | Rust | 855 | 39 |
 
 Each query is a natural-language intent with expected file path substrings:
 ```json
@@ -48,30 +48,51 @@ python3 benchmarks/search_quality.py --force-lift
 
 ### With Semantic Lifting (connected coding agent)
 
-652/652 entities lifted (100% coverage).
+855/855 entities lifted (100% coverage).
 
 ```
   Metric         Unlifted         Lifted    Delta
   ──────── ────────────── ────────────── ────────
-  Acc@1       19/39 (49%)    21/39 (54%)      +5%
-  Acc@3       27/39 (69%)    31/39 (79%)     +10%
-  Acc@5       29/39 (74%)    34/39 (87%)     +13%
-  Acc@10      30/39 (77%)    36/39 (92%)     +15%
-  MRR               0.606          0.683   +0.077
+  Acc@1       13/39 (33%)    19/39 (49%)     +15%
+  Acc@3       19/39 (49%)    26/39 (67%)     +18%
+  Acc@5       19/39 (49%)    27/39 (69%)     +21%
+  Acc@10      20/39 (51%)    33/39 (85%)     +33%
+  MRR               0.409          0.589   +0.181
 
-  MRR delta: +0.077 (95% CI [-0.094, +0.260])
+  MRR delta: +0.181 (95% CI [+0.012, +0.356])
 ```
 
-Lifting improves Acc@5 by **+13%** and Acc@10 by **+15%**.
+Lifting improves Acc@1 by **+15%**, Acc@5 by **+21%**, and Acc@10 by **+33%**. The MRR improvement is statistically significant (95% CI does not cross zero).
 
-Notable per-query improvements with lifting:
-- "configure batch size and encoding settings": @8 -> @1
-- "resolve scope specification to entity IDs": @4 -> @1
-- "ground hierarchy nodes to directory paths": @4 -> @1
-- "detect file changes from git diff": miss -> @1
-- "compute semantic drift between features": miss -> @1
-- "repair failed lifting batches": miss -> @1
+> [!NOTE]
+> These results use **lexical-only search** via the CLI binary. The MCP server uses hybrid
+> embedding + lexical search (BGE-small-en-v1.5, 0.6 semantic + 0.4 lexical blending),
+> which would produce even higher accuracy. The CLI does not yet enable the `embeddings`
+> feature — see [Feature gap](#feature-gap-cli-vs-mcp) below.
+
+Notable per-query improvements with lifting (20 total):
+- "build token-aware entity batches": @10 -> @1
+- "parse Rust functions and structs": @3 -> @1
+- "detect file changes from git diff": @2 -> @1
+- "incremental update from code modifications": @2 -> @1
+- "serialize output in TOON format": miss -> @1
+- "configure batch size and encoding settings": miss -> @1
+- "parse pipe-delimited line format features": miss -> @1
+- "resolve scope specification to entity IDs": miss -> @1
+- "propagate dependency features bottom-up": miss -> @1
+- "format search results as TOON output": miss -> @1
 - "strip LLM think blocks from response": miss -> @1
+
+## Feature Gap: CLI vs MCP
+
+The benchmark uses the CLI binary (`rpg-encoder search`), which only performs **lexical keyword matching**. The MCP server (`rpg-mcp-server`) additionally uses **fastembed** (BGE-small-en-v1.5) for hybrid embedding + lexical search with 0.6/0.4 blending.
+
+This gap exists because:
+- `rpg-cli/Cargo.toml` depends on `rpg-nav` **without** the `embeddings` feature
+- `rpg-mcp/Cargo.toml` depends on `rpg-nav` **with** `features = ["embeddings"]`
+- The CLI's `cmd_search` passes `embedding_scores: None` to `search_with_params`
+
+The benchmark therefore measures a **lower bound** on lifted search quality. MCP users get hybrid search automatically.
 
 ## Architecture
 

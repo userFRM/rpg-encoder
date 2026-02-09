@@ -242,7 +242,7 @@ rpg-encoder/
 | Semantic routing | LLM-based | LLM-based (via MCP routing protocol) |
 | Feature search | Embedding-based | Hybrid embedding + lexical (BGE-small-en-v1.5) |
 | MCP server | Described, not shipped | Working, with 17 tools |
-| SWE-bench evaluation | 93.7% Acc@5 | Not yet evaluated |
+| SWE-bench evaluation | 93.7% Acc@5 | Self-eval: MRR 0.59, Acc@10 85% ([benchmark](benchmarks/README.md)) |
 | Languages | Python-focused | 8 languages |
 | TOON format | Not described | Implemented for token efficiency |
 

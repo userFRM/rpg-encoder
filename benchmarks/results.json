@@ -1,51 +1,51 @@
 {
-  "timestamp": "2026-02-08T00:33:38",
+  "timestamp": "2026-02-09T21:17:17",
   "binary": "/Users/thetagamma/rpg-encoder/target/release/rpg-encoder",
   "summary": {
     "unlifted": {
-      "@1": 19,
-      "@3": 27,
-      "@5": 29,
-      "@10": 30,
+      "@1": 13,
+      "@3": 19,
+      "@5": 19,
+      "@10": 20,
       "total": 39
     },
     "lifted": {
-      "@1": 21,
-      "@3": 31,
-      "@5": 34,
-      "@10": 36,
+      "@1": 19,
+      "@3": 26,
+      "@5": 27,
+      "@10": 33,
       "total": 39
     },
-    "unlifted_mrr": 0.6058,
-    "lifted_mrr": 0.6827,
+    "unlifted_mrr": 0.4085,
+    "lifted_mrr": 0.5894,
     "mrr_bootstrap_ci": {
-      "delta": 0.077,
-      "ci_lower": -0.094,
-      "ci_upper": 0.2605
+      "delta": 0.1808,
+      "ci_lower": 0.0116,
+      "ci_upper": 0.356
     }
   },
   "repos": [
     {
       "name": "rpg-encoder",
       "language": "rust",
-      "entities": 652,
-      "lifted_count": 652,
+      "entities": 855,
+      "lifted_count": 855,
       "queries": 39,
       "unlifted": {
-        "@1": 19,
-        "@3": 27,
-        "@5": 29,
-        "@10": 30,
+        "@1": 13,
+        "@3": 19,
+        "@5": 19,
+        "@10": 20,
         "total": 39,
-        "mrr": 23.625
+        "mrr": 15.933333333333334
       },
       "lifted": {
-        "@1": 21,
-        "@3": 31,
-        "@5": 34,
-        "@10": 36,
+        "@1": 19,
+        "@3": 26,
+        "@5": 27,
+        "@10": 33,
         "total": 39,
-        "mrr": 26.626190476190473
+        "mrr": 22.986111111111107
       },
       "per_query": {
         "unlifted": [
@@ -55,7 +55,7 @@
           },
           {
             "query": "extract semantic features from code with LLM",
-            "rank": 1
+            "rank": 0
           },
           {
             "query": "build semantic hierarchy for repository",
@@ -63,15 +63,15 @@
           },
           {
             "query": "resolve dependency edges between entities",
-            "rank": 2
+            "rank": 0
           },
           {
             "query": "serialize output in TOON format",
-            "rank": 1
+            "rank": 0
           },
           {
             "query": "parse entities from source code files",
-            "rank": 1
+            "rank": 0
           },
           {
             "query": "load and save RPG graph to disk",
@@ -83,7 +83,7 @@
           },
           {
             "query": "configure batch size and encoding settings",
-            "rank": 8
+            "rank": 0
           },
           {
             "query": "lift entities with checkpointing",
@@ -99,11 +99,11 @@
           },
           {
             "query": "register MCP tool handlers",
-            "rank": 2
+            "rank": 0
           },
           {
             "query": "parse Rust functions and structs",
-            "rank": 2
+            "rank": 3
           },
           {
             "query": "match glob file path patterns",
@@ -111,11 +111,11 @@
           },
           {
             "query": "normalize semantic features text",
-            "rank": 1
+            "rank": 0
           },
           {
             "query": "build token-aware entity batches",
-            "rank": 0
+            "rank": 10
           },
           {
             "query": "compute lowest common ancestor of paths",
@@ -123,7 +123,7 @@
           },
           {
             "query": "detect file changes from git diff",
-            "rank": 0
+            "rank": 2
           },
           {
             "query": "incremental update from code modifications",
@@ -147,11 +147,11 @@
           },
           {
             "query": "parse pipe-delimited line format features",
-            "rank": 1
+            "rank": 0
           },
           {
             "query": "resolve scope specification to entity IDs",
-            "rank": 4
+            "rank": 0
           },
           {
             "query": "generate repo-level architectural summary",
@@ -159,11 +159,11 @@
           },
           {
             "query": "ground hierarchy nodes to directory paths",
-            "rank": 4
+            "rank": 0
           },
           {
             "query": "propagate dependency features bottom-up",
-            "rank": 2
+            "rank": 0
           },
           {
             "query": "materialize containment edges from hierarchy",
@@ -179,7 +179,7 @@
           },
           {
             "query": "detect programming language from file extension",
-            "rank": 1
+            "rank": 0
           },
           {
             "query": "extract import and invocation dependencies",
@@ -187,11 +187,11 @@
           },
           {
             "query": "format search results as TOON output",
-            "rank": 1
+            "rank": 0
           },
           {
             "query": "repair failed lifting batches",
-            "rank": 0
+            "rank": 1
           },
           {
             "query": "strip LLM think blocks from response",
@@ -209,11 +209,11 @@
         "lifted": [
           {
             "query": "search code entities by query",
-            "rank": 4
+            "rank": 2
           },
           {
             "query": "extract semantic features from code with LLM",
-            "rank": 1
+            "rank": 8
           },
           {
             "query": "build semantic hierarchy for repository",
@@ -221,7 +221,7 @@
           },
           {
             "query": "resolve dependency edges between entities",
-            "rank": 1
+            "rank": 3
           },
           {
             "query": "serialize output in TOON format",
@@ -229,7 +229,7 @@
           },
           {
             "query": "parse entities from source code files",
-            "rank": 7
+            "rank": 0
           },
           {
             "query": "load and save RPG graph to disk",
@@ -245,19 +245,19 @@
           },
           {
             "query": "lift entities with checkpointing",
-            "rank": 2
+            "rank": 0
           },
           {
             "query": "fetch entity details and source code",
-            "rank": 3
+            "rank": 2
           },
           {
             "query": "explore dependency graph traversal",
-            "rank": 2
+            "rank": 1
           },
           {
             "query": "register MCP tool handlers",
-            "rank": 2
+            "rank": 6
           },
           {
             "query": "parse Rust functions and structs",
@@ -265,15 +265,15 @@
           },
           {
             "query": "match glob file path patterns",
-            "rank": 2
+            "rank": 6
           },
           {
             "query": "normalize semantic features text",
-            "rank": 1
+            "rank": 9
           },
           {
             "query": "build token-aware entity batches",
-            "rank": 2
+            "rank": 1
           },
           {
             "query": "compute lowest common ancestor of paths",
@@ -285,19 +285,19 @@
           },
           {
             "query": "incremental update from code modifications",
-            "rank": 5
-          },
-          {
-            "query": "compute semantic drift between features",
             "rank": 1
           },
           {
+            "query": "compute semantic drift between features",
+            "rank": 2
+          },
+          {
             "query": "discover functional areas from entities",
-            "rank": 5
+            "rank": 4
           },
           {
             "query": "assign entities to hierarchy paths",
-            "rank": 2
+            "rank": 1
           },
           {
             "query": "find best parent node for entity",
@@ -317,19 +317,19 @@
           },
           {
             "query": "ground hierarchy nodes to directory paths",
-            "rank": 1
-          },
-          {
-            "query": "propagate dependency features bottom-up",
             "rank": 6
           },
           {
-            "query": "materialize containment edges from hierarchy",
+            "query": "propagate dependency features bottom-up",
             "rank": 1
           },
           {
+            "query": "materialize containment edges from hierarchy",
+            "rank": 3
+          },
+          {
             "query": "build file path hierarchy from directories",
-            "rank": 2
+            "rank": 1
           },
           {
             "query": "parse tree-sitter syntax nodes",
@@ -337,11 +337,11 @@
           },
           {
             "query": "detect programming language from file extension",
-            "rank": 2
+            "rank": 0
           },
           {
             "query": "extract import and invocation dependencies",
-            "rank": 3
+            "rank": 6
           },
           {
             "query": "format search results as TOON output",
@@ -349,7 +349,7 @@
           },
           {
             "query": "repair failed lifting batches",
-            "rank": 1
+            "rank": 3
           },
           {
             "query": "strip LLM think blocks from response",
@@ -361,7 +361,7 @@
           },
           {
             "query": "aggregate hierarchy features bottom-up",
-            "rank": 1
+            "rank": 3
           }
         ]
       }

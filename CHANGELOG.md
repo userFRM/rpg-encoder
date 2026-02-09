@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Routing Fallback** — `finalize_lifting` drains unrouted entities via Jaccard fallback,
   ensuring graceful degradation when the agent doesn't call routing tools.
 - Full-scale paper fidelity documentation (`docs/paper_fidelity.md`)
+- Updated benchmark: 855 entities, MRR 0.409→0.589 (+0.181), Acc@10 51%→85% (+33pp)
 
 ### Changed
 
