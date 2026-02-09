@@ -1077,6 +1077,7 @@ impl RpgServer {
         let mut unmatched = 0usize;
         let mut drift_reports: Vec<String> = Vec::new();
         let mut drifted_ids: Vec<String> = Vec::new();
+        let mut newly_lifted_ids: Vec<String> = Vec::new();
 
         for (key, feats) in &features {
             if feats.is_empty() {
@@ -1123,6 +1124,9 @@ impl RpgServer {
                                 eid, drift,
                             ));
                         }
+                    } else {
+                        // First-time lift — candidate for semantic routing
+                        newly_lifted_ids.push(eid.clone());
                     }
 
                     if let Some(entity) = graph.entities.get_mut(eid) {
@@ -1133,8 +1137,30 @@ impl RpgServer {
             }
         }
 
-        // Re-aggregate hierarchy features
+        // Re-aggregate hierarchy features so routing sees up-to-date features
         graph.aggregate_hierarchy_features();
+
+        // Algorithm 3: Auto re-route drifted entities (paper §A.2.3)
+        let mut rerouted_reports: Vec<String> = Vec::new();
+        for eid in &drifted_ids {
+            if let Some(new_path) = rpg_encoder::evolution::route_new_entity(graph, eid) {
+                rerouted_reports.push(format!("  {} → {}", eid, new_path));
+            }
+        }
+
+        // Algorithm 4: Semantic routing for newly-lifted entities (paper §A.2.4)
+        let mut routed_reports: Vec<String> = Vec::new();
+        for eid in &newly_lifted_ids {
+            if let Some(new_path) = rpg_encoder::evolution::route_new_entity(graph, eid) {
+                routed_reports.push(format!("  {} → {}", eid, new_path));
+            }
+        }
+
+        // Re-aggregate after routing changes
+        if !rerouted_reports.is_empty() || !routed_reports.is_empty() {
+            graph.aggregate_hierarchy_features();
+        }
+
         graph.refresh_metadata();
 
         storage::save(&self.project_root, graph)
@@ -1170,12 +1196,35 @@ impl RpgServer {
                 result.push_str(report);
                 result.push('\n');
             }
-            if !drifted_ids.is_empty() {
+            if !rerouted_reports.is_empty() {
                 result.push_str(&format!(
-                    "{} entity(ies) drifted above threshold ({:.2}) — removed from hierarchy, will need re-routing via submit_hierarchy.\n",
-                    drifted_ids.len(),
+                    "Re-routed {} drifted entity(ies) (threshold {:.2}):\n",
+                    rerouted_reports.len(),
                     drift_threshold,
                 ));
+                for report in &rerouted_reports {
+                    result.push_str(report);
+                    result.push('\n');
+                }
+            }
+            let orphaned = drifted_ids.len() - rerouted_reports.len();
+            if orphaned > 0 {
+                result.push_str(&format!(
+                    "{} drifted entity(ies) could not be auto-routed (no matching hierarchy area).\n",
+                    orphaned,
+                ));
+            }
+        }
+
+        // Semantic routing reports (newly-lifted entities placed in semantic hierarchy)
+        if !routed_reports.is_empty() {
+            result.push_str(&format!(
+                "\nSemantic routing ({} newly-lifted entities):\n",
+                routed_reports.len(),
+            ));
+            for report in &routed_reports {
+                result.push_str(report);
+                result.push('\n');
             }
         }
 

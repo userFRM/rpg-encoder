@@ -6,7 +6,8 @@
 
 use rpg_core::graph::{EntityKind, RPGraph};
 use rpg_encoder::evolution::{
-    apply_additions, apply_deletions, apply_modifications, apply_renames,
+    apply_additions, apply_deletions, apply_modifications, apply_renames, check_drift_and_reroute,
+    compute_drift, find_best_hierarchy_path, reroute_entity, route_new_entity, semantic_similarity,
 };
 use rpg_parser::entities::{RawEntity, extract_entities};
 use rpg_parser::languages::Language;
@@ -820,4 +821,379 @@ fn test_apply_modifications_updates_entity_kind() {
 
     // Cleanup
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+// --- Semantic drift detection and routing tests (Algorithms 3-4) ---
+
+#[test]
+fn test_semantic_similarity() {
+    let a = vec!["load config".to_string(), "validate token".to_string()];
+    let b = vec!["load config".to_string(), "validate token".to_string()];
+    assert!((semantic_similarity(&a, &b) - 1.0).abs() < f64::EPSILON);
+
+    let c = vec!["send email".to_string(), "format template".to_string()];
+    assert!((semantic_similarity(&a, &c) - 0.0).abs() < f64::EPSILON);
+
+    // Partial overlap: 1 of 3 unique features
+    let d = vec!["load config".to_string(), "parse yaml".to_string()];
+    let sim = semantic_similarity(&a, &d);
+    assert!(
+        sim > 0.0 && sim < 1.0,
+        "partial overlap should be between 0 and 1, got {}",
+        sim
+    );
+
+    // Empty sets
+    assert!((semantic_similarity(&[], &[]) - 1.0).abs() < f64::EPSILON);
+    assert!((semantic_similarity(&a, &[]) - 0.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn test_compute_drift_is_inverse_of_similarity() {
+    let a = vec!["load config".to_string(), "validate token".to_string()];
+    let b = vec!["send email".to_string(), "format template".to_string()];
+
+    let drift = compute_drift(&a, &b);
+    let sim = semantic_similarity(&a, &b);
+    assert!(
+        (drift + sim - 1.0).abs() < f64::EPSILON,
+        "drift + similarity should equal 1.0"
+    );
+}
+
+/// Build a graph with a semantic hierarchy for routing tests.
+fn build_semantic_hierarchy_graph() -> RPGraph {
+    let mut graph = RPGraph::new("python");
+    graph.metadata.semantic_hierarchy = true;
+    graph.metadata.languages = vec!["python".to_string()];
+
+    // Create area: "Authentication" with features about auth
+    let mut auth_area = rpg_core::graph::HierarchyNode::new("Authentication");
+    auth_area.semantic_features = vec![
+        "authenticate user".to_string(),
+        "validate credentials".to_string(),
+        "manage session".to_string(),
+        "hash password".to_string(),
+    ];
+
+    let mut auth_login = rpg_core::graph::HierarchyNode::new("login");
+    auth_login.semantic_features = vec![
+        "authenticate user".to_string(),
+        "validate credentials".to_string(),
+    ];
+    let mut auth_session = rpg_core::graph::HierarchyNode::new("session");
+    auth_session.semantic_features = vec![
+        "manage session".to_string(),
+        "create session token".to_string(),
+    ];
+    auth_area.children.insert("login".to_string(), auth_login);
+    auth_area
+        .children
+        .insert("session".to_string(), auth_session);
+
+    // Create area: "DataProcessing" with features about data
+    let mut data_area = rpg_core::graph::HierarchyNode::new("DataProcessing");
+    data_area.semantic_features = vec![
+        "load dataset".to_string(),
+        "transform data".to_string(),
+        "validate schema".to_string(),
+        "export results".to_string(),
+    ];
+
+    let mut data_loading = rpg_core::graph::HierarchyNode::new("loading");
+    data_loading.semantic_features = vec!["load dataset".to_string(), "parse csv".to_string()];
+    let mut data_transform = rpg_core::graph::HierarchyNode::new("transform");
+    data_transform.semantic_features =
+        vec!["transform data".to_string(), "normalize values".to_string()];
+    data_area
+        .children
+        .insert("loading".to_string(), data_loading);
+    data_area
+        .children
+        .insert("transform".to_string(), data_transform);
+
+    graph
+        .hierarchy
+        .insert("Authentication".to_string(), auth_area);
+    graph
+        .hierarchy
+        .insert("DataProcessing".to_string(), data_area);
+
+    graph.assign_hierarchy_ids();
+    graph
+}
+
+#[test]
+fn test_find_best_hierarchy_path_routes_to_correct_area() {
+    let graph = build_semantic_hierarchy_graph();
+
+    // Features about authentication should route to Authentication/login
+    let auth_features = vec![
+        "authenticate user".to_string(),
+        "validate credentials".to_string(),
+    ];
+    let path = find_best_hierarchy_path(&graph, &auth_features);
+    assert!(path.is_some());
+    let path = path.unwrap();
+    assert!(
+        path.starts_with("Authentication"),
+        "auth features should route to Authentication, got: {}",
+        path
+    );
+    assert_eq!(path, "Authentication/login");
+
+    // Features about data should route to DataProcessing
+    let data_features = vec!["load dataset".to_string(), "parse csv".to_string()];
+    let path = find_best_hierarchy_path(&graph, &data_features).unwrap();
+    assert!(
+        path.starts_with("DataProcessing"),
+        "data features should route to DataProcessing, got: {}",
+        path
+    );
+    assert_eq!(path, "DataProcessing/loading");
+}
+
+#[test]
+fn test_find_best_hierarchy_path_drills_to_subcategory() {
+    let graph = build_semantic_hierarchy_graph();
+
+    // Features specifically about sessions should drill to session subcategory
+    let session_features = vec![
+        "manage session".to_string(),
+        "create session token".to_string(),
+    ];
+    let path = find_best_hierarchy_path(&graph, &session_features).unwrap();
+    assert_eq!(
+        path, "Authentication/session",
+        "session features should drill down to Authentication/session"
+    );
+
+    // Features about data transformation
+    let transform_features = vec!["transform data".to_string(), "normalize values".to_string()];
+    let path = find_best_hierarchy_path(&graph, &transform_features).unwrap();
+    assert_eq!(
+        path, "DataProcessing/transform",
+        "transform features should drill down to DataProcessing/transform"
+    );
+}
+
+#[test]
+fn test_find_best_hierarchy_path_returns_none_for_empty() {
+    let graph = build_semantic_hierarchy_graph();
+    assert!(find_best_hierarchy_path(&graph, &[]).is_none());
+
+    let empty_graph = RPGraph::new("python");
+    let features = vec!["authenticate user".to_string()];
+    assert!(find_best_hierarchy_path(&empty_graph, &features).is_none());
+}
+
+#[test]
+fn test_reroute_entity_moves_in_hierarchy() {
+    let mut graph = build_semantic_hierarchy_graph();
+
+    // Insert an entity in the wrong place (DataProcessing/loading)
+    let entity = rpg_core::graph::Entity {
+        id: "src/auth.py:login".to_string(),
+        kind: EntityKind::Function,
+        name: "login".to_string(),
+        file: PathBuf::from("src/auth.py"),
+        line_start: 1,
+        line_end: 10,
+        parent_class: None,
+        semantic_features: vec!["authenticate user".to_string()],
+        hierarchy_path: "DataProcessing/loading".to_string(),
+        deps: rpg_core::graph::EntityDeps::default(),
+    };
+    let eid = entity.id.clone();
+    graph.insert_entity(entity);
+    graph.insert_into_hierarchy("DataProcessing/loading", &eid);
+
+    // Verify it's in the wrong place
+    assert_eq!(
+        graph.entities.get(&eid).unwrap().hierarchy_path,
+        "DataProcessing/loading"
+    );
+
+    // Re-route to correct place
+    reroute_entity(&mut graph, &eid, "Authentication/login");
+
+    // Verify it moved
+    assert_eq!(
+        graph.entities.get(&eid).unwrap().hierarchy_path,
+        "Authentication/login"
+    );
+
+    // Verify it's in the new hierarchy node
+    let auth_login = &graph.hierarchy["Authentication"].children["login"];
+    assert!(
+        auth_login.entities.contains(&eid),
+        "entity should be in Authentication/login"
+    );
+
+    // Verify it's NOT in the old hierarchy node (may have been pruned if empty)
+    if let Some(dp) = graph.hierarchy.get("DataProcessing")
+        && let Some(loading) = dp.children.get("loading")
+    {
+        assert!(
+            !loading.entities.contains(&eid),
+            "entity should no longer be in DataProcessing/loading"
+        );
+    }
+}
+
+#[test]
+fn test_check_drift_and_reroute_below_threshold() {
+    let mut graph = build_semantic_hierarchy_graph();
+
+    // Insert entity with auth features
+    let entity = rpg_core::graph::Entity {
+        id: "src/auth.py:check".to_string(),
+        kind: EntityKind::Function,
+        name: "check".to_string(),
+        file: PathBuf::from("src/auth.py"),
+        line_start: 1,
+        line_end: 5,
+        parent_class: None,
+        semantic_features: vec![
+            "authenticate user".to_string(),
+            "validate credentials".to_string(),
+        ],
+        hierarchy_path: "Authentication/login".to_string(),
+        deps: rpg_core::graph::EntityDeps::default(),
+    };
+    let eid = entity.id.clone();
+    graph.insert_entity(entity);
+    graph.insert_into_hierarchy("Authentication/login", &eid);
+
+    // Minor drift: one feature changed, threshold 0.5
+    let old = vec![
+        "authenticate user".to_string(),
+        "validate credentials".to_string(),
+    ];
+    let new_feats = vec![
+        "authenticate user".to_string(),
+        "check permissions".to_string(),
+    ];
+
+    let result = check_drift_and_reroute(&mut graph, &eid, &old, &new_feats, 0.5);
+    assert!(result.is_none(), "drift below threshold should not reroute");
+    assert_eq!(
+        graph.entities.get(&eid).unwrap().hierarchy_path,
+        "Authentication/login",
+        "entity should stay in original position"
+    );
+}
+
+#[test]
+fn test_check_drift_and_reroute_above_threshold() {
+    let mut graph = build_semantic_hierarchy_graph();
+
+    // Insert entity in Authentication but with features that will drift to DataProcessing
+    let entity = rpg_core::graph::Entity {
+        id: "src/process.py:load".to_string(),
+        kind: EntityKind::Function,
+        name: "load".to_string(),
+        file: PathBuf::from("src/process.py"),
+        line_start: 1,
+        line_end: 10,
+        parent_class: None,
+        semantic_features: vec!["authenticate user".to_string()],
+        hierarchy_path: "Authentication/login".to_string(),
+        deps: rpg_core::graph::EntityDeps::default(),
+    };
+    let eid = entity.id.clone();
+    graph.insert_entity(entity);
+    graph.insert_into_hierarchy("Authentication/login", &eid);
+
+    // Major drift: completely different features (old auth → new data)
+    let old = vec!["authenticate user".to_string()];
+    let new_feats = vec!["load dataset".to_string(), "parse csv".to_string()];
+    let drift = compute_drift(&old, &new_feats);
+    assert!(drift > 0.5, "drift should be above threshold: {}", drift);
+
+    // Update entity features BEFORE check (simulates re-lifting)
+    graph.entities.get_mut(&eid).unwrap().semantic_features = new_feats.clone();
+    // Don't aggregate — it would overwrite manually-set hierarchy features
+
+    let result = check_drift_and_reroute(&mut graph, &eid, &old, &new_feats, 0.5);
+    assert!(result.is_some(), "drift above threshold should reroute");
+
+    let new_path = result.unwrap();
+    assert!(
+        new_path.starts_with("DataProcessing"),
+        "should reroute to DataProcessing, got: {}",
+        new_path
+    );
+}
+
+#[test]
+fn test_route_new_entity_places_in_semantic_hierarchy() {
+    let mut graph = build_semantic_hierarchy_graph();
+
+    // Insert entity with file-path hierarchy (simulating apply_additions placement)
+    let entity = rpg_core::graph::Entity {
+        id: "src/auth/verify.py:verify_token".to_string(),
+        kind: EntityKind::Function,
+        name: "verify_token".to_string(),
+        file: PathBuf::from("src/auth/verify.py"),
+        line_start: 1,
+        line_end: 15,
+        parent_class: None,
+        semantic_features: vec![
+            "validate credentials".to_string(),
+            "authenticate user".to_string(),
+        ],
+        hierarchy_path: "src/auth/verify".to_string(), // file-path-based
+        deps: rpg_core::graph::EntityDeps::default(),
+    };
+    let eid = entity.id.clone();
+    graph.insert_entity(entity);
+    graph.insert_into_hierarchy("src/auth/verify", &eid);
+    // Don't aggregate — it would overwrite manually-set hierarchy features
+
+    // Route to semantic hierarchy
+    let result = route_new_entity(&mut graph, &eid);
+    assert!(
+        result.is_some(),
+        "should find a semantic route for auth features"
+    );
+
+    let new_path = result.unwrap();
+    assert!(
+        new_path.starts_with("Authentication"),
+        "auth entity should route to Authentication, got: {}",
+        new_path
+    );
+    assert_eq!(
+        graph.entities.get(&eid).unwrap().hierarchy_path,
+        new_path,
+        "entity hierarchy_path should be updated"
+    );
+}
+
+#[test]
+fn test_route_new_entity_skips_without_semantic_hierarchy() {
+    let mut graph = RPGraph::new("python");
+    graph.metadata.semantic_hierarchy = false;
+
+    let entity = rpg_core::graph::Entity {
+        id: "src/main.py:main".to_string(),
+        kind: EntityKind::Function,
+        name: "main".to_string(),
+        file: PathBuf::from("src/main.py"),
+        line_start: 1,
+        line_end: 5,
+        parent_class: None,
+        semantic_features: vec!["start application".to_string()],
+        hierarchy_path: "src/main".to_string(),
+        deps: rpg_core::graph::EntityDeps::default(),
+    };
+    let eid = entity.id.clone();
+    graph.insert_entity(entity);
+
+    let result = route_new_entity(&mut graph, &eid);
+    assert!(
+        result.is_none(),
+        "should not route without semantic hierarchy"
+    );
 }
