@@ -16,7 +16,7 @@ An honest, apples-to-apples analysis of how our `search_quality.py` benchmark co
 | **Ground truth** | Human-validated file/function patches from merged PRs | Manually assigned expected file path substrings |
 | **Evaluation loop** | Multi-step agentic pipeline (Search → Explore → Fetch), up to 40 LLM reasoning steps | Single `rpg-encoder search` call, no agent loop |
 | **Backbone LLMs** | o3-mini, GPT-4o, GPT-4.1, GPT-5, DeepSeek-V3.1, Claude-4.5-Sonnet | None (keyword + semantic feature matching, no LLM at search time) |
-| **Lifting LLM** | GPT-4o for encoding | Agent-as-lifter (connected coding agent) |
+| **Lifting LLM** | GPT-4o for encoding | Connected coding agent (via MCP) |
 | **Runs** | Averaged over 3 runs | Single deterministic run (no randomness in search) |
 | **Granularity** | File-level + Function-level | File-level only |
 | **Metrics** | Acc@1, Acc@5, Precision, Recall | Acc@1, Acc@3, Acc@5, Acc@10, MRR |
@@ -131,7 +131,7 @@ Our lifted Acc@5 of **87%** from a single search call is comparable to the paper
 
 ### The lifting pattern works regardless of lifter
 
-The paper uses GPT-4o for lifting. We use the connected coding agent (agent-as-lifter). Both produce semantic features that meaningfully improve search quality, validating the agent-agnostic lifting protocol.
+The paper uses GPT-4o for lifting. We use the connected coding agent via MCP. Both produce semantic features that meaningfully improve search quality, validating the agent-agnostic lifting protocol.
 
 ---
 

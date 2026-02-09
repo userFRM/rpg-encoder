@@ -68,7 +68,7 @@ crates/
 - All serialized maps use `BTreeMap` for deterministic JSON output
 - Edges are sorted by `(source, target, kind)` before serialization
 - `lifting_coverage()` excludes Module entities (they get features via aggregation)
-- Agent-as-Lifter: the connected coding agent IS the LLM (no API key needed)
+- The connected coding agent IS the LLM for lifting (no API key needed)
 - Edge kinds: Imports, Invokes, Inherits, Composes, Contains
 
 ## CI Checks

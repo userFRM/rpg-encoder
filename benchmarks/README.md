@@ -37,7 +37,7 @@ cargo build --release          # Build rpg-encoder
 # Re-run measurement only (fast, uses cached graphs)
 python3 benchmarks/search_quality.py --measure-only
 
-# Full benchmark with lifting (uses agent-as-lifter or API key)
+# Full benchmark with lifting (uses connected coding agent or API key)
 python3 benchmarks/search_quality.py
 
 # Force re-lift all entities
@@ -46,7 +46,7 @@ python3 benchmarks/search_quality.py --force-lift
 
 ## Results
 
-### With Semantic Lifting (agent-as-lifter)
+### With Semantic Lifting (connected coding agent)
 
 652/652 entities lifted (100% coverage).
 

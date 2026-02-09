@@ -244,4 +244,4 @@ The result: faster onboarding, more accurate localization, and fewer wasted expl
 
 ---
 
-*Based on rpg-encoder v0.1.7 and the RPG-Encoder paper (Luo et al., arXiv:2602.02084, 2026).*
+*Based on rpg-encoder v0.1.8 and the RPG-Encoder paper (Luo et al., arXiv:2602.02084, 2026).*

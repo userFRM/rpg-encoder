@@ -27,6 +27,8 @@ Search by what code *does*, not what it's named.
 > [!TIP]
 > **New to RPG?** See [How RPG Compares](docs/comparison.md) to understand where it fits
 > alongside Claude Code, Serena, and other tools.
+> For a detailed algorithm-by-algorithm comparison with the research paper, see
+> [Paper Fidelity](docs/paper_fidelity.md).
 
 ## Install
 
@@ -128,7 +130,7 @@ all collaborators and AI tools get instant semantic search without rebuilding.
 | Tool | Description |
 |------|-------------|
 | `build_rpg` | Index the codebase (run once, instant) |
-| `search_node` | Search entities by intent or keywords (modes: features, snippets, auto) |
+| `search_node` | Search entities by intent or keywords (hybrid embedding + lexical scoring) |
 | `fetch_node` | Get entity metadata, source code, dependencies, and hierarchy context |
 | `explore_rpg` | Traverse dependency graph (upstream, downstream, or both) |
 | `rpg_info` | Graph statistics, hierarchy overview, per-area lifting coverage |
@@ -141,6 +143,8 @@ all collaborators and AI tools get instant semantic search without rebuilding.
 | `submit_file_syntheses` | Submit holistic file-level summaries |
 | `build_semantic_hierarchy` | Get domain discovery + hierarchy assignment prompts |
 | `submit_hierarchy` | Apply hierarchy assignments to the graph |
+| `get_routing_candidates` | Get entities needing semantic routing (drifted or newly lifted) |
+| `submit_routing_decisions` | Submit routing decisions (hierarchy path or "keep") |
 | `reload_rpg` | Reload graph from disk after external changes |
 
 ### Lifting Flow
@@ -202,7 +206,9 @@ Create `.rpg/config.toml` in your project root (all fields optional):
 [encoding]
 batch_size = 50             # Entities per lifting batch
 max_batch_tokens = 8000     # Token budget per batch
-drift_threshold = 0.5       # Jaccard distance for hierarchy re-routing
+drift_threshold = 0.5       # Jaccard distance midpoint reference
+drift_ignore_threshold = 0.3  # Below: minor edit, in-place update
+drift_auto_threshold = 0.7    # Above: auto-queue for re-routing
 
 [navigation]
 search_result_limit = 10
@@ -233,7 +239,9 @@ rpg-encoder/
 |--------|-------------------|-----------|
 | Implementation | Python (unreleased) | Rust (available now) |
 | Lifting strategy | Full upfront via API | Progressive — your coding agent lifts via MCP |
-| MCP server | Described, not shipped | Working, with 15 tools |
+| Semantic routing | LLM-based | LLM-based (via MCP routing protocol) |
+| Feature search | Embedding-based | Hybrid embedding + lexical (BGE-small-en-v1.5) |
+| MCP server | Described, not shipped | Working, with 17 tools |
 | SWE-bench evaluation | 93.7% Acc@5 | Not yet evaluated |
 | Languages | Python-focused | 8 languages |
 | TOON format | Not described | Implemented for token efficiency |

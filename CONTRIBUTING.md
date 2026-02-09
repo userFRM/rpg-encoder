@@ -18,7 +18,6 @@ built from publicly available research papers. When contributing:
 ### Prerequisites
 
 - Rust 1.85+ (install via [rustup](https://rustup.rs))
-- Ollama (optional, for testing semantic lifting) — [Install](https://ollama.com)
 
 ### Build and Test
 
@@ -26,7 +25,7 @@ built from publicly available research papers. When contributing:
 # Build all crates
 cargo build --workspace
 
-# Run all tests (223 test cases)
+# Run all tests (379+ test cases)
 cargo test --workspace
 
 # Check for lint issues

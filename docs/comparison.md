@@ -43,7 +43,7 @@ These tools solve different problems. They're complementary, not competitive.
 | Capability | **RPG** | **Claude Code** | **Serena** |
 |:---|:---:|:---:|:---:|
 | "What does this codebase do?" | ✅ | ⚠️ | ❌ |
-| Search by intent ("find auth code") | ✅ | ⚠️ | ❌ |
+| Search by intent ("find auth code") | ✅ (hybrid embedding + lexical) | ⚠️ | ❌ |
 | Architecture discovery | ✅ | ⚠️ | ❌ |
 | Dependency graph traversal | ✅ | ❌ | ✅ |
 | Find symbol by name | ⚠️ | ✅ | ✅ |
@@ -106,7 +106,7 @@ These tools solve different problems. They're complementary, not competitive.
 |:---|:---|:---|:---|
 | Written in | Rust | TypeScript | Python |
 | Parsing | Tree-sitter | Text + reasoning | LSP servers |
-| Semantic source | Agent-as-Lifter | Claude models | LSP type system |
+| Semantic source | Connected agent (MCP) | Claude models | LSP type system |
 | Indexing | Build once, update incrementally | On-demand (agentic search) | Real-time queries |
 | Persistence | `.rpg/graph.json` | `CLAUDE.md` | Markdown memories |
 
@@ -188,7 +188,7 @@ Traditional search finds code by **name**. RPG finds code by **intent**.
 
 ### 2. No API Keys Required
 
-RPG uses the **agent-as-lifter** pattern. The connected coding agent (Claude Code, Cursor, etc.) analyzes the code directly. No external API calls, no token costs, no rate limits.
+RPG uses the connected coding agent (Claude Code, Cursor, etc.) to analyze code directly via standard MCP tools. No external API calls, no token costs, no rate limits.
 
 ### 3. Persistent, Shareable Index
 
