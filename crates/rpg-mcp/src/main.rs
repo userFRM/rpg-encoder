@@ -12,6 +12,7 @@ use rpg_core::graph::RPGraph;
 use rpg_core::storage;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
@@ -25,6 +26,50 @@ struct LiftingSession {
     batch_ranges: Vec<(usize, usize)>,
 }
 
+/// An entity pending LLM-based semantic routing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PendingRouting {
+    entity_id: String,
+    original_path: String,
+    features: Vec<String>,
+    reason: String,
+}
+
+/// Persisted pending routing state (crash-safe).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PendingRoutingState {
+    graph_revision: String,
+    entries: Vec<PendingRouting>,
+}
+
+/// Load pending routing state from disk, if it exists.
+fn load_pending_routing(project_root: &std::path::Path) -> Option<PendingRoutingState> {
+    let path = storage::pending_routing_file(project_root);
+    let data = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&data).ok()
+}
+
+/// Save pending routing state to disk.
+fn save_pending_routing(project_root: &std::path::Path, state: &PendingRoutingState) -> Result<()> {
+    let path = storage::pending_routing_file(project_root);
+    let json = serde_json::to_string_pretty(state)?;
+    std::fs::write(&path, json)?;
+    Ok(())
+}
+
+/// Clear pending routing state from disk.
+fn clear_pending_routing(project_root: &std::path::Path) {
+    let path = storage::pending_routing_file(project_root);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Get the graph revision string for stale-decision protection.
+/// Uses `updated_at` (changes on every save) rather than `base_commit`
+/// (which stays constant across lift/routing operations).
+fn graph_revision(graph: &RPGraph) -> String {
+    graph.updated_at.to_rfc3339()
+}
+
 /// The RPG MCP server state.
 #[derive(Clone)]
 struct RpgServer {
@@ -32,6 +77,10 @@ struct RpgServer {
     graph: Arc<RwLock<Option<RPGraph>>>,
     config: Arc<RwLock<RpgConfig>>,
     lifting_session: Arc<RwLock<Option<LiftingSession>>>,
+    pending_routing: Arc<RwLock<Vec<PendingRouting>>>,
+    embedding_index: Arc<RwLock<Option<rpg_nav::embeddings::EmbeddingIndex>>>,
+    /// Set to true after first failed init to avoid retrying every search.
+    embedding_init_failed: Arc<std::sync::atomic::AtomicBool>,
     tool_router: rmcp::handler::server::router::tool::ToolRouter<Self>,
 }
 
@@ -48,11 +97,18 @@ impl RpgServer {
     fn new(project_root: PathBuf) -> Self {
         let graph = storage::load(&project_root).ok();
         let config = RpgConfig::load(&project_root).unwrap_or_default();
+        // Restore pending routing from disk if present
+        let pending = load_pending_routing(&project_root)
+            .map(|s| s.entries)
+            .unwrap_or_default();
         Self {
             project_root,
             graph: Arc::new(RwLock::new(graph)),
             config: Arc::new(RwLock::new(config)),
             lifting_session: Arc::new(RwLock::new(None)),
+            pending_routing: Arc::new(RwLock::new(pending)),
+            embedding_index: Arc::new(RwLock::new(None)),
+            embedding_init_failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             tool_router: Self::tool_router(),
         }
     }
@@ -329,6 +385,68 @@ impl RpgServer {
         // For sync contexts where we need config but can't await
         RpgConfig::load(&self.project_root).unwrap_or_default()
     }
+
+    /// Lazy-initialize the embedding index on first semantic search.
+    /// If init fails, logs a warning and sets a flag to avoid retrying.
+    async fn try_init_embeddings(&self, graph: &RPGraph) {
+        // Skip if already initialized or previously failed
+        if self.embedding_index.read().await.is_some() {
+            return;
+        }
+        if self
+            .embedding_init_failed
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
+
+        let updated_at = graph.updated_at.to_rfc3339();
+        match rpg_nav::embeddings::EmbeddingIndex::load_or_init(&self.project_root, &updated_at) {
+            Ok(mut idx) => {
+                // Backfill: if index is empty but graph has lifted entities, embed them
+                if idx.entity_count() == 0 {
+                    let entity_features: std::collections::HashMap<String, Vec<String>> = graph
+                        .entities
+                        .iter()
+                        .filter(|(_, e)| !e.semantic_features.is_empty())
+                        .map(|(id, e)| (id.clone(), e.semantic_features.clone()))
+                        .collect();
+                    if !entity_features.is_empty() {
+                        if let Err(e) = idx.embed_entities(&entity_features) {
+                            eprintln!("rpg: embedding backfill failed: {e}");
+                        } else if let Err(e) = idx.save() {
+                            eprintln!("rpg: embedding save after backfill failed: {e}");
+                        }
+                    }
+                }
+                *self.embedding_index.write().await = Some(idx);
+            }
+            Err(e) => {
+                eprintln!("rpg: embedding init failed: {e} — using lexical search");
+                self.embedding_init_failed
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Update embeddings for entities that just received new features.
+    async fn update_embeddings(
+        &self,
+        entity_features: &std::collections::HashMap<String, Vec<String>>,
+        graph_updated_at: &str,
+    ) {
+        let mut guard = self.embedding_index.write().await;
+        if let Some(ref mut idx) = *guard {
+            idx.set_graph_updated_at(graph_updated_at);
+            if let Err(e) = idx.embed_entities(entity_features) {
+                eprintln!("rpg: embedding update failed: {e}");
+                return;
+            }
+            if let Err(e) = idx.save() {
+                eprintln!("rpg: embedding save failed: {e}");
+            }
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -423,6 +541,27 @@ struct SubmitFileSynthesesParams {
     syntheses: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct GetRoutingCandidatesParams {
+    /// Batch index to retrieve (0-based). For large sets, returns paginated candidates.
+    #[serde(default)]
+    batch_index: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SubmitRoutingDecisionsParams {
+    /// JSON object mapping entity IDs to routing action.
+    /// Value is a hierarchy path to route there, or "keep" to confirm current position.
+    /// Example: {"src/auth.rs:validate_token": "Security/auth/validate", "src/db.rs:query": "keep"}
+    /// Entities not included remain pending (NOT auto-kept).
+    decisions: String,
+    /// Graph revision from get_routing_candidates response. Required. Rejects stale decisions.
+    graph_revision: String,
+}
+
+/// Routing instructions prompt for the agent (included in batch 0).
+static ROUTING_PROMPT: &str = include_str!("../../rpg-encoder/src/prompts/semantic_routing.md");
+
 /// Truncate source code to `max_lines`, preserving the signature and start of the body.
 /// Appends a `(truncated)` note if the source exceeds the limit.
 fn truncate_source(source: &str, max_lines: usize) -> String {
@@ -503,6 +642,31 @@ impl RpgServer {
             .map(parse_entity_type_filter)
             .filter(|v| !v.is_empty());
 
+        // Attempt hybrid embedding search for features/auto modes
+        let use_embeddings = matches!(
+            search_mode,
+            rpg_nav::search::SearchMode::Features | rpg_nav::search::SearchMode::Auto
+        );
+        let mut search_mode_label = "lexical";
+
+        let embedding_scores = if use_embeddings {
+            self.try_init_embeddings(graph).await;
+            let mut emb_guard = self.embedding_index.write().await;
+            if let Some(ref mut idx) = *emb_guard {
+                match idx.score_all(&params.query) {
+                    Ok(scores) if !scores.is_empty() => {
+                        search_mode_label = "hybrid";
+                        Some(scores)
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let results = rpg_nav::search::search_with_params(
             graph,
             &rpg_nav::search::SearchParams {
@@ -513,17 +677,22 @@ impl RpgServer {
                 line_nums,
                 file_pattern: params.file_pattern.as_deref(),
                 entity_type_filter,
+                embedding_scores: embedding_scores.as_ref(),
             },
         );
 
         if results.is_empty() {
-            return Ok(format!("{}No results found for: {}", notice, params.query));
+            return Ok(format!(
+                "{}No results found for: {} (search_mode: {})",
+                notice, params.query, search_mode_label,
+            ));
         }
 
         Ok(format!(
-            "{}{}",
+            "{}{}\n\nsearch_mode: {}",
             notice,
-            rpg_nav::toon::format_search_results(&results)
+            rpg_nav::toon::format_search_results(&results),
+            search_mode_label,
         ))
     }
 
@@ -635,10 +804,25 @@ impl RpgServer {
         let notice = self.staleness_notice().await;
         let guard = self.graph.read().await;
         let graph = guard.as_ref().unwrap();
+        let emb_guard = self.embedding_index.read().await;
+        let emb_status = if let Some(ref idx) = *emb_guard {
+            format!(
+                "\nembedding_index: {} entities indexed (BGE-small-en-v1.5)",
+                idx.entity_count()
+            )
+        } else if self
+            .embedding_init_failed
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            "\nembedding_index: init failed (lexical-only search)".to_string()
+        } else {
+            "\nembedding_index: not initialized (will load on first semantic search)".to_string()
+        };
         Ok(format!(
-            "{}{}",
+            "{}{}{}",
             notice,
-            rpg_nav::toon::format_rpg_info(graph)
+            rpg_nav::toon::format_rpg_info(graph),
+            emb_status,
         ))
     }
 
@@ -830,6 +1014,13 @@ impl RpgServer {
         // Update in-memory state
         let meta = graph.metadata.clone();
         *self.graph.write().await = Some(graph);
+        // Invalidate embedding index (full rebuild needed after build_rpg)
+        *self.embedding_index.write().await = None;
+        self.embedding_init_failed
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        // Clear stale pending routing (graph was fully replaced)
+        self.pending_routing.write().await.clear();
+        clear_pending_routing(&self.project_root);
 
         let lang_display = if languages.len() == 1 {
             languages[0].name().to_string()
@@ -1071,13 +1262,18 @@ impl RpgServer {
         let graph = guard.as_mut().ok_or("No RPG loaded")?;
 
         let config = self.get_config_blocking();
-        let drift_threshold = config.encoding.drift_threshold;
+        let drift_ignore = config.encoding.drift_ignore_threshold;
+        let drift_auto = config.encoding.drift_auto_threshold;
 
         let mut updated = 0usize;
         let mut unmatched = 0usize;
         let mut drift_reports: Vec<String> = Vec::new();
-        let mut drifted_ids: Vec<String> = Vec::new();
+        let mut auto_route_ids: Vec<String> = Vec::new();
+        let mut borderline_ids: Vec<(String, f64)> = Vec::new();
         let mut newly_lifted_ids: Vec<String> = Vec::new();
+        // Track resolved entity_id → features for embedding update (canonical IDs)
+        let mut resolved_features: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
 
         for (key, feats) in &features {
             if feats.is_empty() {
@@ -1104,7 +1300,10 @@ impl RpgServer {
                 unmatched += 1;
             } else {
                 for eid in &entity_ids {
-                    // Drift detection: check old features before overwriting
+                    // Three-zone drift detection (paper Algorithm 3):
+                    // < drift_ignore: minor edit, in-place update
+                    // drift_ignore..drift_auto: borderline, ask agent to judge
+                    // > drift_auto: clear drift, auto-route
                     let old_feats = graph
                         .entities
                         .get(eid)
@@ -1113,11 +1312,18 @@ impl RpgServer {
 
                     if !old_feats.is_empty() {
                         let drift = rpg_encoder::evolution::compute_drift(&old_feats, feats);
-                        if drift > drift_threshold {
-                            drift_reports
-                                .push(format!("  {} drifted ({:.2}) — re-routing", eid, drift));
-                            drifted_ids.push(eid.clone());
-                            graph.remove_entity_from_hierarchy(eid);
+                        if drift > drift_auto {
+                            drift_reports.push(format!(
+                                "  {} drifted ({:.2}) — routing required",
+                                eid, drift
+                            ));
+                            auto_route_ids.push(eid.clone());
+                        } else if drift >= drift_ignore {
+                            drift_reports.push(format!(
+                                "  {} borderline drift ({:.2}) — agent review requested",
+                                eid, drift,
+                            ));
+                            borderline_ids.push((eid.clone(), drift));
                         } else if drift > 0.0 {
                             drift_reports.push(format!(
                                 "  {} updated ({:.2} drift, below threshold)",
@@ -1131,34 +1337,95 @@ impl RpgServer {
 
                     if let Some(entity) = graph.entities.get_mut(eid) {
                         entity.semantic_features = feats.clone();
+                        resolved_features.insert(eid.clone(), feats.clone());
                         updated += 1;
                     }
                 }
             }
         }
 
-        // Re-aggregate hierarchy features so routing sees up-to-date features
-        graph.aggregate_hierarchy_features();
+        // Accumulate entities needing routing into pending state (LLM-based routing).
+        // Instead of auto-routing via Jaccard, we store candidates and let the agent
+        // make routing decisions via get_routing_candidates + submit_routing_decisions.
+        let needs_routing = graph.metadata.semantic_hierarchy
+            && (!auto_route_ids.is_empty()
+                || !borderline_ids.is_empty()
+                || !newly_lifted_ids.is_empty());
 
-        // Algorithm 3: Auto re-route drifted entities (paper §A.2.3)
-        let mut rerouted_reports: Vec<String> = Vec::new();
-        for eid in &drifted_ids {
-            if let Some(new_path) = rpg_encoder::evolution::route_new_entity(graph, eid) {
-                rerouted_reports.push(format!("  {} → {}", eid, new_path));
+        let routing_count;
+        if needs_routing {
+            let mut pending = self.pending_routing.write().await;
+
+            for eid in &auto_route_ids {
+                let original_path = graph
+                    .entities
+                    .get(eid)
+                    .map(|e| e.hierarchy_path.clone())
+                    .unwrap_or_default();
+                let feats = graph
+                    .entities
+                    .get(eid)
+                    .map(|e| e.semantic_features.clone())
+                    .unwrap_or_default();
+                pending.push(PendingRouting {
+                    entity_id: eid.clone(),
+                    original_path,
+                    features: feats,
+                    reason: "drifted".into(),
+                });
             }
-        }
 
-        // Algorithm 4: Semantic routing for newly-lifted entities (paper §A.2.4)
-        let mut routed_reports: Vec<String> = Vec::new();
-        for eid in &newly_lifted_ids {
-            if let Some(new_path) = rpg_encoder::evolution::route_new_entity(graph, eid) {
-                routed_reports.push(format!("  {} → {}", eid, new_path));
+            for (eid, drift) in &borderline_ids {
+                let original_path = graph
+                    .entities
+                    .get(eid)
+                    .map(|e| e.hierarchy_path.clone())
+                    .unwrap_or_default();
+                let feats = graph
+                    .entities
+                    .get(eid)
+                    .map(|e| e.semantic_features.clone())
+                    .unwrap_or_default();
+                pending.push(PendingRouting {
+                    entity_id: eid.clone(),
+                    original_path,
+                    features: feats,
+                    reason: format!("borderline drift ({:.2})", drift),
+                });
             }
-        }
 
-        // Re-aggregate after routing changes
-        if !rerouted_reports.is_empty() || !routed_reports.is_empty() {
-            graph.aggregate_hierarchy_features();
+            for eid in &newly_lifted_ids {
+                let original_path = graph
+                    .entities
+                    .get(eid)
+                    .map(|e| e.hierarchy_path.clone())
+                    .unwrap_or_default();
+                let feats = graph
+                    .entities
+                    .get(eid)
+                    .map(|e| e.semantic_features.clone())
+                    .unwrap_or_default();
+                pending.push(PendingRouting {
+                    entity_id: eid.clone(),
+                    original_path,
+                    features: feats,
+                    reason: "newly lifted".into(),
+                });
+            }
+
+            routing_count = pending.len();
+
+            // Persist to disk for crash safety
+            let revision = graph_revision(graph);
+            let state = PendingRoutingState {
+                graph_revision: revision,
+                entries: pending.clone(),
+            };
+            if let Err(e) = save_pending_routing(&self.project_root, &state) {
+                eprintln!("rpg: failed to persist pending routing: {e}");
+            }
+        } else {
+            routing_count = 0;
         }
 
         graph.refresh_metadata();
@@ -1166,6 +1433,13 @@ impl RpgServer {
         storage::save(&self.project_root, graph)
             .map_err(|e| format!("Failed to save RPG: {}", e))?;
 
+        // Update embedding index for newly-lifted entities (non-blocking on failure)
+        let graph_ts = graph.updated_at.to_rfc3339();
+        drop(guard); // Release graph write lock before async embedding update
+        self.update_embeddings(&resolved_features, &graph_ts).await;
+
+        let guard = self.graph.read().await;
+        let graph = guard.as_ref().unwrap();
         let (lifted, total) = graph.lifting_coverage();
         let coverage_pct = if total > 0 {
             lifted as f64 / total as f64 * 100.0
@@ -1196,36 +1470,14 @@ impl RpgServer {
                 result.push_str(report);
                 result.push('\n');
             }
-            if !rerouted_reports.is_empty() {
-                result.push_str(&format!(
-                    "Re-routed {} drifted entity(ies) (threshold {:.2}):\n",
-                    rerouted_reports.len(),
-                    drift_threshold,
-                ));
-                for report in &rerouted_reports {
-                    result.push_str(report);
-                    result.push('\n');
-                }
-            }
-            let orphaned = drifted_ids.len() - rerouted_reports.len();
-            if orphaned > 0 {
-                result.push_str(&format!(
-                    "{} drifted entity(ies) could not be auto-routed (no matching hierarchy area).\n",
-                    orphaned,
-                ));
-            }
         }
 
-        // Semantic routing reports (newly-lifted entities placed in semantic hierarchy)
-        if !routed_reports.is_empty() {
+        // Routing notice
+        if routing_count > 0 {
             result.push_str(&format!(
-                "\nSemantic routing ({} newly-lifted entities):\n",
-                routed_reports.len(),
+                "\n## ROUTING\n\n{} entities need semantic routing.\nCall `get_routing_candidates` to review and route them, or they will be auto-routed when you call `finalize_lifting`.\n",
+                routing_count,
             ));
-            for report in &routed_reports {
-                result.push_str(report);
-                result.push('\n');
-            }
         }
 
         // Per-area coverage breakdown
@@ -1279,6 +1531,258 @@ impl RpgServer {
     }
 
     #[tool(
+        description = "Get entities pending semantic routing. After submit_lift_results detects drifted or newly-lifted entities, they accumulate here for LLM-based routing. Returns entities with their features, the hierarchy structure, and routing instructions. Call submit_routing_decisions with your assignments."
+    )]
+    async fn get_routing_candidates(
+        &self,
+        Parameters(params): Parameters<GetRoutingCandidatesParams>,
+    ) -> Result<String, String> {
+        self.ensure_graph().await?;
+
+        let guard = self.graph.read().await;
+        let graph = guard.as_ref().ok_or("No RPG loaded")?;
+        let revision = graph_revision(graph);
+
+        let pending = self.pending_routing.read().await;
+        if pending.is_empty() {
+            return Ok("No entities pending routing.".into());
+        }
+
+        let batch_size = 20;
+        let batch_index = params.batch_index.unwrap_or(0);
+        let total_batches = pending.len().div_ceil(batch_size);
+        let start = batch_index * batch_size;
+        let end = (start + batch_size).min(pending.len());
+
+        if start >= pending.len() {
+            return Err(format!(
+                "Batch index {} out of range (0..{})",
+                batch_index,
+                total_batches - 1,
+            ));
+        }
+
+        let batch = &pending[start..end];
+
+        let mut result = format!(
+            "## ROUTING CANDIDATES (batch {} of {}, revision: {})\n\n",
+            batch_index, total_batches, revision,
+        );
+
+        // Include routing instructions on batch 0
+        if batch_index == 0 {
+            result.push_str("### Instructions\n\n");
+            result.push_str(ROUTING_PROMPT);
+            result.push_str("\n\n");
+        }
+
+        // List entities to route
+        result.push_str("### Entities to Route\n\n");
+        result.push_str("| Entity | Features | Current Path | Reason |\n");
+        result.push_str("|--------|----------|--------------|--------|\n");
+        for p in batch {
+            let feats_str = if p.features.len() > 4 {
+                format!("{}, ...", p.features[..4].join(", "))
+            } else {
+                p.features.join(", ")
+            };
+            let path_display = if p.original_path.is_empty() {
+                "(none)".to_string()
+            } else {
+                p.original_path.clone()
+            };
+            result.push_str(&format!(
+                "| {} | {} | {} | {} |\n",
+                p.entity_id, feats_str, path_display, p.reason,
+            ));
+        }
+
+        // Scoped hierarchy context: show top-3 areas by similarity to pending entities
+        result.push_str("\n### Relevant Hierarchy\n\n");
+        let all_pending_features: Vec<String> =
+            batch.iter().flat_map(|p| p.features.clone()).collect();
+        let mut area_scores: Vec<(&str, f64)> = graph
+            .hierarchy
+            .iter()
+            .map(|(name, node)| {
+                let sim = rpg_encoder::evolution::semantic_similarity(
+                    &all_pending_features,
+                    &node.semantic_features,
+                );
+                (name.as_str(), sim)
+            })
+            .collect();
+        area_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let top_n = 3.min(area_scores.len());
+        for (area_name, _) in &area_scores[..top_n] {
+            if let Some(area_node) = graph.hierarchy.get(*area_name) {
+                let area_feats = if area_node.semantic_features.len() > 5 {
+                    format!("{}, ...", area_node.semantic_features[..5].join(", "))
+                } else {
+                    area_node.semantic_features.join(", ")
+                };
+                let entity_count: usize = area_node.entities.len()
+                    + area_node
+                        .children
+                        .values()
+                        .map(|c| {
+                            c.entities.len()
+                                + c.children
+                                    .values()
+                                    .map(|sc| sc.entities.len())
+                                    .sum::<usize>()
+                        })
+                        .sum::<usize>();
+                result.push_str(&format!(
+                    "**{}** ({} entities): {}\n",
+                    area_name, entity_count, area_feats,
+                ));
+                for (cat_name, cat_node) in &area_node.children {
+                    let cat_feats = if cat_node.semantic_features.len() > 3 {
+                        format!("{}, ...", cat_node.semantic_features[..3].join(", "))
+                    } else {
+                        cat_node.semantic_features.join(", ")
+                    };
+                    result.push_str(&format!("  - {}/{}: {}\n", area_name, cat_name, cat_feats,));
+                    for sub_name in cat_node.children.keys() {
+                        result
+                            .push_str(&format!("    - {}/{}/{}\n", area_name, cat_name, sub_name,));
+                    }
+                }
+            }
+        }
+
+        // List remaining areas by name only
+        if area_scores.len() > top_n {
+            let others: Vec<&str> = area_scores[top_n..].iter().map(|(n, _)| *n).collect();
+            result.push_str(&format!(
+                "\n(Other areas: {} — use \"Area/category\" format for any area)\n",
+                others.join(", "),
+            ));
+        }
+
+        result.push_str(&format!(
+            "\n## NEXT_ACTION\nROUTING: Call `submit_routing_decisions` with graph_revision \"{}\":\n{{\"entity_id\": \"Area/cat/subcat\" or \"keep\", ...}}\n",
+            revision,
+        ));
+
+        Ok(result)
+    }
+
+    #[tool(
+        description = "Submit semantic routing decisions for entities pending hierarchy placement. Pass a JSON object mapping entity IDs to hierarchy paths (route) or \"keep\" (confirm current position). Requires graph_revision from get_routing_candidates to prevent stale decisions."
+    )]
+    async fn submit_routing_decisions(
+        &self,
+        Parameters(params): Parameters<SubmitRoutingDecisionsParams>,
+    ) -> Result<String, String> {
+        self.ensure_graph().await?;
+
+        let decisions: std::collections::HashMap<String, String> =
+            serde_json::from_str(&params.decisions)
+                .map_err(|e| format!("Invalid decisions JSON: {}", e))?;
+
+        let mut guard = self.graph.write().await;
+        let graph = guard.as_mut().ok_or("No RPG loaded")?;
+
+        // Validate graph revision
+        let current_revision = graph_revision(graph);
+        if params.graph_revision != current_revision {
+            return Err(format!(
+                "Stale graph_revision: expected \"{}\", got \"{}\". Call get_routing_candidates again.",
+                current_revision, params.graph_revision,
+            ));
+        }
+
+        let mut pending = self.pending_routing.write().await;
+        let mut routed = 0usize;
+        let mut kept = 0usize;
+        let mut reports: Vec<String> = Vec::new();
+
+        for (entity_id, action) in &decisions {
+            // Validate entity exists
+            if !graph.entities.contains_key(entity_id) {
+                reports.push(format!("  {} — not found, skipped", entity_id));
+                continue;
+            }
+
+            if action == "keep" {
+                // Confirm current position — remove from pending
+                kept += 1;
+            } else {
+                // Route to new path
+                let original_path = graph
+                    .entities
+                    .get(entity_id)
+                    .map(|e| e.hierarchy_path.clone())
+                    .unwrap_or_default();
+
+                graph.remove_entity_from_hierarchy(entity_id);
+
+                if let Some(entity) = graph.entities.get_mut(entity_id) {
+                    entity.hierarchy_path = action.clone();
+                }
+                graph.insert_into_hierarchy(action, entity_id);
+
+                if *action != original_path {
+                    reports.push(format!(
+                        "  {} → {} (was: {})",
+                        entity_id, action, original_path
+                    ));
+                }
+                routed += 1;
+            }
+        }
+
+        // Remove decided entities from pending
+        let decided_ids: std::collections::HashSet<&String> = decisions.keys().collect();
+        pending.retain(|p| !decided_ids.contains(&p.entity_id));
+
+        // Re-aggregate and rebuild
+        if routed > 0 {
+            graph.aggregate_hierarchy_features();
+            graph.assign_hierarchy_ids();
+            graph.materialize_containment_edges();
+        }
+        graph.refresh_metadata();
+
+        storage::save(&self.project_root, graph)
+            .map_err(|e| format!("Failed to save RPG: {}", e))?;
+
+        // Update or clear persisted pending state
+        if pending.is_empty() {
+            clear_pending_routing(&self.project_root);
+        } else {
+            let state = PendingRoutingState {
+                graph_revision: current_revision,
+                entries: pending.clone(),
+            };
+            if let Err(e) = save_pending_routing(&self.project_root, &state) {
+                eprintln!("rpg: failed to persist pending routing: {e}");
+            }
+        }
+
+        let remaining = pending.len();
+        let mut result = format!("Routed {} entities, kept {} in place.\n", routed, kept);
+        for report in &reports {
+            result.push_str(report);
+            result.push('\n');
+        }
+
+        if remaining > 0 {
+            result.push_str(&format!(
+                "\n{} entities still pending routing. Call get_routing_candidates for next batch.\n",
+                remaining,
+            ));
+        } else {
+            result.push_str("\nAll routing complete.\n");
+        }
+
+        Ok(result)
+    }
+
+    #[tool(
         description = "Incrementally update the RPG from git changes since the last build. Detects added, modified, deleted, and renamed files, re-extracts entities, and updates structural metadata. Modified entities with stale features are tracked for interactive re-lifting. Much faster than a full rebuild."
     )]
     async fn update_rpg(
@@ -1320,6 +1824,13 @@ impl RpgServer {
 
         // Clear lifting session — entity list changed
         *self.lifting_session.write().await = None;
+        // Invalidate embedding index — entities changed
+        *self.embedding_index.write().await = None;
+        self.embedding_init_failed
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        // Clear stale pending routing (entity set changed)
+        self.pending_routing.write().await.clear();
+        clear_pending_routing(&self.project_root);
 
         if summary.entities_added == 0
             && summary.entities_modified == 0
@@ -1374,6 +1885,15 @@ impl RpgServer {
             Ok(g) => {
                 let entities = g.metadata.total_entities;
                 *self.graph.write().await = Some(g);
+                // Invalidate embedding index — will reload on next search
+                *self.embedding_index.write().await = None;
+                self.embedding_init_failed
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                // Reload pending routing from disk (may have changed externally)
+                let pending = load_pending_routing(&self.project_root)
+                    .map(|s| s.entries)
+                    .unwrap_or_default();
+                *self.pending_routing.write().await = pending;
                 Ok(format!("RPG reloaded. {} entities loaded.", entities))
             }
             Err(e) => Err(format!("Failed to reload RPG: {}", e)),
@@ -1394,10 +1914,59 @@ impl RpgServer {
             return Err("No entities have been lifted yet. Run get_entities_for_lifting + submit_lift_results first.".into());
         }
 
+        // Drain pending routing via Jaccard fallback if agent didn't route explicitly
+        let mut fallback_routed = 0usize;
+        {
+            let mut pending = self.pending_routing.write().await;
+            if !pending.is_empty() && graph.metadata.semantic_hierarchy {
+                for p in pending.drain(..) {
+                    let feats = graph
+                        .entities
+                        .get(&p.entity_id)
+                        .map(|e| e.semantic_features.clone())
+                        .unwrap_or_default();
+                    if feats.is_empty() {
+                        // No features — keep at original path
+                        continue;
+                    }
+
+                    graph.remove_entity_from_hierarchy(&p.entity_id);
+                    graph.aggregate_hierarchy_features();
+
+                    match rpg_encoder::evolution::find_best_hierarchy_path(graph, &feats) {
+                        Some(new_path) if new_path != p.original_path => {
+                            if let Some(entity) = graph.entities.get_mut(&p.entity_id) {
+                                entity.hierarchy_path = new_path.clone();
+                            }
+                            graph.insert_into_hierarchy(&new_path, &p.entity_id);
+                            fallback_routed += 1;
+                        }
+                        _ => {
+                            if !p.original_path.is_empty() {
+                                graph.insert_into_hierarchy(&p.original_path, &p.entity_id);
+                            }
+                        }
+                    }
+                }
+
+                graph.aggregate_hierarchy_features();
+                graph.assign_hierarchy_ids();
+                graph.materialize_containment_edges();
+            }
+            clear_pending_routing(&self.project_root);
+        }
+
         // Clear lifting session cache
         *self.lifting_session.write().await = None;
 
         let mut steps: Vec<String> = Vec::new();
+
+        if fallback_routed > 0 {
+            steps.push(format!(
+                "routing_fallback: {} entities auto-routed via Jaccard",
+                fallback_routed,
+            ));
+        }
 
         // Step 1: File-level feature synthesis — aggregate child entity features into modules.
         // No external LLM needed: dedup-aggregates from already-lifted entity features.

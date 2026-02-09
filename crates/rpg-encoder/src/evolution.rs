@@ -622,6 +622,7 @@ pub fn find_best_hierarchy_path(graph: &RPGraph, features: &[String]) -> Option<
     // Step 2: Drill down into children (Algorithm 4's recursive FindBestParent)
     let mut current_path = area_name.to_string();
     let mut current_node = area_node;
+    let mut current_sim = area_sim;
 
     loop {
         if current_node.children.is_empty() {
@@ -637,13 +638,14 @@ pub fn find_best_hierarchy_path(graph: &RPGraph, features: &[String]) -> Option<
         }
 
         match best_child {
-            Some((child_name, child_sim)) if child_sim > 0.0 => {
-                // Child is a better fit — drill deeper
+            Some((child_name, child_sim)) if child_sim > current_sim => {
+                // Child is a strictly better fit than current node — drill deeper
                 current_path = format!("{}/{}", current_path, child_name);
                 current_node = &current_node.children[child_name];
+                current_sim = child_sim;
             }
             _ => {
-                // No child is a good fit — stay at current level
+                // No child is a better fit than current — stay at this level
                 break;
             }
         }
@@ -683,27 +685,51 @@ pub fn check_drift_and_reroute(
     new_features: &[String],
     threshold: f64,
 ) -> Option<String> {
+    if !graph.metadata.semantic_hierarchy {
+        return None;
+    }
+
     let drift = compute_drift(old_features, new_features);
     if drift <= threshold {
         return None;
     }
 
-    // Drift exceeds threshold — find new best path
-    let new_path = find_best_hierarchy_path(graph, new_features)?;
-
-    // Check if the new path differs from the current one
+    // Capture current path before removal (for fallback restoration)
     let current_path = graph
         .entities
         .get(entity_id)
         .map(|e| e.hierarchy_path.clone())
         .unwrap_or_default();
 
-    if new_path == current_path {
-        return None; // Already in the right place
-    }
+    // Remove from current hierarchy position
+    graph.remove_entity_from_hierarchy(entity_id);
 
-    reroute_entity(graph, entity_id, &new_path);
-    Some(new_path)
+    // Re-aggregate hierarchy features without this entity to avoid self-bias
+    graph.aggregate_hierarchy_features();
+
+    // Drift exceeds threshold — find new best path
+    let result = match find_best_hierarchy_path(graph, new_features) {
+        Some(new_path) if new_path != current_path => {
+            // Found a better position — reroute
+            if let Some(entity) = graph.entities.get_mut(entity_id) {
+                entity.hierarchy_path = new_path.clone();
+            }
+            graph.insert_into_hierarchy(&new_path, entity_id);
+            Some(new_path)
+        }
+        _ => {
+            // No better path found — restore to original position
+            if !current_path.is_empty() {
+                graph.insert_into_hierarchy(&current_path, entity_id);
+            }
+            None
+        }
+    };
+
+    // Re-aggregate after reinsertion so hierarchy features reflect the final state
+    graph.aggregate_hierarchy_features();
+
+    result
 }
 
 /// Route a newly-lifted entity to the best semantic hierarchy position.

@@ -35,8 +35,13 @@ pub struct EncodingConfig {
     pub max_batch_tokens: usize,
     /// Number of entities per hierarchy construction chunk.
     pub hierarchy_chunk_size: usize,
-    /// Jaccard distance threshold to trigger hierarchy re-routing.
+    /// Jaccard distance threshold to trigger hierarchy re-routing (legacy, midpoint reference).
     pub drift_threshold: f64,
+    /// Drift below this threshold is ignored (minor edit). Default: 0.3.
+    pub drift_ignore_threshold: f64,
+    /// Drift above this threshold triggers automatic routing. Default: 0.7.
+    /// Drift between ignore and auto is "borderline" — agent is asked to judge.
+    pub drift_auto_threshold: f64,
     /// Whether to broadcast file-level imports to entities without call-site info.
     /// When false (default), entities without invokes/inherits get no import edges.
     /// The paper says E_dep via "AST analysis" — broadcasting contradicts this.
@@ -61,6 +66,8 @@ impl Default for EncodingConfig {
             max_batch_tokens: 8000,
             hierarchy_chunk_size: 50,
             drift_threshold: 0.5,
+            drift_ignore_threshold: 0.3,
+            drift_auto_threshold: 0.7,
             broadcast_imports: false,
             max_hierarchy_depth: 3,
         }
@@ -98,6 +105,14 @@ impl RpgConfig {
         };
 
         // Environment variable overrides
+        env_override(
+            "RPG_DRIFT_IGNORE_THRESHOLD",
+            &mut config.encoding.drift_ignore_threshold,
+        );
+        env_override(
+            "RPG_DRIFT_AUTO_THRESHOLD",
+            &mut config.encoding.drift_auto_threshold,
+        );
         env_override("RPG_BATCH_SIZE", &mut config.encoding.batch_size);
         env_override(
             "RPG_MAX_BATCH_TOKENS",
@@ -112,6 +127,15 @@ impl RpgConfig {
             "RPG_SEARCH_LIMIT",
             &mut config.navigation.search_result_limit,
         );
+
+        // Validate drift thresholds
+        if config.encoding.drift_ignore_threshold >= config.encoding.drift_auto_threshold {
+            anyhow::bail!(
+                "drift_ignore_threshold ({}) must be less than drift_auto_threshold ({})",
+                config.encoding.drift_ignore_threshold,
+                config.encoding.drift_auto_threshold,
+            );
+        }
 
         Ok(config)
     }
@@ -128,6 +152,8 @@ mod tests {
         assert_eq!(config.encoding.max_batch_tokens, 8000);
         assert_eq!(config.encoding.hierarchy_chunk_size, 50);
         assert_eq!(config.encoding.drift_threshold, 0.5);
+        assert_eq!(config.encoding.drift_ignore_threshold, 0.3);
+        assert_eq!(config.encoding.drift_auto_threshold, 0.7);
         assert_eq!(config.navigation.search_result_limit, 10);
     }
 

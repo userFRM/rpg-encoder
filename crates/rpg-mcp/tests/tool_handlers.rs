@@ -620,3 +620,157 @@ fn test_rtk_full_cycle_traversal() {
         tree_output
     );
 }
+
+/// End-to-end test for the restore-only routing path: all drifted entities
+/// restore to their original positions, but hierarchy IDs and containment
+/// edges must still be refreshed (not stale).
+#[test]
+fn test_restore_only_routing_refreshes_hierarchy_ids_and_containment() {
+    // Build a graph with semantic hierarchy and two areas
+    let mut graph = RPGraph::new("python");
+    graph.metadata.semantic_hierarchy = true;
+
+    // Area "Auth" with one entity
+    let auth_entity = Entity {
+        id: "src/auth.py:login".to_string(),
+        kind: EntityKind::Function,
+        name: "login".to_string(),
+        file: PathBuf::from("src/auth.py"),
+        line_start: 1,
+        line_end: 10,
+        parent_class: None,
+        semantic_features: vec![
+            "authenticate user".to_string(),
+            "validate token".to_string(),
+        ],
+        hierarchy_path: "Auth/login".to_string(),
+        deps: EntityDeps::default(),
+    };
+    graph.insert_entity(auth_entity);
+    graph.insert_into_hierarchy("Auth/login", "src/auth.py:login");
+
+    // Area "Data" with one entity
+    let data_entity = Entity {
+        id: "src/data.py:load".to_string(),
+        kind: EntityKind::Function,
+        name: "load".to_string(),
+        file: PathBuf::from("src/data.py"),
+        line_start: 1,
+        line_end: 10,
+        parent_class: None,
+        semantic_features: vec!["load dataset".to_string(), "parse csv".to_string()],
+        hierarchy_path: "Data/loading".to_string(),
+        deps: EntityDeps::default(),
+    };
+    graph.insert_entity(data_entity);
+    graph.insert_into_hierarchy("Data/loading", "src/data.py:load");
+
+    // Initial structural setup
+    graph.aggregate_hierarchy_features();
+    graph.assign_hierarchy_ids();
+    graph.materialize_containment_edges();
+    graph.refresh_metadata();
+
+    // Verify initial containment edges exist
+    let initial_contains = graph
+        .edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Contains)
+        .count();
+    assert!(
+        initial_contains > 0,
+        "should have containment edges initially"
+    );
+
+    // Record initial hierarchy IDs
+    let initial_auth_id = graph.hierarchy.get("Auth").map(|n| n.id.clone());
+    assert!(
+        initial_auth_id.is_some(),
+        "Auth area should have a hierarchy_id"
+    );
+
+    // --- Simulate the MCP submit_lift_results restore-only path ---
+    // Entity gets "drifted" features that are still in the same domain.
+    // The entity should restore to its original position after routing.
+    let drifted_ids = vec!["src/auth.py:login".to_string()];
+    let newly_lifted_ids: Vec<String> = vec![];
+
+    // Simulate the MCP routing loop for drifted entities
+    for eid in &drifted_ids {
+        let original_path = graph
+            .entities
+            .get(eid)
+            .map(|e| e.hierarchy_path.clone())
+            .unwrap_or_default();
+
+        graph.remove_entity_from_hierarchy(eid);
+        graph.aggregate_hierarchy_features();
+
+        // Entity features slightly changed but still auth-domain
+        let features = vec![
+            "authenticate user".to_string(),
+            "verify credentials".to_string(),
+        ];
+        if let Some(entity) = graph.entities.get_mut(eid) {
+            entity.semantic_features = features.clone();
+        }
+
+        match rpg_encoder::evolution::find_best_hierarchy_path(&graph, &features) {
+            Some(new_path) if new_path != original_path => {
+                if let Some(entity) = graph.entities.get_mut(eid) {
+                    entity.hierarchy_path = new_path.clone();
+                }
+                graph.insert_into_hierarchy(&new_path, eid);
+            }
+            _ => {
+                // Restore to original — this is the "restore-only" path
+                if !original_path.is_empty() {
+                    graph.insert_into_hierarchy(&original_path, eid);
+                }
+            }
+        }
+    }
+
+    // The MCP handler should always rebuild if hierarchy_mutated, even on restore-only
+    let hierarchy_mutated = (!drifted_ids.is_empty() || !newly_lifted_ids.is_empty())
+        && graph.metadata.semantic_hierarchy;
+    assert!(hierarchy_mutated, "should detect hierarchy mutations");
+
+    // Apply the final rebuild (this is what the MCP handler does)
+    graph.aggregate_hierarchy_features();
+    graph.assign_hierarchy_ids();
+    graph.materialize_containment_edges();
+    graph.refresh_metadata();
+
+    // Verify hierarchy IDs are still assigned (not stale/missing)
+    let final_auth_id = graph.hierarchy.get("Auth").map(|n| n.id.clone());
+    assert!(
+        final_auth_id.is_some() && !final_auth_id.as_ref().unwrap().is_empty(),
+        "Auth area should still have a hierarchy_id after restore-only routing"
+    );
+
+    // Verify containment edges are still present
+    let final_contains = graph
+        .edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Contains)
+        .count();
+    assert!(
+        final_contains > 0,
+        "containment edges should be rebuilt after restore-only routing"
+    );
+
+    // Verify the entity is back in its original hierarchy position
+    let login = graph.get_entity("src/auth.py:login").unwrap();
+    assert_eq!(
+        login.hierarchy_path, "Auth/login",
+        "entity should be restored to original position"
+    );
+    let auth_login = &graph.hierarchy["Auth"].children["login"];
+    assert!(
+        auth_login
+            .entities
+            .contains(&"src/auth.py:login".to_string()),
+        "entity should be present in Auth/login hierarchy node"
+    );
+}

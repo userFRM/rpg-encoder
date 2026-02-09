@@ -919,6 +919,55 @@ fn build_semantic_hierarchy_graph() -> RPGraph {
         .hierarchy
         .insert("DataProcessing".to_string(), data_area);
 
+    // Add sentinel entities to anchor hierarchy nodes (prevents prune_empty from
+    // destroying the hierarchy when test entities are removed/rerouted)
+    let sentinel_specs = [
+        (
+            "src/auth/login.py:login_user",
+            "login_user",
+            "src/auth/login.py",
+            "Authentication/login",
+            vec!["authenticate user".to_string()],
+        ),
+        (
+            "src/auth/session.py:create_session",
+            "create_session",
+            "src/auth/session.py",
+            "Authentication/session",
+            vec!["manage session".to_string()],
+        ),
+        (
+            "src/data/loader.py:load_csv",
+            "load_csv",
+            "src/data/loader.py",
+            "DataProcessing/loading",
+            vec!["load dataset".to_string()],
+        ),
+        (
+            "src/data/transform.py:normalize",
+            "normalize",
+            "src/data/transform.py",
+            "DataProcessing/transform",
+            vec!["transform data".to_string()],
+        ),
+    ];
+    for (id, name, file, hier_path, feats) in sentinel_specs {
+        let entity = rpg_core::graph::Entity {
+            id: id.to_string(),
+            kind: EntityKind::Function,
+            name: name.to_string(),
+            file: PathBuf::from(file),
+            line_start: 1,
+            line_end: 5,
+            parent_class: None,
+            semantic_features: feats,
+            hierarchy_path: hier_path.to_string(),
+            deps: rpg_core::graph::EntityDeps::default(),
+        };
+        graph.insert_entity(entity);
+        graph.insert_into_hierarchy(hier_path, id);
+    }
+
     graph.assign_hierarchy_ids();
     graph
 }
@@ -1195,5 +1244,95 @@ fn test_route_new_entity_skips_without_semantic_hierarchy() {
     assert!(
         result.is_none(),
         "should not route without semantic hierarchy"
+    );
+}
+
+#[test]
+fn test_routing_stops_when_child_sim_not_better_than_parent() {
+    // Build a hierarchy where the area has better sim than its children
+    let mut graph = RPGraph::new("python");
+    graph.metadata.semantic_hierarchy = true;
+
+    let mut area = rpg_core::graph::HierarchyNode::new("General");
+    area.semantic_features = vec![
+        "process request".to_string(),
+        "handle input".to_string(),
+        "validate data".to_string(),
+    ];
+
+    // Children have narrower features that won't match the entity as well as the parent
+    let mut child_a = rpg_core::graph::HierarchyNode::new("networking");
+    child_a.semantic_features = vec!["open socket".to_string(), "send packet".to_string()];
+    // Anchor entity so it doesn't get pruned
+    child_a.entities.push("sentinel:a".to_string());
+
+    let mut child_b = rpg_core::graph::HierarchyNode::new("storage");
+    child_b.semantic_features = vec!["write file".to_string(), "read disk".to_string()];
+    child_b.entities.push("sentinel:b".to_string());
+
+    area.children.insert("networking".to_string(), child_a);
+    area.children.insert("storage".to_string(), child_b);
+    graph.hierarchy.insert("General".to_string(), area);
+
+    // Entity features match the parent area well but not any child
+    let features = vec!["process request".to_string(), "handle input".to_string()];
+    let path = find_best_hierarchy_path(&graph, &features);
+    assert_eq!(
+        path.as_deref(),
+        Some("General"),
+        "should stop at area level, not descend into unrelated children"
+    );
+}
+
+#[test]
+fn test_check_drift_and_reroute_restores_on_no_match() {
+    // Build a minimal hierarchy where routing will fail for the new features
+    let mut graph = RPGraph::new("python");
+    graph.metadata.semantic_hierarchy = true;
+
+    let mut area = rpg_core::graph::HierarchyNode::new("Authentication");
+    area.semantic_features = vec![
+        "authenticate user".to_string(),
+        "validate credentials".to_string(),
+    ];
+    area.entities.push("sentinel:auth".to_string());
+    graph.hierarchy.insert("Authentication".to_string(), area);
+
+    // Entity in Authentication with auth features
+    let entity = rpg_core::graph::Entity {
+        id: "src/auth.py:login".to_string(),
+        kind: EntityKind::Function,
+        name: "login".to_string(),
+        file: PathBuf::from("src/auth.py"),
+        line_start: 1,
+        line_end: 10,
+        parent_class: None,
+        semantic_features: vec!["authenticate user".to_string()],
+        hierarchy_path: "Authentication".to_string(),
+        deps: rpg_core::graph::EntityDeps::default(),
+    };
+    let eid = entity.id.clone();
+    graph.insert_entity(entity);
+    graph.insert_into_hierarchy("Authentication", &eid);
+
+    // Drift to completely unrelated features that don't match any hierarchy area
+    let old = vec!["authenticate user".to_string()];
+    let new_feats = vec![
+        "quantum entangle".to_string(),
+        "teleport particles".to_string(),
+    ];
+    graph.entities.get_mut(&eid).unwrap().semantic_features = new_feats.clone();
+
+    let result = check_drift_and_reroute(&mut graph, &eid, &old, &new_feats, 0.5);
+    // Should return None because no hierarchy area matches the new features
+    assert!(
+        result.is_none(),
+        "should return None when no matching hierarchy path"
+    );
+
+    // Entity should be restored to its original position (not orphaned)
+    assert!(
+        graph.hierarchy["Authentication"].entities.contains(&eid),
+        "entity should be restored to original hierarchy position"
     );
 }

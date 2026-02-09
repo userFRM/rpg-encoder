@@ -19,6 +19,20 @@ No API keys or local LLMs needed. YOU are the LLM — you analyze the code direc
 
 **At any point, call `lifting_status` to see where you are.**
 
+## SEMANTIC ROUTING (optional, after submit_lift_results)
+
+When `submit_lift_results` reports a `## ROUTING` block, entities need semantic
+placement in the hierarchy. You can:
+
+1. **Route them** — call `get_routing_candidates` to see entities + hierarchy,
+   then `submit_routing_decisions({"entity_id": "Area/cat/subcat" or "keep", ...})`.
+2. **Skip routing** — the system will auto-route using Jaccard similarity when
+   you call `finalize_lifting`.
+
+LLM routing produces better hierarchy quality than auto-routing, but both work.
+Borderline drift entities (0.3-0.7 Jaccard distance) are included — use "keep"
+to confirm they belong in their current position.
+
 ## FILE SYNTHESIS (step 8-10)
 
 After all entities are lifted, `finalize_lifting` produces dedup-aggregated file features.
@@ -101,7 +115,8 @@ concrete anchors, then use `explore_rpg` to expand from those anchors.
 - **lifting_status**: Dashboard — coverage, per-area progress, unlifted files, NEXT STEP
 - **build_rpg**: Index the codebase (run once, instant)
 - **get_entities_for_lifting** + **submit_lift_results**: YOU analyze the code
-- **finalize_lifting**: Aggregate file-level features, rebuild hierarchy metadata
+- **get_routing_candidates** + **submit_routing_decisions**: LLM-based semantic routing (optional)
+- **finalize_lifting**: Aggregate file-level features, rebuild hierarchy metadata (auto-routes pending if skipped)
 - **get_files_for_synthesis** + **submit_file_syntheses**: YOU synthesize file-level features
 - **build_semantic_hierarchy**: Get prompts for domain discovery + hierarchy assignment
 - **submit_hierarchy**: Apply your hierarchy assignments to the graph

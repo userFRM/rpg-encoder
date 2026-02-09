@@ -116,7 +116,10 @@ pub fn save_with_config(
     // Create .rpg/.gitignore (keeps config local)
     let inner_gitignore = dir.join(".gitignore");
     if !inner_gitignore.exists() {
-        let _ = fs::write(&inner_gitignore, "config.toml\n");
+        let _ = fs::write(
+            &inner_gitignore,
+            "config.toml\nmodels/\nembeddings.bin\nembeddings.meta.json\npending_routing.json\n",
+        );
     }
 
     // Create README on first save so people discovering .rpg/ know what it is
@@ -137,8 +140,26 @@ pub fn ensure_gitignore(project_root: &Path) -> Result<bool> {
     if inner_gitignore.exists() {
         return Ok(true);
     }
-    fs::write(&inner_gitignore, "config.toml\n")?;
+    fs::write(
+        &inner_gitignore,
+        "config.toml\nmodels/\nembeddings.bin\nembeddings.meta.json\npending_routing.json\n",
+    )?;
     Ok(false)
+}
+
+/// Get the path to the pending routing state file.
+pub fn pending_routing_file(project_root: &Path) -> PathBuf {
+    rpg_dir(project_root).join("pending_routing.json")
+}
+
+/// Get the path to the embeddings binary file.
+pub fn embeddings_file(project_root: &Path) -> PathBuf {
+    rpg_dir(project_root).join("embeddings.bin")
+}
+
+/// Get the path to the embeddings metadata file.
+pub fn embeddings_meta_file(project_root: &Path) -> PathBuf {
+    rpg_dir(project_root).join("embeddings.meta.json")
 }
 
 const RPG_README: &str = include_str!("templates/rpg_readme.md");
