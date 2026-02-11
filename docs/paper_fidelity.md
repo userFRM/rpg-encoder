@@ -393,5 +393,5 @@ additions:
 
 ---
 
-*Based on rpg-encoder v0.1.9 and arXiv:2602.02084 (Luo et al., 2026).
+*Based on rpg-encoder v0.2.0 and arXiv:2602.02084 (Luo et al., 2026).
 Last updated: February 2026.*
