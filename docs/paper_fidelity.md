@@ -64,10 +64,10 @@ intent (e.g., "validate user credentials", "serialize config to disk").
 | Feature format | Verb-object phrases | Identical format, enforced via prompt | Faithful |
 | Features per entity | 3–8 | 3–8 (prompt-specified) | Faithful |
 | Lifting mechanism | Direct API call to LLM | Connected agent via MCP tool protocol | Variant |
-| Batch protocol | Not described | `get_entities_for_lifting` → `submit_lift_results` | Extension |
+| Batch protocol | Described in Appendix A.1.1 (token-budget batching) | `get_entities_for_lifting` → `submit_lift_results` with token-aware batching | Faithful |
 | Parallel lifting | Not described | Batch indices are independent; parallelizable at orchestration layer | Extension |
 | Cross-session resume | Not described | Graph persisted after every submission; `lifting_status` recovers state | Extension |
-| File synthesis | Not described | Intermediate step: entity features → holistic file features → hierarchy | Extension |
+| File synthesis | Described in §3.1 as fine-grained → holistic file summarization | Explicit intermediate protocol: entity features → holistic file features → hierarchy | Variant |
 
 **Fidelity: 90%** — The semantic output is identical. The delivery mechanism differs: the paper
 assumes a direct LLM API call, while this implementation uses the MCP tool protocol where the
@@ -90,7 +90,8 @@ Two-phase LLM process:
 |--------|-------|-------------|--------|
 | Domain discovery | LLM identifies areas | `build_semantic_hierarchy` returns prompt; agent identifies areas | Faithful |
 | Assignment | LLM assigns files to paths | Agent calls `submit_hierarchy` with path assignments | Faithful |
-| Prompt structure | Single combined prompt (Appendix A.1.2) | Separated into domain discovery and assignment phases | Variant |
+| Path-depth enforcement | Strict 3-level output format | Always enforced in `submit_hierarchy` | Faithful |
+| Prompt structure | Separate Domain Discovery + Hierarchical Construction prompts (Appendix A.1.2) | Separated into domain discovery and assignment phases | Faithful |
 | Prompt wording | Paper's specific wording | Different wording, equivalent semantics | Minor divergence |
 
 **Fidelity: 85%** — The two-phase structure and 3-level output format match the paper. Prompt
@@ -112,7 +113,7 @@ Resolve cross-file dependency edges.
 |--------|-------|-------------|--------|
 | LCA algorithm | Trie-based branching analysis | `rpg_core::lca::compute_lca()` — identical approach | Faithful |
 | Directory anchoring | LCA of leaf entity file paths | Identical: compute LCA per hierarchy node | Faithful |
-| Dependency resolution | Cross-file edge materialization | `ground_hierarchy()` in `grounding.rs` | Faithful |
+| Dependency resolution | Cross-file edge materialization | `resolve_dependencies()` in `grounding.rs` | Faithful |
 | Performance indexes | Not described | `rebuild_edge_index()` + `rebuild_hierarchy_index()` for O(1) lookup | Extension |
 
 **Fidelity: 95%**
@@ -216,6 +217,11 @@ Pending state is crash-safe: persisted to disk with `graph_revision` for stale-d
 protection. If the agent never calls routing tools, `finalize_lifting` drains pending entities
 via Jaccard similarity as a fallback.
 
+Routing decisions are validated at submission time:
+- Decisions may only target entities currently in pending-routing state
+- Non-`"keep"` decisions must be strict 3-level paths (`Area/category/subcategory`)
+- Target path must already exist in the current hierarchy
+
 | Aspect | Paper | rpg-encoder | Status |
 |--------|-------|-------------|--------|
 | LLM-based routing | LLM call at each level | Agent decides via MCP protocol | Faithful |
@@ -231,15 +237,15 @@ via Jaccard similarity as a fallback.
 
 ### Paper Specification
 
-Intent-based search across entity features. The paper references "feature mapping" and
-"intent-based retrieval," implying embedding-based similarity. Supports features mode,
-snippets mode, and auto mode.
+Intent-based search across entity features. The paper specifies feature mapping and
+intent-based retrieval with features/snippets/auto modes; it does not hard-specify
+the retrieval backend (embedding vs lexical).
 
 ### Implementation
 
 | Aspect | Paper | rpg-encoder | Status |
 |--------|-------|-------------|--------|
-| Features mode | Embedding similarity (implied) | Hybrid scoring: 0.6 embedding + 0.4 lexical, rank-normalized (falls back to lexical-only when embeddings unavailable) | Faithful |
+| Features mode | Intent-based feature retrieval | Hybrid scoring: 0.6 embedding + 0.4 lexical, rank-normalized (falls back to lexical-only when embeddings unavailable) | Faithful |
 | Snippets mode | Name/path matching | Multi-signal scoring (IDF overlap, phrase match, edit distance) | Extension |
 | Auto mode | Combined | Features + snippets merged with hybrid reranking | Extension |
 | Embedding model | Not specified (evaluation baselines use jina-v3) | BGE-small-en-v1.5 (384 dimensions) via fastembed | Faithful |
@@ -293,7 +299,7 @@ filtering (imports, invokes, inherits, composes, contains), and entity type filt
 
 ---
 
-## 12. Incremental Evolution (Section 3.4)
+## 12. Incremental Evolution (Section 3.2)
 
 ### Paper Specification
 
@@ -306,12 +312,33 @@ the corresponding algorithm (2, 3, or 4).
 
 1. Detect file changes via `git diff` (added, modified, deleted, renamed)
 2. Apply deletions (Algorithm 2) with hierarchy pruning
-3. Apply modifications (Algorithm 3) with structural update and stale-feature tracking for
-   interactive re-lifting
+3. Apply modifications with structural update and stale-feature tracking
 4. Apply insertions with dependency re-resolution
-5. Track modified entities for agent re-lifting
+5. Perform Algorithm-3 drift judgement during interactive re-lifting (`submit_lift_results`)
+6. Reconcile and persist pending-routing state across incremental updates
 
 **Fidelity: 90%**
+
+---
+
+## 13. Reconstruction Scheduling (Section B.2.2)
+
+### Paper Specification
+
+In reconstruction mode, execution follows dependency-safe topological traversal with
+LLM-driven batching of semantically related nodes.
+
+### Implementation
+
+`rpg_encoder::reconstruction` provides:
+- `build_topological_execution_order()` for dependency-safe ordering
+- `schedule_reconstruction()` for topological order + area-aware batching
+
+CLI path:
+- `rpg-encoder reconstruct-plan --max-batch-size <N> --format text|json`
+
+**Fidelity: 85%** — Topological scheduling and coherent batching are implemented; full
+LLM scheduler policy experimentation remains external.
 
 ---
 
@@ -322,7 +349,7 @@ additions:
 
 | Feature | Description |
 |---------|-------------|
-| Multi-language support | 8 languages (Python, Rust, TypeScript, JavaScript, Go, Java, C, C++) vs. the paper's Python-only evaluation |
+| Multi-language support | 15 parser language definitions (Python, Rust, TypeScript, JavaScript, Go, Java, C, C++, C#, Kotlin, PHP, Ruby, Scala, Swift, Bash) vs. the paper's Python-only evaluation |
 | Framework paradigms | TOML-driven detection pipeline for React, Next.js, Redux with specialized entity types and edge kinds |
 | File synthesis protocol | Intermediate step between entity lifting and hierarchy construction for improved domain discovery |
 | Cross-session resume | Graph persisted after every operation; session state fully recoverable across restarts |
@@ -337,9 +364,8 @@ additions:
 
 | Paper Component | Status | Rationale |
 |-----------------|--------|-----------|
-| SWE-bench evaluation (Section 4.1) | Planned | Requires an agentic evaluation harness and external repository dataset |
-| RepoCraft evaluation (Section 4.2) | Not planned | Repository reconstruction is outside the scope of this implementation |
-| Topological ordering (Section B.2.2) | Not planned | Required only for reconstruction, not for navigation or understanding |
+| SWE-bench evaluation (Section 4.1) | Not implemented | Requires external agentic evaluation harness and benchmark dataset |
+| RepoCraft evaluation (Section 4.2) | Not implemented | Requires external benchmark dataset and execution environment |
 | Paper-exact prompt wording (Appendix A) | Divergent | Prompts are empirically tuned; different wording achieves equivalent lifting quality |
 
 ---
@@ -359,12 +385,13 @@ additions:
 | SearchNode | 95% | Hybrid embedding + lexical with rank-based blending |
 | FetchNode | 95% | Complete |
 | ExploreRPG | 95% | Complete |
+| Reconstruction Scheduling | 85% | Topological order + coherent batching via `reconstruct-plan` |
 | Incremental Evolution | 90% | Full event processing with stale-feature tracking |
-| Multi-language support | N/A | Extension (8 languages vs. paper's Python-only scope) |
+| Multi-language support | N/A | Extension (15 language defs vs. paper's Python-only scope) |
 | Framework paradigms | N/A | Extension (not in paper) |
 | Formal evaluation | 0% | Not yet implemented |
 
 ---
 
-*Based on rpg-encoder v0.1.8 and arXiv:2602.02084 (Luo et al., 2026).
+*Based on rpg-encoder v0.1.9 and arXiv:2602.02084 (Luo et al., 2026).
 Last updated: February 2026.*

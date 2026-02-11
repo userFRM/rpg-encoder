@@ -191,6 +191,10 @@ rpg-encoder info
 rpg-encoder update
 rpg-encoder update --since abc1234
 
+# Paper-style reconstruction schedule (topological + coherent batches)
+rpg-encoder reconstruct-plan --max-batch-size 8 --format text
+rpg-encoder reconstruct-plan --format json
+
 # Pre-commit hook (auto-updates graph on every commit)
 rpg-encoder hook install
 ```

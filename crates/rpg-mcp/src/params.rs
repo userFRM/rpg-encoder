@@ -113,6 +113,15 @@ pub(crate) struct GetRoutingCandidatesParams {
     pub(crate) batch_index: Option<usize>,
 }
 
+/// Parameters for the `reconstruct_plan` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ReconstructPlanParams {
+    /// Maximum number of entities per execution batch (default: 8).
+    pub(crate) max_batch_size: Option<usize>,
+    /// Include file-level Module entities in the schedule (default: false).
+    pub(crate) include_modules: Option<bool>,
+}
+
 /// Parameters for the `submit_routing_decisions` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct SubmitRoutingDecisionsParams {

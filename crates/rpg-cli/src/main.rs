@@ -103,6 +103,21 @@ enum Commands {
         since: Option<String>,
     },
 
+    /// Build a paper-style reconstruction execution plan (topological + batches)
+    ReconstructPlan {
+        /// Maximum number of entities per execution batch
+        #[arg(long, default_value_t = 8)]
+        max_batch_size: usize,
+
+        /// Output format: text, json
+        #[arg(short, long, default_value = "text")]
+        format: String,
+
+        /// Include file-level Module entities in the schedule
+        #[arg(long, default_value_t = false)]
+        include_modules: bool,
+    },
+
     /// Validate graph integrity (check for orphans, dangling edges, etc.)
     Validate,
 
@@ -166,6 +181,11 @@ fn main() -> Result<()> {
         Commands::Info => cmd_info(&project_root),
         Commands::Export { format } => cmd_export(&project_root, &format),
         Commands::Diff { since } => cmd_diff(&project_root, since),
+        Commands::ReconstructPlan {
+            max_batch_size,
+            format,
+            include_modules,
+        } => cmd_reconstruct_plan(&project_root, max_batch_size, &format, include_modules),
         Commands::Validate => cmd_validate(&project_root),
         Commands::Hook { action } => cmd_hook(&project_root, &action),
         Commands::Serve => {
@@ -809,6 +829,59 @@ fn cmd_diff(project_root: &Path, since: Option<String>) -> Result<()> {
         renamed.len()
     );
     eprintln!("Run `rpg-encoder update` to apply these changes.");
+
+    Ok(())
+}
+
+fn cmd_reconstruct_plan(
+    project_root: &Path,
+    max_batch_size: usize,
+    format: &str,
+    include_modules: bool,
+) -> Result<()> {
+    if !rpg_core::storage::rpg_exists(project_root) {
+        anyhow::bail!("No RPG found. Run `rpg-encoder build` first.");
+    }
+
+    let graph = rpg_core::storage::load(project_root)?;
+    let plan = rpg_encoder::reconstruction::schedule_reconstruction(
+        &graph,
+        rpg_encoder::reconstruction::ReconstructionOptions {
+            max_batch_size,
+            include_modules,
+        },
+    );
+
+    match format {
+        "json" => {
+            println!("{}", serde_json::to_string_pretty(&plan)?);
+        }
+        "text" => {
+            println!(
+                "Reconstruction plan: {} entities, {} batches",
+                plan.topological_order.len(),
+                plan.batches.len()
+            );
+            println!("max_batch_size: {}", max_batch_size.max(1));
+            println!("include_modules: {}", include_modules);
+            println!();
+
+            for batch in &plan.batches {
+                println!(
+                    "Batch {} [{}] ({} entities)",
+                    batch.batch_index,
+                    batch.area,
+                    batch.entity_ids.len()
+                );
+                for entity_id in &batch.entity_ids {
+                    println!("  - {}", entity_id);
+                }
+            }
+        }
+        other => {
+            anyhow::bail!("Unknown format: {}. Use 'text' or 'json'.", other);
+        }
+    }
 
     Ok(())
 }

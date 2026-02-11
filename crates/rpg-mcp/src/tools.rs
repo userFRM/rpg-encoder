@@ -230,6 +230,41 @@ impl RpgServer {
     }
 
     #[tool(
+        description = "Build a dependency-safe reconstruction execution plan. Returns a topological ordering of entities with area-coherent batching, suitable for guided code reconstruction workflows. Requires a built RPG with a semantic hierarchy."
+    )]
+    async fn reconstruct_plan(
+        &self,
+        Parameters(params): Parameters<ReconstructPlanParams>,
+    ) -> Result<String, String> {
+        self.ensure_graph().await?;
+        let guard = self.graph.read().await;
+        let graph = guard.as_ref().unwrap();
+
+        if !graph.metadata.semantic_hierarchy {
+            return Err(
+                "No semantic hierarchy. Run the full lifting + hierarchy flow first.".into(),
+            );
+        }
+
+        let options = rpg_encoder::reconstruction::ReconstructionOptions {
+            max_batch_size: params.max_batch_size.unwrap_or(8).max(1),
+            include_modules: params.include_modules.unwrap_or(false),
+        };
+        let plan = rpg_encoder::reconstruction::schedule_reconstruction(graph, options);
+
+        let json = serde_json::to_string_pretty(&plan)
+            .map_err(|e| format!("Failed to serialize plan: {}", e))?;
+
+        Ok(format!(
+            "Reconstruction plan: {} entities, {} batches (max_batch_size: {})\n\n{}",
+            plan.topological_order.len(),
+            plan.batches.len(),
+            options.max_batch_size,
+            json,
+        ))
+    }
+
+    #[tool(
         description = "Build an RPG (Repository Planning Graph) from the codebase. Indexes all code entities, builds a file-path hierarchy, and resolves dependencies. Completes in seconds without requiring an LLM. To add semantic features (LLM-extracted intent descriptions), use get_entities_for_lifting afterwards. Run this once when first connecting to a repository. Respects .rpgignore files (gitignore syntax) for excluding files from the graph."
     )]
     async fn build_rpg(
@@ -1060,7 +1095,7 @@ impl RpgServer {
         if area_scores.len() > top_n {
             let others: Vec<&str> = area_scores[top_n..].iter().map(|(n, _)| *n).collect();
             result.push_str(&format!(
-                "\n(Other areas: {} — use \"Area/category\" format for any area)\n",
+                "\n(Other areas: {} — use \"Area/category/subcategory\" format for any area)\n",
                 others.join(", "),
             ));
         }
@@ -1102,6 +1137,56 @@ impl RpgServer {
         let mut routed = 0usize;
         let mut kept = 0usize;
         let mut reports: Vec<String> = Vec::new();
+
+        // Validate: decisions should only target entities currently pending routing
+        let pending_ids: std::collections::HashSet<&str> =
+            pending.iter().map(|p| p.entity_id.as_str()).collect();
+        let invalid_entities: Vec<&String> = decisions
+            .keys()
+            .filter(|id| !pending_ids.contains(id.as_str()))
+            .collect();
+        if !invalid_entities.is_empty() {
+            let sample: Vec<&str> = invalid_entities
+                .iter()
+                .take(10)
+                .map(|s| s.as_str())
+                .collect();
+            return Err(format!(
+                "Routing decisions may only target entities currently pending routing.\n\
+                 Not pending (showing up to 10): {}",
+                sample.join(", "),
+            ));
+        }
+
+        // Validate: non-keep routes must be valid 3-level hierarchy paths
+        let invalid_paths: Vec<String> = decisions
+            .iter()
+            .filter_map(|(entity_id, action)| {
+                if action == "keep" {
+                    return None;
+                }
+                if !is_three_level_hierarchy_path(action) {
+                    Some(format!(
+                        "{} -> {} (must be `Area/category/subcategory`)",
+                        entity_id, action
+                    ))
+                } else if !hierarchy_path_exists(&graph.hierarchy, action) {
+                    Some(format!(
+                        "{} -> {} (path not found in current hierarchy)",
+                        entity_id, action
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !invalid_paths.is_empty() {
+            let sample: Vec<&str> = invalid_paths.iter().take(10).map(|s| s.as_str()).collect();
+            return Err(format!(
+                "Invalid routing paths (showing up to 10):\n{}",
+                sample.join("\n"),
+            ));
+        }
 
         for (entity_id, action) in &decisions {
             // Validate entity exists
@@ -1231,9 +1316,46 @@ impl RpgServer {
         *self.embedding_index.write().await = None;
         self.embedding_init_failed
             .store(false, std::sync::atomic::Ordering::Relaxed);
-        // Clear stale pending routing (entity set changed)
-        self.pending_routing.write().await.clear();
-        clear_pending_routing(&self.project_root);
+        // Reconcile pending routing against the updated graph:
+        // preserve entries whose entities still exist and have features, drop the rest.
+        let mut pending_preserved = 0usize;
+        let mut pending_dropped = 0usize;
+        {
+            let mut pending = self.pending_routing.write().await;
+            let previous = std::mem::take(&mut *pending);
+            if g.metadata.semantic_hierarchy {
+                let mut preserved = Vec::new();
+                for mut entry in previous {
+                    if let Some(entity) = g.entities.get(&entry.entity_id) {
+                        if entity.semantic_features.is_empty() {
+                            pending_dropped += 1;
+                            continue;
+                        }
+                        entry.features = entity.semantic_features.clone();
+                        entry.original_path = entity.hierarchy_path.clone();
+                        preserved.push(entry);
+                    } else {
+                        pending_dropped += 1;
+                    }
+                }
+                pending_preserved = preserved.len();
+                *pending = preserved.clone();
+                if pending.is_empty() {
+                    clear_pending_routing(&self.project_root);
+                } else {
+                    let state = PendingRoutingState {
+                        graph_revision: graph_revision(g),
+                        entries: preserved,
+                    };
+                    if let Err(e) = save_pending_routing(&self.project_root, &state) {
+                        eprintln!("rpg: failed to persist pending routing: {e}");
+                    }
+                }
+            } else {
+                pending_dropped = previous.len();
+                clear_pending_routing(&self.project_root);
+            }
+        }
 
         if summary.entities_added == 0
             && summary.entities_modified == 0
@@ -1274,6 +1396,12 @@ impl RpgServer {
                 result.push_str("\n\nNEXT STEP: Call lifting_status to see what needs lifting, then get_entities_for_lifting to lift/re-lift them.");
             } else {
                 result.push_str("\n\nAll entities have features. Graph is up to date.");
+            }
+            if pending_preserved > 0 || pending_dropped > 0 {
+                result.push_str(&format!(
+                    "\nrouting_pending_preserved: {}\nrouting_pending_dropped: {}",
+                    pending_preserved, pending_dropped,
+                ));
             }
 
             Ok(result)
@@ -1788,6 +1916,26 @@ impl RpgServer {
             return Err(
                 "Empty assignments. Provide at least one file → hierarchy path mapping.".into(),
             );
+        }
+
+        // Validate all paths are strict 3-level hierarchy format
+        let invalid: Vec<String> = assignments
+            .iter()
+            .filter_map(|(file, path)| {
+                if is_three_level_hierarchy_path(path) {
+                    None
+                } else {
+                    Some(format!("{} -> {}", file, path))
+                }
+            })
+            .collect();
+        if !invalid.is_empty() {
+            let sample: Vec<&str> = invalid.iter().take(10).map(|s| s.as_str()).collect();
+            return Err(format!(
+                "Hierarchy paths must be `Area/category/subcategory` (3 levels).\n\
+                 Invalid (showing up to 10):\n{}",
+                sample.join("\n"),
+            ));
         }
 
         let mut guard = self.graph.write().await;

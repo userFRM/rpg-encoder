@@ -11,4 +11,5 @@ pub mod evolution;
 pub mod grounding;
 pub mod hierarchy;
 pub mod lift;
+pub mod reconstruction;
 pub mod semantic_lifting;
