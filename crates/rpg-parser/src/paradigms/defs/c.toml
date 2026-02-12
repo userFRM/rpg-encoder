@@ -1,0 +1,46 @@
+# C language paradigm — common function auto-lift patterns.
+
+schema_version = 1
+name = "c"
+priority = 50
+languages = ["c"]
+
+[detect]
+files = ["*.c", "*.h"]
+
+# ---------------------------------------------------------------------------
+# main — program entry point
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "c.main"
+features = ["program entry point"]
+[auto_lift.match]
+name_exact = "main"
+max_lines = 10
+
+# ---------------------------------------------------------------------------
+# init — initialization
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "c.init"
+features = ["initialize {name_lower}"]
+[auto_lift.match]
+name_regex = "^(init|_init)$"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# free / destroy / cleanup — resource cleanup
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "c.cleanup"
+features = ["clean up {name_lower}"]
+[auto_lift.match]
+name_regex = "^(free|destroy|cleanup)$"
+max_lines = 5
+
+[prompt_hints]
+lifting = """
+- **Functions**: describe the operation and its side effects
+- **Structs**: describe the data they group
+- **Header functions**: describe the API contract
+"""

@@ -1,0 +1,56 @@
+# Kotlin language paradigm — common method auto-lift patterns.
+
+schema_version = 1
+name = "kotlin"
+priority = 50
+languages = ["kotlin"]
+
+[detect]
+files = ["*.kt"]
+
+# ---------------------------------------------------------------------------
+# compareTo — Comparable
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "kotlin.compare_to"
+features = ["compare {parent_lower}"]
+[auto_lift.match]
+name_exact = "compareTo"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# close — Closeable
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "kotlin.close"
+features = ["close {parent_lower}"]
+[auto_lift.match]
+name_exact = "close"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# invoke — operator overload
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "kotlin.invoke"
+features = ["invoke {parent_lower}"]
+[auto_lift.match]
+name_exact = "invoke"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# iterator — Iterable
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "kotlin.iterator"
+features = ["iterate over {parent_lower}"]
+[auto_lift.match]
+name_exact = "iterator"
+max_lines = 5
+
+[prompt_hints]
+lifting = """
+- **Data classes**: describe the domain concept they represent
+- **Extension functions**: describe the behavior they add
+- **Coroutine functions**: describe the async operation
+"""

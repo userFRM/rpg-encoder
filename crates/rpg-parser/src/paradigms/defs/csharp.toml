@@ -1,0 +1,46 @@
+# C# language paradigm — common method auto-lift patterns.
+
+schema_version = 1
+name = "csharp"
+priority = 50
+languages = ["csharp"]
+
+[detect]
+files = ["*.cs"]
+
+# ---------------------------------------------------------------------------
+# Dispose() — IDisposable
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "csharp.dispose"
+features = ["dispose {parent_lower} resources"]
+[auto_lift.match]
+name_exact = "Dispose"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# CompareTo() — IComparable
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "csharp.compare_to"
+features = ["compare {parent_lower}"]
+[auto_lift.match]
+name_exact = "CompareTo"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# Clone() — ICloneable
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "csharp.clone"
+features = ["clone {parent_lower}"]
+[auto_lift.match]
+name_exact = "Clone"
+max_lines = 5
+
+[prompt_hints]
+lifting = """
+- **Classes**: describe the domain concept and responsibilities
+- **Interfaces**: describe the contract they define
+- **Properties**: describe the state they expose
+"""

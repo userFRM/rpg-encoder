@@ -1,0 +1,56 @@
+# Scala language paradigm — common method auto-lift patterns.
+
+schema_version = 1
+name = "scala"
+priority = 50
+languages = ["scala"]
+
+[detect]
+files = ["*.scala"]
+
+# ---------------------------------------------------------------------------
+# apply — companion object factory
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "scala.apply"
+features = ["create {parent_lower}"]
+[auto_lift.match]
+name_exact = "apply"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# unapply — extractor / pattern matching
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "scala.unapply"
+features = ["destructure {parent_lower}"]
+[auto_lift.match]
+name_exact = "unapply"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# compareTo — Ordered trait
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "scala.compare_to"
+features = ["compare {parent_lower}"]
+[auto_lift.match]
+name_exact = "compareTo"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# iterator — Iterable
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "scala.iterator"
+features = ["iterate over {parent_lower}"]
+[auto_lift.match]
+name_exact = "iterator"
+max_lines = 5
+
+[prompt_hints]
+lifting = """
+- **Case classes**: describe the domain concept they model
+- **Traits**: describe the behavioral contract they define
+- **Implicits**: describe the automatic behavior they enable
+"""

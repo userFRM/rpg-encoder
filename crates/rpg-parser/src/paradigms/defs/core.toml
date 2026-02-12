@@ -1,0 +1,194 @@
+# Universal auto-lift patterns — language-agnostic trivial entity recognition.
+#
+# These rules replace the hardcoded patterns in lift.rs. They apply to ALL
+# codebases regardless of detected paradigms (priority 100 = always included,
+# languages = [] = never detected via detect_paradigms_toml, force-included
+# by AutoLiftEngine).
+
+schema_version = 1
+name = "core"
+priority = 100
+languages = []
+
+[detect]
+# Never detected — force-included by AutoLiftEngine
+
+# ---------------------------------------------------------------------------
+# Getter patterns: get_*, is_*, has_* (≤3 lines) — snake_case
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "core.getter"
+features = ["{verb} {field}"]
+strip_prefix = ["get_", "is_", "has_"]
+[auto_lift.match]
+name_regex = "^(get_|is_|has_)"
+max_lines = 3
+[auto_lift.prefix_verb]
+"get_" = "return"
+"is_" = "check"
+"has_" = "check"
+
+# ---------------------------------------------------------------------------
+# Setter patterns: set_*, with_* (≤3 lines) — snake_case
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "core.setter"
+features = ["set {field}"]
+strip_prefix = ["set_", "with_"]
+[auto_lift.match]
+name_regex = "^(set_|with_)"
+max_lines = 3
+
+# ---------------------------------------------------------------------------
+# Getter patterns: getName, isValid, hasItems (≤3 lines) — camelCase
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "core.getter_camel"
+features = ["{verb} {field}"]
+strip_prefix = ["get", "is", "has"]
+[auto_lift.match]
+name_regex = "^(get|is|has)[A-Z]"
+max_lines = 3
+[auto_lift.prefix_verb]
+"get" = "return"
+"is" = "check"
+"has" = "check"
+
+# ---------------------------------------------------------------------------
+# Setter patterns: setName, withValue (≤3 lines) — camelCase
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "core.setter_camel"
+features = ["set {field}"]
+strip_prefix = ["set", "with"]
+[auto_lift.match]
+name_regex = "^(set|with)[A-Z]"
+max_lines = 3
+
+# ---------------------------------------------------------------------------
+# Getter patterns: GetName, IsValid, HasItems (≤3 lines) — PascalCase (Go/C#)
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "core.getter_pascal"
+features = ["{verb} {field}"]
+strip_prefix = ["Get", "Is", "Has"]
+[auto_lift.match]
+name_regex = "^(Get|Is|Has)[A-Z]"
+max_lines = 3
+[auto_lift.prefix_verb]
+"Get" = "return"
+"Is" = "check"
+"Has" = "check"
+
+# ---------------------------------------------------------------------------
+# Setter patterns: SetName, WithValue (≤3 lines) — PascalCase (Go/C#)
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "core.setter_pascal"
+features = ["set {field}"]
+strip_prefix = ["Set", "With"]
+[auto_lift.match]
+name_regex = "^(Set|With)[A-Z]"
+max_lines = 3
+
+# ---------------------------------------------------------------------------
+# PascalCase constructor: NewServer (≤5 lines) — Go convention
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "core.constructor_pascal"
+features = ["create {field}"]
+strip_prefix = ["New"]
+[auto_lift.match]
+name_regex = "^New[A-Z]"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# Constructor: new (≤5 lines)
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "core.new"
+features = ["create {parent_lower}"]
+[auto_lift.match]
+name_exact = "new"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# Default constructor (≤5 lines)
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "core.default"
+features = ["create default {parent_lower}"]
+[auto_lift.match]
+name_exact = "default"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# Conversion: from/into (≤5 lines)
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "core.conversion"
+features = ["convert to {parent_lower}"]
+[auto_lift.match]
+name_regex = "^(from|into)$"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# Display/Debug formatting
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "core.fmt_display"
+features = ["format {parent_lower} for display"]
+[auto_lift.match]
+name_exact = "fmt"
+source_contains_any = ["display", "debug", "Display", "Debug"]
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# ToString / to_string / to_s (≤5 lines) — Java/C#/Ruby/Rust
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "core.to_string"
+features = ["return string representation of {parent_lower}"]
+[auto_lift.match]
+name_regex = "^(toString|ToString|to_string|to_s)$"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# Equals / eq / __eq__ (≤5 lines) — Java/C#/Python/Rust
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "core.equals"
+features = ["check equality of {parent_lower}"]
+[auto_lift.match]
+name_regex = "^(equals|Equals|eq|__eq__)$"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# hashCode / GetHashCode / hash (≤5 lines) — Java/C#/Rust
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "core.hash_code"
+features = ["compute hash for {parent_lower}"]
+[auto_lift.match]
+name_regex = "^(hashCode|GetHashCode|hash)$"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# Clone (≤5 lines)
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "core.clone"
+features = ["clone {parent_lower}"]
+[auto_lift.match]
+name_exact = "clone"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# Drop / cleanup (≤5 lines)
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "core.drop"
+features = ["clean up {parent_lower}"]
+[auto_lift.match]
+name_exact = "drop"
+max_lines = 5

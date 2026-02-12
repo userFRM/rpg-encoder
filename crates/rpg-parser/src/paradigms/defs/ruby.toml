@@ -1,0 +1,67 @@
+# Ruby language paradigm — common method auto-lift patterns.
+
+schema_version = 1
+name = "ruby"
+priority = 50
+languages = ["ruby"]
+
+[detect]
+files = ["*.rb"]
+
+# ---------------------------------------------------------------------------
+# initialize — constructor
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "ruby.initialize"
+features = ["initialize {parent_lower}"]
+[auto_lift.match]
+name_exact = "initialize"
+max_lines = 10
+
+# ---------------------------------------------------------------------------
+# to_s — string representation
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "ruby.to_s"
+features = ["return string representation of {parent_lower}"]
+[auto_lift.match]
+name_exact = "to_s"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# to_i / to_f / to_a — type conversions
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "ruby.to_convert"
+features = ["convert {parent_lower} to {field}"]
+strip_prefix = ["to_"]
+[auto_lift.match]
+name_regex = "^to_(i|f|a|h|r)$"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# inspect — debug representation
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "ruby.inspect"
+features = ["return debug representation of {parent_lower}"]
+[auto_lift.match]
+name_exact = "inspect"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# each — iteration
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "ruby.each"
+features = ["iterate over {parent_lower}"]
+[auto_lift.match]
+name_exact = "each"
+max_lines = 5
+
+[prompt_hints]
+lifting = """
+- **Classes**: describe the domain concept and responsibilities
+- **Modules**: describe the shared behavior they provide
+- **Blocks/Procs**: describe the deferred behavior
+"""

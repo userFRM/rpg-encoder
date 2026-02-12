@@ -53,6 +53,18 @@ query = """
 ]
 """
 
+# ---------------------------------------------------------------------------
+# Auto-lift: trivial event handlers
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "react.handler"
+features = ["handle {field} event"]
+strip_prefix = ["handle", "on"]
+[auto_lift.match]
+name_regex = "^(handle|on)[A-Z]"
+source_contains_any = ["setState", "dispatch", "set("]
+max_lines = 3
+
 [prompt_hints]
 lifting = """
 - **Components** (PascalCase functions returning JSX): describe what the user sees or does. "render login form, dispatch authentication" not "return JSX element"

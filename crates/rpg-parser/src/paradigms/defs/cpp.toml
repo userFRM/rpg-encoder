@@ -1,0 +1,76 @@
+# C++ language paradigm — common method auto-lift patterns.
+
+schema_version = 1
+name = "cpp"
+priority = 50
+languages = ["cpp"]
+
+[detect]
+files = ["*.cpp", "*.hpp", "*.cc", "*.hh"]
+
+# ---------------------------------------------------------------------------
+# main — program entry point
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "cpp.main"
+features = ["program entry point"]
+[auto_lift.match]
+name_exact = "main"
+max_lines = 10
+
+# ---------------------------------------------------------------------------
+# init — initialization
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "cpp.init"
+features = ["initialize {name_lower}"]
+[auto_lift.match]
+name_regex = "^(init|_init)$"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# free / destroy / cleanup — resource cleanup
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "cpp.cleanup"
+features = ["clean up {name_lower}"]
+[auto_lift.match]
+name_regex = "^(free|destroy|cleanup)$"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# begin / end — iterator access
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "cpp.iterator"
+features = ["return iterator for {parent_lower}"]
+[auto_lift.match]
+name_regex = "^(begin|end)$"
+max_lines = 3
+
+# ---------------------------------------------------------------------------
+# size — container size
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "cpp.size"
+features = ["return size of {parent_lower}"]
+[auto_lift.match]
+name_exact = "size"
+max_lines = 3
+
+# ---------------------------------------------------------------------------
+# empty — container emptiness check
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "cpp.empty"
+features = ["check if {parent_lower} is empty"]
+[auto_lift.match]
+name_exact = "empty"
+max_lines = 3
+
+[prompt_hints]
+lifting = """
+- **Classes**: describe the domain concept and RAII semantics
+- **Templates**: describe the generic behavior
+- **Operator overloads**: describe the semantic operation
+"""

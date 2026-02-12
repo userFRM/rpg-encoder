@@ -27,6 +27,8 @@ pub struct ParadigmDef {
     #[serde(default)]
     pub dep_queries: Vec<DepQuery>,
     #[serde(default)]
+    pub auto_lift: Vec<AutoLiftRule>,
+    #[serde(default)]
     pub features: FeatureFlags,
     #[serde(default)]
     pub prompt_hints: PromptHints,
@@ -77,8 +79,10 @@ pub struct ClassifyRule {
 pub struct EntityMatch {
     pub kind: Option<String>,
     pub name_regex: Option<String>,
+    pub name_exact: Option<String>,
     pub name_starts_uppercase: Option<bool>,
     pub name_min_length: Option<usize>,
+    pub max_lines: Option<usize>,
     pub source_contains_any: Option<Vec<String>>,
     pub file_name_stem: Option<String>,
     pub file_path_contains: Option<String>,
@@ -109,6 +113,18 @@ pub struct DepQuery {
     pub query: String,
     #[serde(default)]
     pub query_by_language: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AutoLiftRule {
+    pub id: String,
+    #[serde(rename = "match")]
+    pub match_rule: EntityMatch,
+    pub features: Vec<String>,
+    #[serde(default)]
+    pub strip_prefix: Vec<String>,
+    #[serde(default)]
+    pub prefix_verb: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -276,6 +292,100 @@ pub fn validate_defs(defs: &[ParadigmDef]) -> Result<(), Vec<ValidationError>> {
                 });
             }
         }
+
+        // Auto-lift rules
+        for rule in &def.auto_lift {
+            // Unique rule ID (shared namespace)
+            if !all_rule_ids.insert(rule.id.clone()) {
+                errors.push(ValidationError {
+                    paradigm: def.name.clone(),
+                    rule_id: Some(rule.id.clone()),
+                    message: "duplicate rule ID".to_string(),
+                });
+            }
+
+            // Must have at least one feature template
+            if rule.features.is_empty() {
+                errors.push(ValidationError {
+                    paradigm: def.name.clone(),
+                    rule_id: Some(rule.id.clone()),
+                    message: "auto_lift rule must have at least one feature template".to_string(),
+                });
+            }
+
+            // Validate regex in match rule
+            if let Some(ref regex_str) = rule.match_rule.name_regex
+                && Regex::new(regex_str).is_err()
+            {
+                errors.push(ValidationError {
+                    paradigm: def.name.clone(),
+                    rule_id: Some(rule.id.clone()),
+                    message: format!("invalid regex '{}'", regex_str),
+                });
+            }
+
+            // Validate template variables
+            let known_vars = [
+                "name",
+                "name_lower",
+                "parent",
+                "parent_lower",
+                "field",
+                "verb",
+                "kind",
+            ];
+            for tmpl in &rule.features {
+                // Extract {var} patterns
+                let mut rest = tmpl.as_str();
+                while let Some(start) = rest.find('{') {
+                    if let Some(end) = rest[start..].find('}') {
+                        let var = &rest[start + 1..start + end];
+                        if !known_vars.contains(&var) {
+                            errors.push(ValidationError {
+                                paradigm: def.name.clone(),
+                                rule_id: Some(rule.id.clone()),
+                                message: format!("unknown template variable '{{{}}}'", var),
+                            });
+                        }
+                        // {verb} requires prefix_verb map with entries for all strip_prefix values
+                        if var == "verb" {
+                            if rule.prefix_verb.is_empty() {
+                                errors.push(ValidationError {
+                                    paradigm: def.name.clone(),
+                                    rule_id: Some(rule.id.clone()),
+                                    message: "template uses {verb} but no prefix_verb map defined"
+                                        .to_string(),
+                                });
+                            }
+                            for sp in &rule.strip_prefix {
+                                if !rule.prefix_verb.contains_key(sp) {
+                                    errors.push(ValidationError {
+                                        paradigm: def.name.clone(),
+                                        rule_id: Some(rule.id.clone()),
+                                        message: format!(
+                                            "strip_prefix '{}' has no prefix_verb mapping",
+                                            sp
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+                        // {field} requires strip_prefix
+                        if var == "field" && rule.strip_prefix.is_empty() {
+                            errors.push(ValidationError {
+                                paradigm: def.name.clone(),
+                                rule_id: Some(rule.id.clone()),
+                                message: "template uses {field} but no strip_prefix defined"
+                                    .to_string(),
+                            });
+                        }
+                        rest = &rest[start + end + 1..];
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     if errors.is_empty() {
@@ -321,7 +431,7 @@ mod tests {
     #[test]
     fn test_load_builtin_defs() {
         let defs = load_builtin_defs().expect("built-in defs should load and validate");
-        assert!(defs.len() >= 18, "expected at least 18 paradigm defs");
+        assert!(defs.len() >= 31, "expected at least 31 paradigm defs");
 
         // Verify priority ordering (ascending priority, then alphabetical name)
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
@@ -346,6 +456,19 @@ mod tests {
                 "redux",   // 20
                 "express", // 25
                 "react",   // 30
+                "c",       // 50
+                "cpp",     // 50
+                "csharp",  // 50
+                "go",      // 50
+                "java",    // 50
+                "kotlin",  // 50
+                "php",     // 50
+                "python",  // 50
+                "ruby",    // 50
+                "rust",    // 50
+                "scala",   // 50
+                "swift",   // 50
+                "core",    // 100
             ]
         );
     }
@@ -404,6 +527,7 @@ mod tests {
             }],
             entity_queries: Vec::new(),
             dep_queries: Vec::new(),
+            auto_lift: Vec::new(),
             features: FeatureFlags::default(),
             prompt_hints: PromptHints::default(),
         };
@@ -429,6 +553,7 @@ mod tests {
             }],
             entity_queries: Vec::new(),
             dep_queries: Vec::new(),
+            auto_lift: Vec::new(),
             features: FeatureFlags::default(),
             prompt_hints: PromptHints::default(),
         };
@@ -523,6 +648,7 @@ mod tests {
             }],
             entity_queries: Vec::new(),
             dep_queries: Vec::new(),
+            auto_lift: Vec::new(),
             features: FeatureFlags::default(),
             prompt_hints: PromptHints::default(),
         };
@@ -539,10 +665,191 @@ mod tests {
             }],
             entity_queries: Vec::new(),
             dep_queries: Vec::new(),
+            auto_lift: Vec::new(),
             features: FeatureFlags::default(),
             prompt_hints: PromptHints::default(),
         };
         let result = validate_defs(&[def1, def2]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_auto_lift_rule_deserialization() {
+        let toml_str = r#"
+            id = "test.getter"
+            features = ["{verb} {field}"]
+            strip_prefix = ["get_", "is_"]
+            [match]
+            name_regex = "^(get_|is_)"
+            max_lines = 3
+            [prefix_verb]
+            "get_" = "return"
+            "is_" = "check"
+        "#;
+        let rule: AutoLiftRule = toml::from_str(toml_str).unwrap();
+        assert_eq!(rule.id, "test.getter");
+        assert_eq!(rule.features, vec!["{verb} {field}"]);
+        assert_eq!(rule.strip_prefix, vec!["get_", "is_"]);
+        assert_eq!(rule.prefix_verb.get("get_").unwrap(), "return");
+        assert_eq!(rule.prefix_verb.get("is_").unwrap(), "check");
+        assert_eq!(rule.match_rule.max_lines, Some(3));
+    }
+
+    #[test]
+    fn test_validate_auto_lift_bad_regex() {
+        let def = ParadigmDef {
+            schema_version: 1,
+            name: "test".to_string(),
+            priority: 50,
+            languages: vec![],
+            detect: DetectRules::default(),
+            classify: Vec::new(),
+            entity_queries: Vec::new(),
+            dep_queries: Vec::new(),
+            auto_lift: vec![AutoLiftRule {
+                id: "test.bad_regex".to_string(),
+                match_rule: EntityMatch {
+                    name_regex: Some("[invalid".to_string()),
+                    ..EntityMatch::default()
+                },
+                features: vec!["do something".to_string()],
+                strip_prefix: Vec::new(),
+                prefix_verb: HashMap::new(),
+            }],
+            features: FeatureFlags::default(),
+            prompt_hints: PromptHints::default(),
+        };
+        let result = validate_defs(&[def]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_auto_lift_empty_features() {
+        let def = ParadigmDef {
+            schema_version: 1,
+            name: "test".to_string(),
+            priority: 50,
+            languages: vec![],
+            detect: DetectRules::default(),
+            classify: Vec::new(),
+            entity_queries: Vec::new(),
+            dep_queries: Vec::new(),
+            auto_lift: vec![AutoLiftRule {
+                id: "test.empty".to_string(),
+                match_rule: EntityMatch::default(),
+                features: Vec::new(),
+                strip_prefix: Vec::new(),
+                prefix_verb: HashMap::new(),
+            }],
+            features: FeatureFlags::default(),
+            prompt_hints: PromptHints::default(),
+        };
+        let result = validate_defs(&[def]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_auto_lift_unknown_template_var() {
+        let def = ParadigmDef {
+            schema_version: 1,
+            name: "test".to_string(),
+            priority: 50,
+            languages: vec![],
+            detect: DetectRules::default(),
+            classify: Vec::new(),
+            entity_queries: Vec::new(),
+            dep_queries: Vec::new(),
+            auto_lift: vec![AutoLiftRule {
+                id: "test.bogus_var".to_string(),
+                match_rule: EntityMatch::default(),
+                features: vec!["{bogus} something".to_string()],
+                strip_prefix: Vec::new(),
+                prefix_verb: HashMap::new(),
+            }],
+            features: FeatureFlags::default(),
+            prompt_hints: PromptHints::default(),
+        };
+        let result = validate_defs(&[def]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_auto_lift_verb_without_prefix_verb() {
+        let def = ParadigmDef {
+            schema_version: 1,
+            name: "test".to_string(),
+            priority: 50,
+            languages: vec![],
+            detect: DetectRules::default(),
+            classify: Vec::new(),
+            entity_queries: Vec::new(),
+            dep_queries: Vec::new(),
+            auto_lift: vec![AutoLiftRule {
+                id: "test.no_verb_map".to_string(),
+                match_rule: EntityMatch::default(),
+                features: vec!["{verb} {name}".to_string()],
+                strip_prefix: vec!["get_".to_string()],
+                prefix_verb: HashMap::new(), // empty — should fail
+            }],
+            features: FeatureFlags::default(),
+            prompt_hints: PromptHints::default(),
+        };
+        let result = validate_defs(&[def]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_core_toml_loads() {
+        let defs = load_builtin_defs().unwrap();
+        let core = defs.iter().find(|d| d.name == "core").unwrap();
+        assert_eq!(core.priority, 100);
+        assert!(core.languages.is_empty());
+        assert!(
+            core.auto_lift.len() >= 16,
+            "core.toml should have 16+ rules"
+        );
+        let rule_ids: Vec<&str> = core.auto_lift.iter().map(|r| r.id.as_str()).collect();
+        // Original snake_case rules
+        assert!(rule_ids.contains(&"core.getter"));
+        assert!(rule_ids.contains(&"core.setter"));
+        assert!(rule_ids.contains(&"core.new"));
+        assert!(rule_ids.contains(&"core.default"));
+        assert!(rule_ids.contains(&"core.conversion"));
+        assert!(rule_ids.contains(&"core.fmt_display"));
+        assert!(rule_ids.contains(&"core.clone"));
+        assert!(rule_ids.contains(&"core.drop"));
+        // New camelCase/PascalCase rules
+        assert!(rule_ids.contains(&"core.getter_camel"));
+        assert!(rule_ids.contains(&"core.setter_camel"));
+        assert!(rule_ids.contains(&"core.getter_pascal"));
+        assert!(rule_ids.contains(&"core.setter_pascal"));
+        assert!(rule_ids.contains(&"core.constructor_pascal"));
+        assert!(rule_ids.contains(&"core.to_string"));
+        assert!(rule_ids.contains(&"core.equals"));
+        assert!(rule_ids.contains(&"core.hash_code"));
+    }
+
+    #[test]
+    fn test_java_toml_loads() {
+        let defs = load_builtin_defs().unwrap();
+        let java = defs.iter().find(|d| d.name == "java").unwrap();
+        assert_eq!(java.priority, 50);
+        assert_eq!(java.languages, vec!["java"]);
+        let rule_ids: Vec<&str> = java.auto_lift.iter().map(|r| r.id.as_str()).collect();
+        assert!(rule_ids.contains(&"java.compare_to"));
+        assert!(rule_ids.contains(&"java.main"));
+    }
+
+    #[test]
+    fn test_go_toml_loads() {
+        let defs = load_builtin_defs().unwrap();
+        let go = defs.iter().find(|d| d.name == "go").unwrap();
+        assert_eq!(go.priority, 50);
+        assert_eq!(go.languages, vec!["go"]);
+        let rule_ids: Vec<&str> = go.auto_lift.iter().map(|r| r.id.as_str()).collect();
+        assert!(rule_ids.contains(&"go.string"));
+        assert!(rule_ids.contains(&"go.error"));
+        assert!(rule_ids.contains(&"go.init"));
+        assert!(rule_ids.contains(&"go.main"));
     }
 }

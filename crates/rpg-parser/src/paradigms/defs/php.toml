@@ -1,0 +1,86 @@
+# PHP language paradigm — magic method auto-lift patterns.
+
+schema_version = 1
+name = "php"
+priority = 50
+languages = ["php"]
+
+[detect]
+files = ["*.php"]
+
+# ---------------------------------------------------------------------------
+# __construct — constructor
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "php.construct"
+features = ["initialize {parent_lower}"]
+[auto_lift.match]
+name_exact = "__construct"
+max_lines = 10
+
+# ---------------------------------------------------------------------------
+# __toString — string representation
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "php.to_string"
+features = ["return string representation of {parent_lower}"]
+[auto_lift.match]
+name_exact = "__toString"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# __get — dynamic property access
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "php.get"
+features = ["get dynamic property of {parent_lower}"]
+[auto_lift.match]
+name_exact = "__get"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# __set — dynamic property mutation
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "php.set"
+features = ["set dynamic property of {parent_lower}"]
+[auto_lift.match]
+name_exact = "__set"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# __destruct — destructor
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "php.destruct"
+features = ["clean up {parent_lower}"]
+[auto_lift.match]
+name_exact = "__destruct"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# __invoke — callable object
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "php.invoke"
+features = ["invoke {parent_lower}"]
+[auto_lift.match]
+name_exact = "__invoke"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# __call — dynamic method dispatch
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "php.call"
+features = ["handle dynamic method call on {parent_lower}"]
+[auto_lift.match]
+name_exact = "__call"
+max_lines = 5
+
+[prompt_hints]
+lifting = """
+- **Classes**: describe the domain concept and responsibilities
+- **Traits**: describe the shared behavior they provide
+- **Magic methods** (__get, __set, __call): describe their contract
+"""

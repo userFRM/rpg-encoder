@@ -1,0 +1,46 @@
+# Swift language paradigm — common method auto-lift patterns.
+
+schema_version = 1
+name = "swift"
+priority = 50
+languages = ["swift"]
+
+[detect]
+files = ["*.swift"]
+
+# ---------------------------------------------------------------------------
+# init — initializer
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "swift.init"
+features = ["initialize {parent_lower}"]
+[auto_lift.match]
+name_exact = "init"
+max_lines = 10
+
+# ---------------------------------------------------------------------------
+# deinit — deinitializer
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "swift.deinit"
+features = ["clean up {parent_lower}"]
+[auto_lift.match]
+name_exact = "deinit"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# description — CustomStringConvertible
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "swift.description"
+features = ["return description of {parent_lower}"]
+[auto_lift.match]
+name_exact = "description"
+max_lines = 5
+
+[prompt_hints]
+lifting = """
+- **Structs/Classes**: describe the domain concept and value semantics
+- **Protocols**: describe the behavioral contract
+- **Extensions**: describe the added capability
+"""

@@ -1,0 +1,60 @@
+# Rust language paradigm — common method auto-lift patterns.
+#
+# Note: core.toml already handles new, default, clone, drop, from, fmt.
+# This file adds Rust-specific patterns not covered by core.
+
+schema_version = 1
+name = "rust"
+priority = 50
+languages = ["rust"]
+
+[detect]
+files = ["*.rs"]
+
+# ---------------------------------------------------------------------------
+# build — builder pattern finalizer
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "rust.build"
+features = ["build {parent_lower}"]
+[auto_lift.match]
+name_exact = "build"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# as_ref / as_mut — borrowing
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "rust.as_ref"
+features = ["borrow {parent_lower}"]
+[auto_lift.match]
+name_regex = "^as_(ref|mut)$"
+max_lines = 3
+
+# ---------------------------------------------------------------------------
+# iter / iter_mut — iteration
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "rust.iter"
+features = ["iterate over {parent_lower}"]
+[auto_lift.match]
+name_regex = "^iter(_mut)?$"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# len — length
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "rust.len"
+features = ["return length of {parent_lower}"]
+[auto_lift.match]
+name_exact = "len"
+max_lines = 3
+
+[prompt_hints]
+lifting = """
+- **Structs**: describe the domain concept and owned data
+- **Traits**: describe the behavioral contract
+- **Impl blocks**: describe the capability being added
+- **Lifetimes**: describe the borrowing relationship
+"""

@@ -654,6 +654,12 @@ impl RpgServer {
                 }
 
                 // Auto-lift trivial entities (getters, setters, constructors, etc.)
+                let paradigm_defs =
+                    rpg_parser::paradigms::defs::load_builtin_defs().unwrap_or_default();
+                let engine = rpg_encoder::lift::AutoLiftEngine::new(
+                    &paradigm_defs,
+                    &graph.metadata.paradigms,
+                );
                 let mut auto_lifted = 0usize;
                 let mut needs_llm = Vec::new();
                 for raw in all_raw_entities {
@@ -665,7 +671,7 @@ impl RpgServer {
                     if already_lifted {
                         continue;
                     }
-                    if let Some(features) = rpg_encoder::lift::try_auto_lift(&raw) {
+                    if let Some(features) = engine.try_lift(&raw) {
                         // Apply features directly to the graph
                         if let Some(entity) = graph.entities.get_mut(&raw.id()) {
                             entity.semantic_features = features;

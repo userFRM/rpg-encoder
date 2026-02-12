@@ -1,0 +1,66 @@
+# Java language paradigm — common method auto-lift patterns.
+
+schema_version = 1
+name = "java"
+priority = 50
+languages = ["java"]
+
+[detect]
+files = ["*.java"]
+
+# ---------------------------------------------------------------------------
+# compareTo (≤5 lines)
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "java.compare_to"
+features = ["compare {parent_lower}"]
+[auto_lift.match]
+name_exact = "compareTo"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# close (≤5 lines) — AutoCloseable
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "java.close"
+features = ["close {parent_lower}"]
+[auto_lift.match]
+name_exact = "close"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# iterator (≤5 lines) — Iterable
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "java.iterator"
+features = ["iterate over {parent_lower}"]
+[auto_lift.match]
+name_exact = "iterator"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# builder (≤5 lines) — builder pattern
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "java.builder"
+features = ["create {parent_lower} builder"]
+[auto_lift.match]
+name_exact = "builder"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# main — program entry point
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "java.main"
+features = ["program entry point"]
+[auto_lift.match]
+name_exact = "main"
+max_lines = 10
+
+[prompt_hints]
+lifting = """
+- **Classes**: describe the domain concept and responsibilities
+- **Interfaces**: describe the contract they define
+- **Annotations**: describe the metadata they apply
+"""

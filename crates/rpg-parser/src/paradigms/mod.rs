@@ -165,10 +165,14 @@ mod tests {
         let languages = vec![Language::RUST];
         let paradigm_defs = defs::load_builtin_defs().unwrap();
         let active = detect_paradigms_toml(fixture, &languages, &paradigm_defs);
-        assert!(
-            active.is_empty(),
-            "Rust-only project should have no paradigms, got: {:?}",
-            active.iter().map(|d| &d.name).collect::<Vec<_>>()
+        let names: Vec<&str> = active.iter().map(|d| d.name.as_str()).collect();
+        // Rust-only project should detect the "rust" language paradigm (auto-lift patterns)
+        // but no framework paradigms
+        assert_eq!(
+            names,
+            &["rust"],
+            "Rust-only project should detect only 'rust' paradigm, got: {:?}",
+            names
         );
     }
 

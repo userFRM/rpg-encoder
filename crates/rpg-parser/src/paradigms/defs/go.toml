@@ -1,0 +1,96 @@
+# Go language paradigm — common method and function auto-lift patterns.
+
+schema_version = 1
+name = "go"
+priority = 50
+languages = ["go"]
+
+[detect]
+files = ["*.go"]
+
+# ---------------------------------------------------------------------------
+# String() — Stringer interface
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "go.string"
+features = ["return string representation of {parent_lower}"]
+[auto_lift.match]
+name_exact = "String"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# Error() — error interface
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "go.error"
+features = ["return error message for {parent_lower}"]
+[auto_lift.match]
+name_exact = "Error"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# Close() — io.Closer
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "go.close"
+features = ["close {parent_lower}"]
+[auto_lift.match]
+name_exact = "Close"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# Len() — sort.Interface
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "go.len"
+features = ["return length of {parent_lower}"]
+[auto_lift.match]
+name_exact = "Len"
+max_lines = 3
+
+# ---------------------------------------------------------------------------
+# Less() — sort.Interface
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "go.less"
+features = ["compare {parent_lower} ordering"]
+[auto_lift.match]
+name_exact = "Less"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# Swap() — sort.Interface
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "go.swap"
+features = ["swap {parent_lower} elements"]
+[auto_lift.match]
+name_exact = "Swap"
+max_lines = 5
+
+# ---------------------------------------------------------------------------
+# init() — package initialization
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "go.init"
+features = ["initialize package"]
+[auto_lift.match]
+name_exact = "init"
+max_lines = 10
+
+# ---------------------------------------------------------------------------
+# main() — program entry point
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "go.main"
+features = ["program entry point"]
+[auto_lift.match]
+name_exact = "main"
+max_lines = 10
+
+[prompt_hints]
+lifting = """
+- **Interfaces**: describe the behavioral contract (e.g., "read bytes from source")
+- **Struct methods**: describe what the method does for the receiver type
+- **Package-level functions**: describe the exported API behavior
+"""

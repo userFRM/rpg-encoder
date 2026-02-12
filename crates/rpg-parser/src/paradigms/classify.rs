@@ -45,7 +45,7 @@ pub fn classify_entities(active_defs: &[&ParadigmDef], file: &Path, entities: &m
 }
 
 /// Check if an entity matches all specified fields of an `EntityMatch` (AND logic).
-fn matches_entity(m: &EntityMatch, entity: &RawEntity, file: &Path) -> bool {
+pub fn matches_entity(m: &EntityMatch, entity: &RawEntity, file: &Path) -> bool {
     // kind filter
     if let Some(ref kind_str) = m.kind {
         let expected = parse_entity_kind(kind_str);
@@ -53,6 +53,13 @@ fn matches_entity(m: &EntityMatch, entity: &RawEntity, file: &Path) -> bool {
             return false;
         }
         // If kind_str doesn't parse, skip this filter (validation catches it at load time)
+    }
+
+    // name_exact filter (case-insensitive)
+    if let Some(ref exact) = m.name_exact
+        && entity.name.to_lowercase() != exact.to_lowercase()
+    {
+        return false;
     }
 
     // name_regex filter
@@ -63,6 +70,13 @@ fn matches_entity(m: &EntityMatch, entity: &RawEntity, file: &Path) -> bool {
         {
             return false;
         }
+    }
+
+    // max_lines filter
+    if let Some(max) = m.max_lines
+        && entity.source_text.lines().count() > max
+    {
+        return false;
     }
 
     // name_starts_uppercase filter
@@ -248,5 +262,53 @@ mod tests {
         classify_entities(&active, Path::new("src/utils.tsx"), &mut entities);
         // Not uppercase name, so not a component. But name doesn't match hook either.
         assert_eq!(entities[0].kind, EntityKind::Function);
+    }
+
+    #[test]
+    fn test_name_exact_case_insensitive() {
+        use crate::paradigms::defs::EntityMatch;
+
+        let m = EntityMatch {
+            name_exact: Some("new".to_string()),
+            ..EntityMatch::default()
+        };
+        // "New" should match name_exact = "new" (case-insensitive)
+        let entity = make_entity("New", EntityKind::Method, "fn New() {}", "src/lib.rs");
+        assert!(matches_entity(&m, &entity, Path::new("src/lib.rs")));
+
+        // "NEW" should also match
+        let entity = make_entity("NEW", EntityKind::Method, "fn NEW() {}", "src/lib.rs");
+        assert!(matches_entity(&m, &entity, Path::new("src/lib.rs")));
+
+        // "something_else" should not match
+        let entity = make_entity(
+            "something_else",
+            EntityKind::Method,
+            "fn something_else() {}",
+            "src/lib.rs",
+        );
+        assert!(!matches_entity(&m, &entity, Path::new("src/lib.rs")));
+    }
+
+    #[test]
+    fn test_max_lines_filter() {
+        use crate::paradigms::defs::EntityMatch;
+
+        let m = EntityMatch {
+            max_lines: Some(3),
+            ..EntityMatch::default()
+        };
+
+        // 1-line entity should pass
+        let entity = make_entity("short", EntityKind::Function, "fn short() {}", "src/lib.rs");
+        assert!(matches_entity(&m, &entity, Path::new("src/lib.rs")));
+
+        // 10-line entity should be rejected
+        let long_source = (1..=10)
+            .map(|i| format!("    line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let entity = make_entity("long_fn", EntityKind::Function, &long_source, "src/lib.rs");
+        assert!(!matches_entity(&m, &entity, Path::new("src/lib.rs")));
     }
 }

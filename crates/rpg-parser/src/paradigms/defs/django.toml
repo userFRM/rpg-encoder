@@ -59,6 +59,23 @@ source_contains_any = [
   "TransactionTestCase)",
 ]
 
+# ---------------------------------------------------------------------------
+# Auto-lift: Django-specific trivial methods
+# ---------------------------------------------------------------------------
+[[auto_lift]]
+id = "django.str"
+features = ["return string representation of {parent_lower}"]
+[auto_lift.match]
+name_exact = "__str__"
+max_lines = 3
+
+[[auto_lift]]
+id = "django.get_absolute_url"
+features = ["return URL for {parent_lower}"]
+[auto_lift.match]
+name_exact = "get_absolute_url"
+max_lines = 5
+
 [prompt_hints]
 lifting = """
 - **Views** (functions in views.py or class-based views): describe the HTTP endpoint purpose. "list blog posts" not "handle GET request"

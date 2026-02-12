@@ -1,0 +1,57 @@
+# Python language paradigm — dunder method auto-lift patterns.
+#
+# Detected for any project containing .py files.
+
+schema_version = 1
+name = "python"
+priority = 50
+languages = ["python"]
+
+[detect]
+files = ["*.py"]
+
+# ---------------------------------------------------------------------------
+# Dunder methods
+# ---------------------------------------------------------------------------
+
+[[auto_lift]]
+id = "python.init"
+features = ["initialize {parent_lower}"]
+[auto_lift.match]
+name_exact = "__init__"
+max_lines = 10
+
+[[auto_lift]]
+id = "python.str"
+features = ["return string representation of {parent_lower}"]
+[auto_lift.match]
+name_regex = "^__(str|repr)__$"
+max_lines = 5
+
+[[auto_lift]]
+id = "python.len"
+features = ["return length of {parent_lower}"]
+[auto_lift.match]
+name_exact = "__len__"
+max_lines = 3
+
+[[auto_lift]]
+id = "python.iter"
+features = ["iterate over {parent_lower}"]
+[auto_lift.match]
+name_exact = "__iter__"
+max_lines = 5
+
+[[auto_lift]]
+id = "python.enter"
+features = ["manage {parent_lower} context"]
+[auto_lift.match]
+name_regex = "^__(enter|exit)__$"
+max_lines = 5
+
+[prompt_hints]
+lifting = """
+- **Classes**: describe the domain concept and responsibilities
+- **Dunder methods** (__init__, __str__, etc.): describe their contract, not Python mechanics
+- **Decorators** (@property, @staticmethod): describe the exposed behavior
+"""
