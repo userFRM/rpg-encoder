@@ -100,6 +100,104 @@ pub fn resolve_scope(graph: &RPGraph, scope: &str) -> LiftScope {
     LiftScope { entity_ids }
 }
 
+/// Try to auto-lift a trivial entity based on heuristics.
+///
+/// Returns `Some(features)` for entities that are obviously trivial:
+/// - ≤3 lines + getter/setter/new/default/from/into name pattern
+/// - Returns `None` for anything it can't confidently classify
+pub fn try_auto_lift(raw: &RawEntity) -> Option<Vec<String>> {
+    let line_count = raw.source_text.lines().count();
+    if line_count > 3 {
+        return None;
+    }
+
+    let name_lower = raw.name.to_lowercase();
+    let source_lower = raw.source_text.to_lowercase();
+
+    // Getter patterns: get_*, is_*, has_*
+    if name_lower.starts_with("get_")
+        || name_lower.starts_with("is_")
+        || name_lower.starts_with("has_")
+    {
+        let field = name_lower
+            .strip_prefix("get_")
+            .or_else(|| name_lower.strip_prefix("is_"))
+            .or_else(|| name_lower.strip_prefix("has_"))
+            .unwrap_or(&name_lower);
+        let verb = if name_lower.starts_with("get_") {
+            "return"
+        } else {
+            "check"
+        };
+        return Some(vec![format!("{} {}", verb, field.replace('_', " "))]);
+    }
+
+    // Setter patterns: set_*, with_*
+    if name_lower.starts_with("set_") || name_lower.starts_with("with_") {
+        let field = name_lower
+            .strip_prefix("set_")
+            .or_else(|| name_lower.strip_prefix("with_"))
+            .unwrap_or(&name_lower);
+        return Some(vec![format!("set {}", field.replace('_', " "))]);
+    }
+
+    // Constructor: new, default, from, into
+    if name_lower == "new" || name_lower == "default" {
+        // Infer type from parent class if available
+        let type_name = raw
+            .parent_class
+            .as_deref()
+            .unwrap_or("instance")
+            .to_lowercase();
+        let verb = if name_lower == "default" {
+            "create default"
+        } else {
+            "create"
+        };
+        return Some(vec![format!("{} {}", verb, type_name)]);
+    }
+
+    // From/Into trait implementations
+    if name_lower == "from" || name_lower == "into" {
+        let type_name = raw
+            .parent_class
+            .as_deref()
+            .unwrap_or("value")
+            .to_lowercase();
+        return Some(vec![format!("convert to {}", type_name)]);
+    }
+
+    // Display/Debug/ToString
+    if name_lower == "fmt" && (source_lower.contains("display") || source_lower.contains("debug")) {
+        let type_name = raw
+            .parent_class
+            .as_deref()
+            .unwrap_or("value")
+            .to_lowercase();
+        return Some(vec![format!("format {} for display", type_name)]);
+    }
+
+    // Clone/Drop
+    if name_lower == "clone" {
+        let type_name = raw
+            .parent_class
+            .as_deref()
+            .unwrap_or("value")
+            .to_lowercase();
+        return Some(vec![format!("clone {}", type_name)]);
+    }
+    if name_lower == "drop" {
+        let type_name = raw
+            .parent_class
+            .as_deref()
+            .unwrap_or("value")
+            .to_lowercase();
+        return Some(vec![format!("clean up {}", type_name)]);
+    }
+
+    None
+}
+
 /// Generate a compact repo overview from graph metadata (paper's `repo_info` context).
 /// Wraps output in `<repo_name>` and `<repo_info>` tags per paper §A.1.1.
 pub fn generate_repo_info(graph: &RPGraph, project_name: &str) -> String {
@@ -231,4 +329,133 @@ pub fn build_token_aware_batches(
     }
 
     batches
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rpg_core::graph::EntityKind;
+
+    fn make_raw(name: &str, parent: Option<&str>, source: &str) -> RawEntity {
+        RawEntity {
+            name: name.to_string(),
+            kind: EntityKind::Method,
+            file: std::path::PathBuf::from("src/lib.rs"),
+            line_start: 1,
+            line_end: source.lines().count(),
+            parent_class: parent.map(|s| s.to_string()),
+            source_text: source.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_auto_lift_getter() {
+        let raw = make_raw(
+            "get_name",
+            None,
+            "fn get_name(&self) -> &str { &self.name }",
+        );
+        let features = try_auto_lift(&raw);
+        assert!(features.is_some());
+        let f = features.unwrap();
+        assert_eq!(f.len(), 1);
+        assert!(f[0].contains("name"));
+        assert!(f[0].starts_with("return"));
+    }
+
+    #[test]
+    fn test_auto_lift_setter() {
+        let raw = make_raw(
+            "set_name",
+            None,
+            "fn set_name(&mut self, n: &str) { self.name = n; }",
+        );
+        let features = try_auto_lift(&raw);
+        assert!(features.is_some());
+        assert!(features.unwrap()[0].starts_with("set"));
+    }
+
+    #[test]
+    fn test_auto_lift_new_with_parent() {
+        let raw = make_raw("new", Some("Server"), "fn new() -> Self { Self {} }");
+        let features = try_auto_lift(&raw);
+        assert!(features.is_some());
+        let f = features.unwrap();
+        assert!(f[0].contains("server"));
+        assert!(f[0].starts_with("create"));
+    }
+
+    #[test]
+    fn test_auto_lift_default() {
+        let raw = make_raw(
+            "default",
+            Some("Config"),
+            "fn default() -> Self { Self {} }",
+        );
+        let features = try_auto_lift(&raw);
+        assert!(features.is_some());
+        assert!(features.unwrap()[0].contains("default"));
+    }
+
+    #[test]
+    fn test_auto_lift_rejects_complex_function() {
+        let source = (1..=50)
+            .map(|i| format!("line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let raw = make_raw("process_data", None, &source);
+        let features = try_auto_lift(&raw);
+        assert!(
+            features.is_none(),
+            "complex functions should not be auto-lifted"
+        );
+    }
+
+    #[test]
+    fn test_auto_lift_is_check() {
+        let raw = make_raw(
+            "is_empty",
+            None,
+            "fn is_empty(&self) -> bool { self.len == 0 }",
+        );
+        let features = try_auto_lift(&raw);
+        assert!(features.is_some());
+        assert!(features.unwrap()[0].starts_with("check"));
+    }
+
+    #[test]
+    fn test_auto_lift_debug_not_false_positive() {
+        // Regression: a non-fmt function whose source contains "debug" should NOT be auto-lifted
+        // as display formatting. This catches the boolean precedence bug.
+        let raw = make_raw("process", None, "fn process(&self) { debug!(\"hi\"); }");
+        let features = try_auto_lift(&raw);
+        assert!(
+            features.is_none(),
+            "non-fmt function containing 'debug' should not be auto-lifted as display"
+        );
+    }
+
+    #[test]
+    fn test_auto_lift_fmt_display() {
+        let raw = make_raw(
+            "fmt",
+            Some("MyStruct"),
+            "fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { write!(f, \"display\") }",
+        );
+        let features = try_auto_lift(&raw);
+        assert!(features.is_some());
+        assert!(features.unwrap()[0].contains("format"));
+    }
+
+    #[test]
+    fn test_auto_lift_from() {
+        let raw = make_raw(
+            "from",
+            Some("MyType"),
+            "fn from(v: i32) -> Self { Self(v) }",
+        );
+        let features = try_auto_lift(&raw);
+        assert!(features.is_some());
+        assert!(features.unwrap()[0].contains("convert"));
+    }
 }

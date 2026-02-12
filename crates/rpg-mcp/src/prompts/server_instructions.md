@@ -103,26 +103,34 @@ exactly where you left off — only unlifted entities are returned by `get_entit
 
 When using the RPG to understand or navigate a codebase (after lifting is complete):
 
-1. **Semantic discovery** — `search_node(query="...", mode="features")` to find entities by intent.
-2. **Precision verification** — `fetch_node(entity_id="...")` to inspect source code, features, and dependencies.
-3. **Local expansion** — `explore_rpg(entity_id="...", direction="both")` to trace call chains and inheritance.
-4. **Pinpoint retrieval** — `search_node(query="...", mode="snippets")` for exact name/path lookups.
+1. **Quick context** — `context_pack(query="...", token_budget=4000)` to get a focused bundle of entities with source, features, and deps in a single call. This replaces the typical search→fetch→explore multi-step workflow.
+2. **Semantic discovery** — `search_node(query="...", mode="features")` to find entities by intent. Results include `entity_id` for direct follow-up.
+3. **Precision verification** — `fetch_node(entity_id="...", fields="features,deps")` to inspect specific fields without retrieving everything.
+4. **Local expansion** — `explore_rpg(entity_id="...", direction="both", format="compact")` for pipe-delimited rows with entity_ids preserved.
+5. **Impact analysis** — `impact_radius(entity_id="...", direction="upstream")` to find all entities that depend on a target, with edge paths.
+6. **Pinpoint retrieval** — `search_node(query="...", mode="snippets")` for exact name/path lookups.
 
-If semantic search returns insufficient results, fall back to snippets mode to bootstrap
-concrete anchors, then use `explore_rpg` to expand from those anchors.
+**Token-saving tips:**
+- Use `fetch_node(fields="features,deps")` to skip source code (~80% smaller output)
+- Use `explore_rpg(format="compact")` for ID-preserving machine-readable rows (enables direct follow-up calls)
+- Use `explore_rpg(max_results=N)` to cap large dependency trees
+- Use `context_pack` instead of search→fetch→explore chains (1 call vs 3-5, ~44% fewer tokens)
+- Use `impact_radius` for richer reachability analysis with edge paths (1 call vs multi-step explore)
 
 ## TOOLS
 - **lifting_status**: Dashboard — coverage, per-area progress, unlifted files, NEXT STEP
 - **build_rpg**: Index the codebase (run once, instant)
-- **get_entities_for_lifting** + **submit_lift_results**: YOU analyze the code
+- **get_entities_for_lifting** + **submit_lift_results**: YOU analyze the code (trivial entities auto-lifted)
 - **get_routing_candidates** + **submit_routing_decisions**: LLM-based semantic routing (optional)
 - **finalize_lifting**: Aggregate file-level features, rebuild hierarchy metadata (auto-routes pending if skipped)
 - **get_files_for_synthesis** + **submit_file_syntheses**: YOU synthesize file-level features
 - **build_semantic_hierarchy**: Get prompts for domain discovery + hierarchy assignment
 - **submit_hierarchy**: Apply your hierarchy assignments to the graph
-- **search_node**: Find code by intent (features/snippets/auto modes)
-- **fetch_node**: Get full entity details + source code
-- **explore_rpg**: Trace dependency chains
+- **search_node**: Find code by intent (features/snippets/auto). Results include entity_id for follow-up
+- **fetch_node**: Get entity details. Use `fields` param for projection (features/source/deps/hierarchy)
+- **explore_rpg**: Trace dependency chains. Use `format="compact"` for pipe-delimited rows with entity_ids
+- **context_pack**: Single-call search+fetch+explore. Searches, fetches source, expands neighbors, trims to token budget
+- **impact_radius**: BFS reachability with edge paths. Answers "what depends on X?" in one call
 - **rpg_info**: Get codebase overview and statistics
 - **update_rpg**: Incrementally update after code changes
 - **reload_rpg**: Reload graph from disk

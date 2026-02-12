@@ -133,7 +133,8 @@ pub fn explore_filtered(
     Some(root)
 }
 
-fn get_neighbors(
+/// Get immediate neighbors of an entity along edges, respecting direction and optional filter.
+pub fn get_neighbors(
     graph: &RPGraph,
     entity_id: &str,
     direction: Direction,
@@ -229,4 +230,108 @@ fn format_tree_inner(node: &TraversalNode, indent: usize, is_last: bool) -> Stri
     }
 
     output
+}
+
+/// Format a traversal result as compact pipe-delimited rows.
+/// Each row: `entity_id | edge_kind | direction | depth | file`
+/// Preserves entity_ids for direct follow-up calls.
+pub fn format_compact(node: &TraversalNode) -> String {
+    let mut rows = Vec::new();
+    collect_compact_rows(node, &mut rows);
+    rows.join("\n")
+}
+
+fn collect_compact_rows(node: &TraversalNode, rows: &mut Vec<String>) {
+    let edge_str = node
+        .edge_kind
+        .map(|k| format!("{:?}", k).to_lowercase())
+        .unwrap_or_else(|| "root".to_string());
+    let dir_str = node.direction.as_deref().unwrap_or("origin");
+    rows.push(format!(
+        "{} | {} | {} | {} | {}",
+        node.entity_id, edge_str, dir_str, node.depth, node.file,
+    ));
+    for child in &node.children {
+        collect_compact_rows(child, rows);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_compact_preserves_entity_ids() {
+        let root = TraversalNode {
+            entity_id: "src/lib.rs:foo".to_string(),
+            entity_name: "foo".to_string(),
+            file: "src/lib.rs".to_string(),
+            edge_kind: None,
+            direction: None,
+            depth: 0,
+            children: vec![TraversalNode {
+                entity_id: "src/lib.rs:bar".to_string(),
+                entity_name: "bar".to_string(),
+                file: "src/lib.rs".to_string(),
+                edge_kind: Some(EdgeKind::Invokes),
+                direction: Some("downstream".to_string()),
+                depth: 1,
+                children: vec![],
+            }],
+        };
+
+        let compact = format_compact(&root);
+        let rows: Vec<&str> = compact.lines().collect();
+
+        // Should have 2 rows (root + 1 child)
+        assert_eq!(rows.len(), 2);
+
+        // Both entity_ids should be present
+        assert!(compact.contains("src/lib.rs:foo"));
+        assert!(compact.contains("src/lib.rs:bar"));
+
+        // Pipe delimiters
+        assert!(rows[0].contains(" | "));
+        assert!(rows[1].contains("invokes"));
+        assert!(rows[1].contains("downstream"));
+    }
+
+    #[test]
+    fn test_format_compact_row_count_matches_tree() {
+        let root = TraversalNode {
+            entity_id: "a".to_string(),
+            entity_name: "a".to_string(),
+            file: "a.rs".to_string(),
+            edge_kind: None,
+            direction: None,
+            depth: 0,
+            children: vec![
+                TraversalNode {
+                    entity_id: "b".to_string(),
+                    entity_name: "b".to_string(),
+                    file: "b.rs".to_string(),
+                    edge_kind: Some(EdgeKind::Invokes),
+                    direction: Some("downstream".to_string()),
+                    depth: 1,
+                    children: vec![],
+                },
+                TraversalNode {
+                    entity_id: "c".to_string(),
+                    entity_name: "c".to_string(),
+                    file: "c.rs".to_string(),
+                    edge_kind: Some(EdgeKind::Imports),
+                    direction: Some("downstream".to_string()),
+                    depth: 1,
+                    children: vec![],
+                },
+            ],
+        };
+
+        let compact = format_compact(&root);
+        let tree = format_tree(&root, 0);
+
+        // Both should have 3 lines (root + 2 children)
+        assert_eq!(compact.lines().count(), 3);
+        assert_eq!(tree.lines().count(), 3);
+    }
 }
