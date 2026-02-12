@@ -43,21 +43,105 @@ pub struct UpdateSummary {
     pub modified_entity_ids: Vec<String>,
 }
 
-/// Merge semantic features from an old graph into a new graph by matching entity IDs.
-/// Used by `build_rpg` to auto-preserve lifted features across rebuilds.
-/// Returns the count of entities that had features restored.
-pub fn merge_features(new_graph: &mut RPGraph, old_graph: &RPGraph) -> usize {
-    let mut restored = 0;
-    for (id, new_entity) in &mut new_graph.entities {
-        if new_entity.semantic_features.is_empty()
-            && let Some(old_entity) = old_graph.entities.get(id)
-            && !old_entity.semantic_features.is_empty()
-        {
-            new_entity.semantic_features = old_entity.semantic_features.clone();
-            restored += 1;
+/// Statistics from merging an old graph's semantic data into a new graph.
+#[derive(Debug, Default)]
+pub struct MergeStats {
+    /// Entities whose `semantic_features` were restored.
+    pub features_restored: usize,
+    /// Entities whose `hierarchy_path` was restored.
+    pub hierarchy_restored: usize,
+    /// Module entities whose synthesized features were restored.
+    pub modules_restored: usize,
+    /// Entities in the old graph that no longer exist in the new graph.
+    pub orphaned: usize,
+    /// Entities in the new graph that did not exist in the old graph.
+    pub new_entities: usize,
+}
+
+/// Merge semantic features, hierarchy paths, and Module features from an old graph
+/// into a new graph by matching entity IDs. Used by `build_rpg` to auto-preserve
+/// lifted data across rebuilds.
+pub fn merge_features(new_graph: &mut RPGraph, old_graph: &RPGraph) -> MergeStats {
+    let mut stats = MergeStats::default();
+
+    // Count orphaned entities (in old but not in new)
+    for id in old_graph.entities.keys() {
+        if !new_graph.entities.contains_key(id) {
+            stats.orphaned += 1;
         }
     }
-    restored
+
+    // Count new entities (in new but not in old)
+    for id in new_graph.entities.keys() {
+        if !old_graph.entities.contains_key(id) {
+            stats.new_entities += 1;
+        }
+    }
+
+    for (id, new_entity) in &mut new_graph.entities {
+        if let Some(old_entity) = old_graph.entities.get(id) {
+            // Restore semantic features
+            if new_entity.semantic_features.is_empty() && !old_entity.semantic_features.is_empty() {
+                new_entity.semantic_features = old_entity.semantic_features.clone();
+                if new_entity.kind == rpg_core::graph::EntityKind::Module {
+                    stats.modules_restored += 1;
+                } else {
+                    stats.features_restored += 1;
+                }
+            }
+
+            // Restore hierarchy path (old semantic paths are always more
+            // valuable than the new graph's structural file-path paths)
+            if !old_entity.hierarchy_path.is_empty()
+                && old_entity.hierarchy_path != new_entity.hierarchy_path
+            {
+                new_entity.hierarchy_path = old_entity.hierarchy_path.clone();
+                stats.hierarchy_restored += 1;
+            }
+        }
+    }
+
+    stats
+}
+
+/// Rebuild the semantic hierarchy tree from restored `hierarchy_path` fields on entities.
+///
+/// After `merge_features()` restores hierarchy paths, the new graph's hierarchy tree
+/// is still structural (file-path based). This function clears the structural hierarchy
+/// and re-inserts all entities at their restored semantic positions, recovering the
+/// full semantic hierarchy without re-running the LLM hierarchy flow.
+///
+/// Only rebuilds if the old graph had a semantic hierarchy and entities have non-empty paths.
+pub fn rebuild_hierarchy_from_entities(graph: &mut RPGraph, old_had_semantic_hierarchy: bool) {
+    if !old_had_semantic_hierarchy {
+        return;
+    }
+
+    // Check if any entities have hierarchy paths worth rebuilding
+    let has_paths = graph
+        .entities
+        .values()
+        .any(|e| !e.hierarchy_path.is_empty());
+    if !has_paths {
+        return;
+    }
+
+    // Clear the structural hierarchy
+    graph.hierarchy.clear();
+
+    // Re-insert all entities at their restored hierarchy paths
+    let assignments: Vec<(String, String)> = graph
+        .entities
+        .iter()
+        .filter(|(_, e)| !e.hierarchy_path.is_empty())
+        .map(|(id, e)| (id.clone(), e.hierarchy_path.clone()))
+        .collect();
+
+    for (entity_id, path) in &assignments {
+        graph.insert_into_hierarchy(path, entity_id);
+    }
+
+    graph.metadata.semantic_hierarchy = true;
 }
 
 /// Detect file changes since the RPG's base_commit (or a given override) using git2.
@@ -205,7 +289,8 @@ pub fn filter_source_changes(changes: Vec<FileChange>, languages: &[Language]) -
 /// Filter out file changes matching `.rpgignore` patterns.
 ///
 /// Loads `.rpgignore` from `project_root`. If the file doesn't exist, returns
-/// the input unchanged. For renamed files, checks the `to` path.
+/// the input unchanged. For renamed files where the `to` path is ignored,
+/// the rename is converted to `Deleted(from)` so the old entities get pruned.
 pub fn filter_rpgignore_changes(project_root: &Path, changes: Vec<FileChange>) -> Vec<FileChange> {
     let ignore_path = project_root.join(".rpgignore");
     let (gitignore, err) = ignore::gitignore::Gitignore::new(&ignore_path);
@@ -216,16 +301,48 @@ pub fn filter_rpgignore_changes(project_root: &Path, changes: Vec<FileChange>) -
 
     changes
         .into_iter()
-        .filter(|change| {
-            let path = match change {
-                FileChange::Added(p) | FileChange::Modified(p) | FileChange::Deleted(p) => p,
-                FileChange::Renamed { to, .. } => to,
-            };
-            let is_dir = false;
-            !gitignore
-                .matched_path_or_any_parents(path, is_dir)
+        .filter_map(|change| {
+            match &change {
+                FileChange::Added(p) | FileChange::Modified(p) | FileChange::Deleted(p) => {
+                    if gitignore.matched_path_or_any_parents(p, false).is_ignore() {
+                        None
+                    } else {
+                        Some(change)
+                    }
+                }
+                FileChange::Renamed { from, to } => {
+                    if gitignore.matched_path_or_any_parents(to, false).is_ignore() {
+                        // Target is ignored — convert to deletion of source
+                        Some(FileChange::Deleted(from.clone()))
+                    } else {
+                        Some(change)
+                    }
+                }
+            }
+        })
+        .collect()
+}
+
+/// Find files currently in the graph's `file_index` that now match `.rpgignore` patterns.
+///
+/// Returns `FileChange::Deleted` entries for each file that should be pruned.
+/// If no `.rpgignore` exists, returns an empty vec.
+pub fn find_newly_ignored_files(project_root: &Path, graph: &RPGraph) -> Vec<FileChange> {
+    let ignore_path = project_root.join(".rpgignore");
+    let (gitignore, err) = ignore::gitignore::Gitignore::new(&ignore_path);
+    if err.is_some() && !ignore_path.exists() {
+        return Vec::new();
+    }
+
+    graph
+        .file_index
+        .keys()
+        .filter(|file| {
+            gitignore
+                .matched_path_or_any_parents(file, false)
                 .is_ignore()
         })
+        .map(|file| FileChange::Deleted(file.clone()))
         .collect()
 }
 
@@ -804,7 +921,11 @@ pub fn run_update(
 
     let changes = detect_changes(project_root, graph, since)?;
     let changes = filter_rpgignore_changes(project_root, changes);
-    let changes = filter_source_changes(changes, &languages);
+    let mut changes = filter_source_changes(changes, &languages);
+
+    // Prune files that are now covered by .rpgignore but still indexed
+    let ignored_deletions = find_newly_ignored_files(project_root, graph);
+    changes.extend(ignored_deletions);
 
     if changes.is_empty() {
         return Ok(UpdateSummary::default());

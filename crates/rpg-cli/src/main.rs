@@ -35,6 +35,10 @@ enum Commands {
         /// Rebuild even if .rpg/graph.json already exists
         #[arg(long)]
         force: bool,
+
+        /// Do not preserve lifted features from the previous graph
+        #[arg(long)]
+        no_preserve: bool,
     },
 
     /// Incrementally update the RPG from git changes
@@ -156,7 +160,8 @@ fn main() -> Result<()> {
             include,
             exclude,
             force,
-        } => cmd_build(&project_root, lang, include, exclude, force),
+            no_preserve,
+        } => cmd_build(&project_root, lang, include, exclude, force, no_preserve),
         Commands::Update { since } => cmd_update(&project_root, since),
         Commands::Search {
             query,
@@ -295,6 +300,7 @@ fn cmd_build(
     include: Vec<String>,
     exclude: Vec<String>,
     force: bool,
+    no_preserve: bool,
 ) -> Result<()> {
     use indicatif::{ProgressBar, ProgressStyle};
     use rpg_parser::languages::Language;
@@ -304,6 +310,47 @@ fn cmd_build(
         anyhow::bail!(
             ".rpg/graph.json already exists. Use --force to rebuild, or `rpg-encoder update` for incremental changes."
         );
+    }
+
+    // Auto-preserve: load existing graph if it has lifted features (unless --no-preserve)
+    let old_graph: Option<rpg_core::graph::RPGraph> = if !no_preserve
+        && rpg_core::storage::rpg_exists(project_root)
+    {
+        match rpg_core::storage::load(project_root) {
+            Ok(g) if g.metadata.lifted_entities > 0 => {
+                match rpg_core::storage::create_backup(project_root) {
+                    Ok(_) => eprintln!(
+                        "  Preserving {} lifted features from previous graph (backup saved).",
+                        g.metadata.lifted_entities
+                    ),
+                    Err(e) => eprintln!(
+                        "  Preserving {} lifted features from previous graph (WARNING: backup failed: {}).",
+                        g.metadata.lifted_entities, e
+                    ),
+                }
+                Some(g)
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    if no_preserve
+        && rpg_core::storage::rpg_exists(project_root)
+        && let Ok(g) = rpg_core::storage::load(project_root)
+        && g.metadata.lifted_entities > 0
+    {
+        match rpg_core::storage::create_backup(project_root) {
+            Ok(_) => eprintln!(
+                "  WARNING: --no-preserve specified. {} lifted features will be lost (backup saved).",
+                g.metadata.lifted_entities
+            ),
+            Err(e) => eprintln!(
+                "  WARNING: --no-preserve specified. {} lifted features will be lost (backup FAILED: {}).",
+                g.metadata.lifted_entities, e
+            ),
+        }
     }
 
     // Detect languages (multi-language support)
@@ -417,6 +464,24 @@ fn cmd_build(
         graph.base_commit = Some(sha);
     }
 
+    // Auto-preserve lifted features from previous graph
+    let merge_stats = if let Some(ref old) = old_graph {
+        let old_had_semantic = old.metadata.semantic_hierarchy;
+        let stats = rpg_encoder::evolution::merge_features(&mut graph, old);
+
+        // Only rebuild semantic hierarchy if paths were actually restored
+        if old_had_semantic && stats.hierarchy_restored > 0 {
+            rpg_encoder::evolution::rebuild_hierarchy_from_entities(&mut graph, true);
+            graph.assign_hierarchy_ids();
+            graph.aggregate_hierarchy_features();
+            graph.materialize_containment_edges();
+        }
+
+        Some(stats)
+    } else {
+        None
+    };
+
     // Refresh metadata and save
     graph.refresh_metadata();
     rpg_core::storage::save_with_config(project_root, &graph, &config.storage)?;
@@ -442,7 +507,15 @@ fn cmd_build(
     eprintln!("  Containment edges: {}", graph.metadata.containment_edges);
     eprintln!("  Total edges: {}", graph.metadata.total_edges);
     eprintln!("  Saved to: .rpg/graph.json");
-    if total > 0 && lifted == 0 {
+
+    if let Some(stats) = merge_stats {
+        eprintln!("\n  Auto-preserved from previous graph:");
+        eprintln!("    Features restored: {}", stats.features_restored);
+        eprintln!("    Hierarchy paths restored: {}", stats.hierarchy_restored);
+        eprintln!("    Module features restored: {}", stats.modules_restored);
+        eprintln!("    Orphaned (old entities gone): {}", stats.orphaned);
+        eprintln!("    New entities: {}", stats.new_entities);
+    } else if total > 0 && lifted == 0 {
         eprintln!(
             "\nTip: Use the MCP server for semantic lifting (get_entities_for_lifting + submit_lift_results)."
         );

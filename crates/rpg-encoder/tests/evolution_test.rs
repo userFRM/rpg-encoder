@@ -1,5 +1,7 @@
 use rpg_core::graph::*;
-use rpg_encoder::evolution::{apply_deletions, apply_renames, compute_drift};
+use rpg_encoder::evolution::{
+    apply_deletions, apply_renames, compute_drift, merge_features, rebuild_hierarchy_from_entities,
+};
 use std::path::PathBuf;
 
 fn make_entity(id: &str, name: &str, file: &str) -> Entity {
@@ -163,4 +165,266 @@ fn test_compute_drift_empty() {
     assert_eq!(compute_drift(&empty, &empty), 0.0);
     assert_eq!(compute_drift(&empty, &a), 1.0);
     assert_eq!(compute_drift(&a, &empty), 1.0);
+}
+
+// --- merge_features tests ---
+
+fn make_lifted_entity(id: &str, name: &str, file: &str, features: &[&str]) -> Entity {
+    Entity {
+        id: id.to_string(),
+        kind: EntityKind::Function,
+        name: name.to_string(),
+        file: PathBuf::from(file),
+        line_start: 1,
+        line_end: 10,
+        parent_class: None,
+        semantic_features: features.iter().map(|s| s.to_string()).collect(),
+        hierarchy_path: String::new(),
+        deps: EntityDeps::default(),
+    }
+}
+
+fn make_module_entity(id: &str, name: &str, file: &str, features: &[&str]) -> Entity {
+    Entity {
+        id: id.to_string(),
+        kind: EntityKind::Module,
+        name: name.to_string(),
+        file: PathBuf::from(file),
+        line_start: 0,
+        line_end: 0,
+        parent_class: None,
+        semantic_features: features.iter().map(|s| s.to_string()).collect(),
+        hierarchy_path: String::new(),
+        deps: EntityDeps::default(),
+    }
+}
+
+#[test]
+fn test_merge_features_restores_semantic_features() {
+    let mut old_graph = RPGraph::new("rust");
+    old_graph.insert_entity(make_lifted_entity(
+        "a.rs:foo",
+        "foo",
+        "a.rs",
+        &["validate input", "return result"],
+    ));
+
+    let mut new_graph = RPGraph::new("rust");
+    new_graph.insert_entity(make_lifted_entity("a.rs:foo", "foo", "a.rs", &[]));
+
+    let stats = merge_features(&mut new_graph, &old_graph);
+    assert_eq!(stats.features_restored, 1);
+    assert_eq!(
+        new_graph.entities["a.rs:foo"].semantic_features,
+        vec!["validate input", "return result"]
+    );
+}
+
+#[test]
+fn test_merge_features_restores_hierarchy_path() {
+    let mut old_graph = RPGraph::new("rust");
+    let mut entity = make_lifted_entity("a.rs:foo", "foo", "a.rs", &["test"]);
+    entity.hierarchy_path = "Auth/sessions/validate".to_string();
+    old_graph.insert_entity(entity);
+
+    let mut new_graph = RPGraph::new("rust");
+    new_graph.insert_entity(make_lifted_entity("a.rs:foo", "foo", "a.rs", &[]));
+
+    let stats = merge_features(&mut new_graph, &old_graph);
+    assert_eq!(stats.hierarchy_restored, 1);
+    assert_eq!(
+        new_graph.entities["a.rs:foo"].hierarchy_path,
+        "Auth/sessions/validate"
+    );
+}
+
+#[test]
+fn test_merge_features_restores_module_features() {
+    let mut old_graph = RPGraph::new("rust");
+    old_graph.insert_entity(make_module_entity(
+        "a.rs:(module)",
+        "(module)",
+        "a.rs",
+        &["manage auth", "validate tokens"],
+    ));
+
+    let mut new_graph = RPGraph::new("rust");
+    new_graph.insert_entity(make_module_entity("a.rs:(module)", "(module)", "a.rs", &[]));
+
+    let stats = merge_features(&mut new_graph, &old_graph);
+    assert_eq!(stats.modules_restored, 1);
+    // Module features should not be counted in features_restored
+    assert_eq!(stats.features_restored, 0);
+}
+
+#[test]
+fn test_merge_features_counts_orphaned_and_new() {
+    let mut old_graph = RPGraph::new("rust");
+    old_graph.insert_entity(make_lifted_entity("a.rs:foo", "foo", "a.rs", &["test"]));
+    old_graph.insert_entity(make_lifted_entity("b.rs:bar", "bar", "b.rs", &["test"]));
+
+    let mut new_graph = RPGraph::new("rust");
+    new_graph.insert_entity(make_lifted_entity("a.rs:foo", "foo", "a.rs", &[]));
+    new_graph.insert_entity(make_lifted_entity("c.rs:baz", "baz", "c.rs", &[]));
+
+    let stats = merge_features(&mut new_graph, &old_graph);
+    assert_eq!(stats.orphaned, 1); // b.rs:bar was in old but not new
+    assert_eq!(stats.new_entities, 1); // c.rs:baz is in new but not old
+}
+
+#[test]
+fn test_merge_features_no_overwrite() {
+    let mut old_graph = RPGraph::new("rust");
+    old_graph.insert_entity(make_lifted_entity(
+        "a.rs:foo",
+        "foo",
+        "a.rs",
+        &["old feature"],
+    ));
+
+    let mut new_graph = RPGraph::new("rust");
+    new_graph.insert_entity(make_lifted_entity(
+        "a.rs:foo",
+        "foo",
+        "a.rs",
+        &["new feature"],
+    ));
+
+    let stats = merge_features(&mut new_graph, &old_graph);
+    // Should not overwrite existing features
+    assert_eq!(stats.features_restored, 0);
+    assert_eq!(
+        new_graph.entities["a.rs:foo"].semantic_features,
+        vec!["new feature"]
+    );
+}
+
+// --- rebuild_hierarchy_from_entities tests ---
+
+#[test]
+fn test_rebuild_hierarchy_from_entities() {
+    // Simulate the real workflow: old graph has semantic hierarchy,
+    // new graph gets structural hierarchy from build_file_path_hierarchy,
+    // then merge_features restores hierarchy_paths, then rebuild_hierarchy_from_entities
+    // reconstructs the semantic hierarchy tree.
+
+    // Old graph: has semantic hierarchy with lifted features + paths
+    let mut old_graph = RPGraph::new("rust");
+    let mut old_e1 = make_lifted_entity("a.rs:foo", "foo", "a.rs", &["validate input"]);
+    old_e1.hierarchy_path = "Auth/sessions/validate".to_string();
+    old_graph.insert_entity(old_e1);
+    let mut old_e2 = make_lifted_entity("b.rs:bar", "bar", "b.rs", &["handle login"]);
+    old_e2.hierarchy_path = "Auth/sessions/login".to_string();
+    old_graph.insert_entity(old_e2);
+    old_graph.metadata.semantic_hierarchy = true;
+
+    // New graph: fresh structural build (no features, no semantic paths)
+    let mut new_graph = RPGraph::new("rust");
+    new_graph.insert_entity(make_lifted_entity("a.rs:foo", "foo", "a.rs", &[]));
+    new_graph.insert_entity(make_lifted_entity("b.rs:bar", "bar", "b.rs", &[]));
+    new_graph.build_file_path_hierarchy();
+    assert!(!new_graph.metadata.semantic_hierarchy);
+
+    // Merge restores features + hierarchy paths
+    let stats = merge_features(&mut new_graph, &old_graph);
+    assert_eq!(stats.features_restored, 2);
+    assert_eq!(stats.hierarchy_restored, 2);
+
+    // Rebuild semantic hierarchy from restored paths
+    rebuild_hierarchy_from_entities(&mut new_graph, true);
+
+    assert!(new_graph.metadata.semantic_hierarchy);
+    assert!(new_graph.hierarchy.contains_key("Auth"));
+    let auth = &new_graph.hierarchy["Auth"];
+    assert!(auth.children.contains_key("sessions"));
+    let sessions = &auth.children["sessions"];
+    assert!(sessions.children.contains_key("validate"));
+    assert!(sessions.children.contains_key("login"));
+}
+
+#[test]
+fn test_rebuild_hierarchy_noop_without_semantic() {
+    let mut graph = RPGraph::new("rust");
+    graph.insert_entity(make_entity("a.rs:foo", "foo", "a.rs"));
+    graph.build_file_path_hierarchy();
+
+    let hierarchy_before = graph.hierarchy.len();
+    rebuild_hierarchy_from_entities(&mut graph, false);
+    // Should be unchanged since old graph didn't have semantic hierarchy
+    assert_eq!(graph.hierarchy.len(), hierarchy_before);
+    assert!(!graph.metadata.semantic_hierarchy);
+}
+
+#[test]
+fn test_no_semantic_hierarchy_when_zero_paths_restored() {
+    // Edge case: old graph had semantic hierarchy but all entities are new
+    // (no IDs match), so zero hierarchy paths get restored. The caller should
+    // NOT rebuild semantic hierarchy in this case.
+
+    let mut old_graph = RPGraph::new("rust");
+    let mut old_entity = make_lifted_entity("old.rs:foo", "foo", "old.rs", &["validate input"]);
+    old_entity.hierarchy_path = "Auth/sessions/validate".to_string();
+    old_graph.insert_entity(old_entity);
+    old_graph.metadata.semantic_hierarchy = true;
+
+    // New graph has completely different entities (no ID overlap)
+    let mut new_graph = RPGraph::new("rust");
+    new_graph.insert_entity(make_lifted_entity("new.rs:bar", "bar", "new.rs", &[]));
+    new_graph.build_file_path_hierarchy();
+
+    let stats = merge_features(&mut new_graph, &old_graph);
+    // No IDs match → nothing restored
+    assert_eq!(stats.features_restored, 0);
+    assert_eq!(stats.hierarchy_restored, 0);
+    assert_eq!(stats.orphaned, 1);
+    assert_eq!(stats.new_entities, 1);
+
+    // Caller logic: only rebuild if hierarchy_restored > 0
+    // (This mirrors the fix in CLI main.rs and MCP tools.rs)
+    let old_had_semantic = old_graph.metadata.semantic_hierarchy;
+    if old_had_semantic && stats.hierarchy_restored > 0 {
+        rebuild_hierarchy_from_entities(&mut new_graph, true);
+    }
+
+    // semantic_hierarchy should NOT be set since no paths were restored
+    assert!(!new_graph.metadata.semantic_hierarchy);
+}
+
+#[test]
+fn test_merge_hierarchy_path_overwrites_structural() {
+    // Verify that merge_features correctly overwrites structural paths
+    // (from build_file_path_hierarchy) with semantic paths from old graph.
+
+    let mut old_graph = RPGraph::new("rust");
+    let mut entity = make_lifted_entity(
+        "src/auth.rs:validate",
+        "validate",
+        "src/auth.rs",
+        &["validate tokens"],
+    );
+    entity.hierarchy_path = "Security/auth/validate".to_string();
+    old_graph.insert_entity(entity);
+
+    let mut new_graph = RPGraph::new("rust");
+    new_graph.insert_entity(make_lifted_entity(
+        "src/auth.rs:validate",
+        "validate",
+        "src/auth.rs",
+        &[],
+    ));
+    new_graph.build_file_path_hierarchy();
+
+    // After structural build, entity has a file-path hierarchy (e.g., "src/auth/validate")
+    let structural_path = new_graph.entities["src/auth.rs:validate"]
+        .hierarchy_path
+        .clone();
+    assert!(!structural_path.is_empty());
+    assert_ne!(structural_path, "Security/auth/validate");
+
+    let stats = merge_features(&mut new_graph, &old_graph);
+    assert_eq!(stats.hierarchy_restored, 1);
+    assert_eq!(
+        new_graph.entities["src/auth.rs:validate"].hierarchy_path,
+        "Security/auth/validate"
+    );
 }

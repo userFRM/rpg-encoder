@@ -294,11 +294,15 @@ impl RpgServer {
         };
 
         // Auto-preserve: load existing graph if it has lifted features
+        let mut backup_failed = false;
         let old_graph: Option<RPGraph> = if storage::rpg_exists(project_root) {
             match storage::load(project_root) {
                 Ok(g) if g.metadata.lifted_entities > 0 => {
                     // Backup before overwriting
-                    let _ = storage::create_backup(project_root);
+                    if let Err(e) = storage::create_backup(project_root) {
+                        eprintln!("rpg: WARNING: backup failed: {e}");
+                        backup_failed = true;
+                    }
                     Some(g)
                 }
                 _ => None,
@@ -437,11 +441,22 @@ impl RpgServer {
             graph.base_commit = Some(sha);
         }
 
-        // Merge old features into new graph (auto-preservation)
-        let features_restored = if let Some(ref old) = old_graph {
-            rpg_encoder::evolution::merge_features(&mut graph, old)
+        // Merge old features, hierarchy paths, and module features (auto-preservation)
+        let merge_stats = if let Some(ref old) = old_graph {
+            let old_had_semantic = old.metadata.semantic_hierarchy;
+            let stats = rpg_encoder::evolution::merge_features(&mut graph, old);
+
+            // Only rebuild semantic hierarchy if paths were actually restored
+            if old_had_semantic && stats.hierarchy_restored > 0 {
+                rpg_encoder::evolution::rebuild_hierarchy_from_entities(&mut graph, true);
+                graph.assign_hierarchy_ids();
+                graph.aggregate_hierarchy_features();
+                graph.materialize_containment_edges();
+            }
+
+            Some(stats)
         } else {
-            0
+            None
         };
 
         // Refresh metadata and save
@@ -469,8 +484,13 @@ impl RpgServer {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
+        let hierarchy_label = if meta.semantic_hierarchy {
+            "semantic"
+        } else {
+            "structural"
+        };
         let mut result = format!(
-            "RPG built successfully (structural).\n\
+            "RPG built successfully.\n\
              languages: {}\n\
              entities: {}\n\
              files: {}\n\
@@ -478,7 +498,7 @@ impl RpgServer {
              dependency_edges: {}\n\
              containment_edges: {}\n\
              lifted: {}/{}\n\
-             hierarchy: structural",
+             hierarchy: {}",
             lang_display,
             meta.total_entities,
             meta.total_files,
@@ -487,14 +507,37 @@ impl RpgServer {
             meta.containment_edges,
             meta.lifted_entities,
             meta.total_entities,
+            hierarchy_label,
         );
 
-        if features_restored > 0 {
-            result.push_str(&format!(
-                "\n\nAuto-preserved {} entities with semantic features from previous graph.\n\
-                 Backup saved to .rpg/graph.backup.json",
-                features_restored
-            ));
+        if let Some(ref stats) = merge_stats {
+            let total_restored =
+                stats.features_restored + stats.modules_restored + stats.hierarchy_restored;
+            if total_restored > 0 {
+                let backup_note = if backup_failed {
+                    "backup FAILED"
+                } else {
+                    "backup saved"
+                };
+                result.push_str(&format!(
+                    "\n\nAuto-preserved from previous graph ({}):\n\
+                     features_restored: {}\n\
+                     hierarchy_paths_restored: {}\n\
+                     module_features_restored: {}\n\
+                     orphaned: {}\n\
+                     new_entities: {}",
+                    backup_note,
+                    stats.features_restored,
+                    stats.hierarchy_restored,
+                    stats.modules_restored,
+                    stats.orphaned,
+                    stats.new_entities,
+                ));
+            } else {
+                result.push_str(
+                    "\nTip: use get_entities_for_lifting + submit_lift_results to add semantic features.",
+                );
+            }
         } else {
             result.push_str(
                 "\nTip: use get_entities_for_lifting + submit_lift_results to add semantic features.",
