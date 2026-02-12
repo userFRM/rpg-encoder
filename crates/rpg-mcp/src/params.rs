@@ -27,6 +27,10 @@ pub(crate) struct FetchNodeParams {
     pub(crate) entity_id: String,
     /// Multiple entity IDs to fetch in batch (overrides entity_id when provided)
     pub(crate) entity_ids: Option<Vec<String>>,
+    /// Comma-separated fields to include: "features", "source", "deps", "hierarchy". Omit for all fields.
+    pub(crate) fields: Option<String>,
+    /// Maximum lines of source code to return (default: unlimited). Only applies when "source" is included.
+    pub(crate) source_max_lines: Option<usize>,
 }
 
 /// Parameters for the `explore_rpg` tool.
@@ -44,6 +48,10 @@ pub(crate) struct ExploreRpgParams {
     pub(crate) edge_filter: Option<String>,
     /// Comma-separated entity type filter (e.g., "function,class,method"). Valid: function, class, method, file, module, page, layout, component, hook, store.
     pub(crate) entity_type_filter: Option<String>,
+    /// Output format: "tree" (default, indented tree) or "compact" (pipe-delimited rows with entity_ids)
+    pub(crate) format: Option<String>,
+    /// Maximum number of nodes to return (default: unlimited). Truncates output for large traversals.
+    pub(crate) max_results: Option<usize>,
 }
 
 /// Parameters for the `build_rpg` tool.
@@ -120,6 +128,36 @@ pub(crate) struct ReconstructPlanParams {
     pub(crate) max_batch_size: Option<usize>,
     /// Include file-level Module entities in the schedule (default: false).
     pub(crate) include_modules: Option<bool>,
+}
+
+/// Parameters for the `context_pack` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ContextPackParams {
+    /// The search query describing what context you need
+    pub(crate) query: String,
+    /// Optional hierarchy scope to restrict search (e.g., 'Security/auth')
+    pub(crate) scope: Option<String>,
+    /// Target token budget for the packed context (default: 4000)
+    pub(crate) token_budget: Option<usize>,
+    /// Include source code for primary entities (default: true)
+    pub(crate) include_source: Option<bool>,
+    /// Neighborhood expansion depth: 0 = primary only, 1 = include 1-hop neighbors (default: 1)
+    pub(crate) depth: Option<usize>,
+}
+
+/// Parameters for the `impact_radius` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ImpactRadiusParams {
+    /// The entity ID to compute impact from
+    pub(crate) entity_id: String,
+    /// Traversal direction: 'upstream' (what depends on this), 'downstream' (what this depends on), or 'both'
+    pub(crate) direction: Option<String>,
+    /// Maximum traversal depth (default: 3). Use -1 for unlimited.
+    pub(crate) max_depth: Option<i64>,
+    /// Filter edges by kind: 'imports', 'invokes', 'inherits', 'composes', 'renders', 'reads_state', 'writes_state', 'dispatches'
+    pub(crate) edge_filter: Option<String>,
+    /// Maximum number of reachable entities to return (default: 100). Prevents overwhelming output on highly-connected nodes.
+    pub(crate) max_results: Option<usize>,
 }
 
 /// Parameters for the `submit_routing_decisions` tool.

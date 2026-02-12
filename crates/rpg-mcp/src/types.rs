@@ -20,6 +20,8 @@ pub(crate) struct LiftingSession {
     pub(crate) scope_key: String,
     pub(crate) raw_entities: Vec<rpg_parser::entities::RawEntity>,
     pub(crate) batch_ranges: Vec<(usize, usize)>,
+    /// Number of entities auto-lifted during session setup.
+    pub(crate) auto_lifted: usize,
 }
 
 /// An entity pending LLM-based semantic routing.

@@ -5,7 +5,9 @@
 //!
 //! TOON format: <https://github.com/toon-format/toon>
 
+use crate::context::ContextPackResult;
 use crate::fetch::{FetchOutput, FetchResult, HierarchyFetchResult};
+use crate::impact::ImpactResult;
 use crate::search::SearchResult;
 use rpg_core::graph::RPGraph;
 use serde::Serialize;
@@ -24,6 +26,7 @@ fn encode_opts() -> EncodeOptions {
 
 #[derive(Serialize)]
 struct SearchResultRow {
+    entity_id: String,
     name: String,
     file: String,
     line: usize,
@@ -48,6 +51,7 @@ pub fn format_search_results(results: &[SearchResult]) -> String {
         results: results
             .iter()
             .map(|r| SearchResultRow {
+                entity_id: r.entity_id.clone(),
                 name: r.entity_name.clone(),
                 file: r.file.clone(),
                 line: r.line_start,
@@ -119,6 +123,190 @@ struct FetchEntityOutput {
     siblings: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     source: Option<String>,
+}
+
+/// Field projection options for fetch output.
+#[derive(Debug)]
+pub struct FetchProjection {
+    pub fields: Option<Vec<String>>,
+    pub source_max_lines: Option<usize>,
+}
+
+const VALID_FETCH_FIELDS: &[&str] = &["features", "source", "deps", "hierarchy"];
+
+impl FetchProjection {
+    /// Parse a comma-separated fields string into a projection.
+    /// Returns Err with a message listing unrecognized field names.
+    pub fn from_params(
+        fields: Option<&str>,
+        source_max_lines: Option<usize>,
+    ) -> Result<Self, String> {
+        let parsed = match fields {
+            None => None,
+            Some(f) => {
+                let names: Vec<String> = f
+                    .split(',')
+                    .map(|s| s.trim().to_lowercase())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let invalid: Vec<&str> = names
+                    .iter()
+                    .filter(|n| !VALID_FETCH_FIELDS.contains(&n.as_str()))
+                    .map(|s| s.as_str())
+                    .collect();
+                if !invalid.is_empty() {
+                    return Err(format!(
+                        "Unrecognized fields: {}. Valid fields: {}",
+                        invalid.join(", "),
+                        VALID_FETCH_FIELDS.join(", "),
+                    ));
+                }
+                Some(names)
+            }
+        };
+        Ok(Self {
+            fields: parsed,
+            source_max_lines,
+        })
+    }
+
+    fn include(&self, field: &str) -> bool {
+        match &self.fields {
+            None => true,
+            Some(fields) => fields.iter().any(|f| f == field),
+        }
+    }
+}
+
+/// Format a fetch result as TOON with optional field projection.
+pub fn format_fetch_result_projected(result: &FetchResult, projection: &FetchProjection) -> String {
+    let entity = &result.entity;
+    let include_features = projection.include("features");
+    let include_source = projection.include("source");
+    let include_deps = projection.include("deps");
+    let include_hierarchy = projection.include("hierarchy");
+
+    let source = if include_source {
+        match (&result.source_code, projection.source_max_lines) {
+            (Some(src), Some(max)) => {
+                let lines: Vec<&str> = src.lines().collect();
+                if lines.len() > max {
+                    let mut truncated = lines[..max].join("\n");
+                    truncated.push_str(&format!("\n// ... ({} more lines)", lines.len() - max));
+                    Some(truncated)
+                } else {
+                    Some(src.clone())
+                }
+            }
+            (src, _) => src.clone(),
+        }
+    } else {
+        None
+    };
+
+    let output = FetchEntityOutput {
+        name: entity.name.clone(),
+        kind: format!("{:?}", entity.kind).to_lowercase(),
+        file: entity.file.display().to_string(),
+        lines: format!("{}-{}", entity.line_start, entity.line_end),
+        hierarchy: if include_hierarchy {
+            entity.hierarchy_path.clone()
+        } else {
+            String::new()
+        },
+        lifted: !entity.semantic_features.is_empty(),
+        features: if include_features {
+            entity.semantic_features.clone()
+        } else {
+            Vec::new()
+        },
+        invokes: if include_deps {
+            entity.deps.invokes.clone()
+        } else {
+            Vec::new()
+        },
+        invoked_by: if include_deps {
+            entity.deps.invoked_by.clone()
+        } else {
+            Vec::new()
+        },
+        imports: if include_deps {
+            entity.deps.imports.clone()
+        } else {
+            Vec::new()
+        },
+        imported_by: if include_deps {
+            entity.deps.imported_by.clone()
+        } else {
+            Vec::new()
+        },
+        inherits: if include_deps {
+            entity.deps.inherits.clone()
+        } else {
+            Vec::new()
+        },
+        inherited_by: if include_deps {
+            entity.deps.inherited_by.clone()
+        } else {
+            Vec::new()
+        },
+        renders: if include_deps {
+            entity.deps.renders.clone()
+        } else {
+            Vec::new()
+        },
+        rendered_by: if include_deps {
+            entity.deps.rendered_by.clone()
+        } else {
+            Vec::new()
+        },
+        reads_state: if include_deps {
+            entity.deps.reads_state.clone()
+        } else {
+            Vec::new()
+        },
+        state_read_by: if include_deps {
+            entity.deps.state_read_by.clone()
+        } else {
+            Vec::new()
+        },
+        writes_state: if include_deps {
+            entity.deps.writes_state.clone()
+        } else {
+            Vec::new()
+        },
+        state_written_by: if include_deps {
+            entity.deps.state_written_by.clone()
+        } else {
+            Vec::new()
+        },
+        dispatches: if include_deps {
+            entity.deps.dispatches.clone()
+        } else {
+            Vec::new()
+        },
+        dispatched_by: if include_deps {
+            entity.deps.dispatched_by.clone()
+        } else {
+            Vec::new()
+        },
+        siblings: if include_hierarchy {
+            result.hierarchy_context.clone()
+        } else {
+            Vec::new()
+        },
+        source,
+    };
+
+    let mut toon = encode(&output, &encode_opts()).unwrap_or_else(|_| format!("{:?}", result));
+
+    if entity.semantic_features.is_empty() {
+        toon.push_str(
+            "\n(not lifted — use get_entities_for_lifting + submit_lift_results to add semantic features)",
+        );
+    }
+
+    toon
 }
 
 /// Format a fetch result as TOON.
@@ -208,6 +396,14 @@ pub fn format_hierarchy_fetch_result(result: &HierarchyFetchResult) -> String {
 pub fn format_fetch_output(output: &FetchOutput) -> String {
     match output {
         FetchOutput::Entity(result) => format_fetch_result(result),
+        FetchOutput::Hierarchy(result) => format_hierarchy_fetch_result(result),
+    }
+}
+
+/// Format a FetchOutput with optional field projection.
+pub fn format_fetch_output_projected(output: &FetchOutput, projection: &FetchProjection) -> String {
+    match output {
+        FetchOutput::Entity(result) => format_fetch_result_projected(result, projection),
         FetchOutput::Hierarchy(result) => format_hierarchy_fetch_result(result),
     }
 }
@@ -334,6 +530,126 @@ pub fn format_rpg_info(graph: &RPGraph) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Impact radius output
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct ImpactEntryRow {
+    entity_id: String,
+    name: String,
+    file: String,
+    depth: usize,
+    edge_path: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    features: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ImpactOutput {
+    origin: String,
+    direction: String,
+    total: usize,
+    max_depth: usize,
+    reachable: Vec<ImpactEntryRow>,
+}
+
+/// Format an impact radius result as TOON.
+pub fn format_impact_radius(result: &ImpactResult) -> String {
+    let output = ImpactOutput {
+        origin: result.origin.clone(),
+        direction: result.direction.clone(),
+        total: result.total,
+        max_depth: result.max_depth_reached,
+        reachable: result
+            .reachable
+            .iter()
+            .map(|e| {
+                let path_str = e
+                    .edge_path
+                    .iter()
+                    .map(|(id, kind)| format!("{}:{}", id, format!("{:?}", kind).to_lowercase()))
+                    .collect::<Vec<_>>()
+                    .join(" -> ");
+                ImpactEntryRow {
+                    entity_id: e.entity_id.clone(),
+                    name: e.name.clone(),
+                    file: e.file.clone(),
+                    depth: e.depth,
+                    edge_path: path_str,
+                    features: e.features.clone(),
+                }
+            })
+            .collect(),
+    };
+
+    encode(&output, &encode_opts()).unwrap_or_else(|_| format!("{:?}", result))
+}
+
+// ---------------------------------------------------------------------------
+// Context pack output
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct PackedEntityRow {
+    entity_id: String,
+    name: String,
+    file: String,
+    kind: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    features: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    deps: String,
+    relevance: f64,
+}
+
+#[derive(Serialize)]
+struct ContextPackOutput {
+    primary: Vec<PackedEntityRow>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    neighborhood: Vec<PackedEntityRow>,
+    token_estimate: usize,
+}
+
+/// Format a context pack result as TOON.
+pub fn format_context_pack(result: &ContextPackResult) -> String {
+    let output = ContextPackOutput {
+        primary: result
+            .primary_entities
+            .iter()
+            .map(|p| PackedEntityRow {
+                entity_id: p.entity_id.clone(),
+                name: p.name.clone(),
+                file: p.file.clone(),
+                kind: p.kind.clone(),
+                features: p.features.clone(),
+                source: p.source.clone(),
+                deps: p.deps_summary.clone(),
+                relevance: clean_score(p.relevance),
+            })
+            .collect(),
+        neighborhood: result
+            .neighborhood_entities
+            .iter()
+            .map(|n| PackedEntityRow {
+                entity_id: n.entity_id.clone(),
+                name: n.name.clone(),
+                file: n.file.clone(),
+                kind: n.kind.clone(),
+                features: n.features.clone(),
+                source: None,
+                deps: String::new(),
+                relevance: 0.0,
+            })
+            .collect(),
+        token_estimate: result.token_estimate,
+    };
+
+    encode(&output, &encode_opts()).unwrap_or_else(|_| "encoding error".to_string())
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -379,6 +695,8 @@ mod tests {
         assert!(output.contains("main"));
         assert!(output.contains("src/main.rs"));
         assert!(output.contains("entry point"));
+        // entity_id should be present for direct follow-up calls
+        assert!(output.contains("src/main.rs:main"));
     }
 
     #[test]
@@ -406,5 +724,143 @@ mod tests {
         assert_eq!(clean_score(f64::NAN), 0.0);
         assert_eq!(clean_score(f64::INFINITY), 0.0);
         assert_eq!(clean_score(-0.0), 0.0);
+    }
+
+    #[test]
+    fn test_format_fetch_result_projected_features_only() {
+        use crate::fetch::FetchResult;
+        use rpg_core::graph::{Entity, EntityDeps, EntityKind};
+        use std::path::PathBuf;
+
+        let result = FetchResult {
+            entity: Entity {
+                id: "src/lib.rs:foo".to_string(),
+                kind: EntityKind::Function,
+                name: "foo".to_string(),
+                file: PathBuf::from("src/lib.rs"),
+                line_start: 1,
+                line_end: 10,
+                parent_class: None,
+                semantic_features: vec!["validate input".to_string()],
+                hierarchy_path: "Core/util/validate".to_string(),
+                deps: EntityDeps {
+                    invokes: vec!["bar".to_string()],
+                    ..Default::default()
+                },
+            },
+            source_code: Some("fn foo() { bar() }".to_string()),
+            hierarchy_context: vec!["sibling".to_string()],
+        };
+
+        // Projected: features only — no source, no deps
+        let projection = FetchProjection::from_params(Some("features"), None).unwrap();
+        let output = format_fetch_result_projected(&result, &projection);
+        assert!(output.contains("validate input"), "should include features");
+        assert!(!output.contains("fn foo()"), "should NOT include source");
+        assert!(!output.contains("bar"), "should NOT include deps");
+
+        // Full: no projection — all fields
+        let full_projection = FetchProjection::from_params(None, None).unwrap();
+        let full_output = format_fetch_result_projected(&result, &full_projection);
+        assert!(full_output.contains("validate input"));
+        assert!(full_output.contains("fn foo()"));
+        assert!(full_output.contains("bar"));
+    }
+
+    #[test]
+    fn test_format_fetch_result_projected_source_max_lines() {
+        use crate::fetch::FetchResult;
+        use rpg_core::graph::{Entity, EntityDeps, EntityKind};
+        use std::path::PathBuf;
+
+        let long_source = (1..=20)
+            .map(|i| format!("line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let result = FetchResult {
+            entity: Entity {
+                id: "src/lib.rs:bar".to_string(),
+                kind: EntityKind::Function,
+                name: "bar".to_string(),
+                file: PathBuf::from("src/lib.rs"),
+                line_start: 1,
+                line_end: 20,
+                parent_class: None,
+                semantic_features: vec![],
+                hierarchy_path: String::new(),
+                deps: EntityDeps::default(),
+            },
+            source_code: Some(long_source),
+            hierarchy_context: vec![],
+        };
+
+        let projection = FetchProjection::from_params(Some("source"), Some(5)).unwrap();
+        let output = format_fetch_result_projected(&result, &projection);
+        assert!(output.contains("line 1"));
+        assert!(output.contains("line 5"));
+        assert!(!output.contains("line 6"));
+        assert!(output.contains("more lines"));
+    }
+
+    #[test]
+    fn test_fetch_projection_rejects_invalid_fields() {
+        let result = FetchProjection::from_params(Some("features,bogus,deps"), None);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("bogus"), "should mention the invalid field");
+        assert!(err.contains("Valid fields"), "should list valid fields");
+    }
+
+    #[test]
+    fn test_format_context_pack() {
+        use crate::context::{ContextPackResult, PackedEntity};
+
+        let result = ContextPackResult {
+            primary_entities: vec![PackedEntity {
+                entity_id: "src/main.rs:main".to_string(),
+                name: "main".to_string(),
+                file: "src/main.rs".to_string(),
+                kind: "function".to_string(),
+                features: vec!["start application".to_string()],
+                source: Some("fn main() {}".to_string()),
+                deps_summary: "Calls: init".to_string(),
+                relevance: 1.5,
+            }],
+            neighborhood_entities: vec![],
+            token_estimate: 100,
+        };
+
+        let output = format_context_pack(&result);
+        assert!(output.contains("src/main.rs:main"));
+        assert!(output.contains("start application"));
+        assert!(output.contains("fn main()"));
+        assert!(output.contains("100")); // token_estimate
+    }
+
+    #[test]
+    fn test_format_impact_radius() {
+        use crate::impact::{ImpactEntry, ImpactResult};
+        use rpg_core::graph::EdgeKind;
+
+        let result = ImpactResult {
+            origin: "src/lib.rs:foo".to_string(),
+            direction: "upstream".to_string(),
+            reachable: vec![ImpactEntry {
+                entity_id: "src/main.rs:main".to_string(),
+                name: "main".to_string(),
+                file: "src/main.rs".to_string(),
+                depth: 1,
+                edge_path: vec![("src/lib.rs:foo".to_string(), EdgeKind::Invokes)],
+                features: vec!["entry point".to_string()],
+            }],
+            total: 1,
+            max_depth_reached: 1,
+        };
+
+        let output = format_impact_radius(&result);
+        assert!(output.contains("src/lib.rs:foo")); // origin
+        assert!(output.contains("src/main.rs:main")); // reachable entity
+        assert!(output.contains("upstream"));
+        assert!(output.contains("entry point"));
     }
 }

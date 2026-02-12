@@ -117,10 +117,18 @@ impl RpgServer {
             vec![params.entity_id.as_str()]
         };
 
+        let projection = rpg_nav::toon::FetchProjection::from_params(
+            params.fields.as_deref(),
+            params.source_max_lines,
+        )?;
+
         let mut outputs = Vec::new();
         for id in &ids {
             match rpg_nav::fetch::fetch(graph, id, &self.project_root) {
-                Ok(output) => outputs.push(rpg_nav::toon::format_fetch_output(&output)),
+                Ok(output) => outputs.push(rpg_nav::toon::format_fetch_output_projected(
+                    &output,
+                    &projection,
+                )),
                 Err(e) => outputs.push(format!("error({}): {}", id, e)),
             }
         }
@@ -177,6 +185,8 @@ impl RpgServer {
             vec![params.entity_id.as_str()]
         };
 
+        let use_compact = matches!(params.format.as_deref(), Some("compact"));
+
         let mut outputs = Vec::new();
         for id in &ids {
             match rpg_nav::explore::explore_filtered(
@@ -187,7 +197,29 @@ impl RpgServer {
                 edge_filter,
                 entity_type_filter.as_deref(),
             ) {
-                Some(tree) => outputs.push(rpg_nav::explore::format_tree(&tree, 0)),
+                Some(tree) => {
+                    let formatted = if use_compact {
+                        rpg_nav::explore::format_compact(&tree)
+                    } else {
+                        rpg_nav::explore::format_tree(&tree, 0)
+                    };
+                    // Apply max_results truncation (by line count)
+                    if let Some(max) = params.max_results {
+                        let lines: Vec<&str> = formatted.lines().collect();
+                        if lines.len() > max {
+                            let mut truncated = lines[..max].join("\n");
+                            truncated.push_str(&format!(
+                                "\n... ({} more nodes, truncated. Use max_results to increase.)",
+                                lines.len() - max
+                            ));
+                            outputs.push(truncated);
+                        } else {
+                            outputs.push(formatted);
+                        }
+                    } else {
+                        outputs.push(formatted);
+                    }
+                }
                 None => outputs.push(format!("Entity not found: {}", id)),
             }
         }
@@ -588,15 +620,20 @@ impl RpgServer {
         // batch indices work against a stable list — even as entities get
         // lifted between calls.
         {
-            let mut session = self.lifting_session.write().await;
-            let needs_rebuild = match session.as_ref() {
-                None => true,
-                Some(s) => s.scope_key != params.scope || batch_index == 0,
+            // Check rebuild need with a brief read (no graph lock held)
+            let needs_rebuild = {
+                let session = self.lifting_session.read().await;
+                match session.as_ref() {
+                    None => true,
+                    Some(s) => s.scope_key != params.scope || batch_index == 0,
+                }
             };
 
             if needs_rebuild {
-                let guard = self.graph.read().await;
-                let graph = guard.as_ref().unwrap();
+                // Lock order: graph first, then session (consistent with lifting_status)
+                let mut guard = self.graph.write().await;
+                let mut session = self.lifting_session.write().await;
+                let graph = guard.as_mut().ok_or("No RPG loaded")?;
 
                 let scope = rpg_encoder::lift::resolve_scope(graph, &params.scope);
                 if scope.entity_ids.is_empty() {
@@ -607,13 +644,53 @@ impl RpgServer {
                     ));
                 }
 
-                let raw_entities =
+                let all_raw_entities =
                     rpg_encoder::lift::collect_raw_entities(graph, &scope, &self.project_root)
                         .map_err(|e| format!("Failed to collect entities: {}", e))?;
 
-                if raw_entities.is_empty() {
+                if all_raw_entities.is_empty() {
                     *session = None;
                     return Ok("No source code found for matched entities.".into());
+                }
+
+                // Auto-lift trivial entities (getters, setters, constructors, etc.)
+                let mut auto_lifted = 0usize;
+                let mut needs_llm = Vec::new();
+                for raw in all_raw_entities {
+                    // Skip entities that already have curated features
+                    let already_lifted = graph
+                        .entities
+                        .get(&raw.id())
+                        .is_some_and(|e| !e.semantic_features.is_empty());
+                    if already_lifted {
+                        continue;
+                    }
+                    if let Some(features) = rpg_encoder::lift::try_auto_lift(&raw) {
+                        // Apply features directly to the graph
+                        if let Some(entity) = graph.entities.get_mut(&raw.id()) {
+                            entity.semantic_features = features;
+                            auto_lifted += 1;
+                        }
+                    } else {
+                        needs_llm.push(raw);
+                    }
+                }
+
+                // Save if we auto-lifted anything
+                if auto_lifted > 0 {
+                    graph.refresh_metadata();
+                    if let Err(e) = rpg_core::storage::save(&self.project_root, graph) {
+                        eprintln!("Warning: failed to persist auto-lifted features: {e}");
+                    }
+                }
+
+                if needs_llm.is_empty() {
+                    *session = None;
+                    let (lifted, total) = graph.lifting_coverage();
+                    return Ok(format!(
+                        "AUTO-LIFTED: {} trivial entities. No entities need LLM analysis.\ncoverage: {}/{}\nNEXT: Call finalize_lifting.",
+                        auto_lifted, lifted, total,
+                    ));
                 }
 
                 let config = self.config.read().await;
@@ -623,21 +700,30 @@ impl RpgServer {
 
                 let mcp_batch_size = batch_size.min(25);
                 let batch_ranges = rpg_encoder::lift::build_token_aware_batches(
-                    &raw_entities,
+                    &needs_llm,
                     mcp_batch_size,
                     max_batch_tokens,
                 );
 
+                // Store auto-lift count for batch 0 output
+                let auto_lift_count = auto_lifted;
+
                 *session = Some(LiftingSession {
                     scope_key: params.scope.clone(),
-                    raw_entities,
+                    raw_entities: needs_llm,
                     batch_ranges,
+                    auto_lifted: auto_lift_count,
                 });
             }
         }
 
+        // Lock order: graph first, then session (consistent with rebuild block above)
+        let guard = self.graph.read().await;
+        let graph = guard.as_ref().ok_or("No RPG loaded")?;
         let session = self.lifting_session.read().await;
-        let session = session.as_ref().unwrap();
+        let Some(session) = session.as_ref() else {
+            return Err("Lifting session expired. Call get_entities_for_lifting with batch_index=0 to restart.".into());
+        };
 
         let total_batches = session.batch_ranges.len();
         if batch_index >= total_batches {
@@ -650,9 +736,6 @@ impl RpgServer {
         let (batch_start, batch_end) = session.batch_ranges[batch_index];
         let batch = &session.raw_entities[batch_start..batch_end];
 
-        let guard = self.graph.read().await;
-        let graph = guard.as_ref().unwrap();
-
         let (lifted, total) = graph.lifting_coverage();
 
         let module_count = graph
@@ -660,6 +743,7 @@ impl RpgServer {
             .values()
             .filter(|e| e.kind == rpg_core::graph::EntityKind::Module)
             .count();
+        let auto_lifted_count = session.auto_lifted;
         let mut output = format!(
             "BATCH {}/{} ({} entities) | coverage: {}/{} (excludes {} modules)\n",
             batch_index + 1,
@@ -672,6 +756,12 @@ impl RpgServer {
 
         // Only include repo context and full instructions on batch 0 to save context space
         if batch_index == 0 {
+            if auto_lifted_count > 0 {
+                output.push_str(&format!(
+                    "AUTO-LIFTED: {} trivial entities (getters/setters/constructors). Override by re-submitting features.\n\n",
+                    auto_lifted_count,
+                ));
+            }
             let project_name = self
                 .project_root
                 .file_name()
@@ -698,11 +788,20 @@ impl RpgServer {
         for entity in batch {
             let truncated = truncate_source(&entity.source_text, 40);
             output.push_str(&format!(
-                "### {} ({:?})\n```\n{}\n```\n\n",
+                "### {} ({:?})\n```\n{}\n```\n",
                 entity.id(),
                 entity.kind,
                 truncated,
             ));
+            // Append compact dependency context when available
+            if let Some(graph_entity) = graph.entities.get(&entity.id()) {
+                let dep_line = format_dep_context(&graph_entity.deps);
+                if !dep_line.is_empty() {
+                    output.push_str(&dep_line);
+                    output.push('\n');
+                }
+            }
+            output.push('\n');
         }
 
         output.push_str(
@@ -1935,6 +2034,111 @@ impl RpgServer {
         output.push_str(include_str!("prompts/hierarchy_instructions.md"));
 
         Ok(output)
+    }
+
+    #[tool(
+        description = "Build a focused context pack in a single call. Searches for entities matching your query, fetches their details and source code, expands neighbors to the specified depth (default 1), and trims to a token budget. Replaces the typical search→fetch→explore multi-step workflow. Returns primary entities with source + features + deps, plus neighborhood entities for broader context."
+    )]
+    async fn context_pack(
+        &self,
+        Parameters(params): Parameters<ContextPackParams>,
+    ) -> Result<String, String> {
+        self.ensure_graph().await?;
+        let notice = self.staleness_notice().await;
+        let guard = self.graph.read().await;
+        let graph = guard.as_ref().unwrap();
+
+        // Attempt hybrid embedding search
+        self.try_init_embeddings(graph).await;
+        let embedding_scores = {
+            let mut emb_guard = self.embedding_index.write().await;
+            if let Some(ref mut idx) = *emb_guard {
+                idx.score_all(&params.query).ok().filter(|s| !s.is_empty())
+            } else {
+                None
+            }
+        };
+
+        let request = rpg_nav::context::ContextPackRequest {
+            query: &params.query,
+            scope: params.scope.as_deref(),
+            token_budget: params.token_budget.unwrap_or(4000),
+            include_source: params.include_source.unwrap_or(true),
+            depth: params.depth.unwrap_or(1),
+        };
+
+        let result = rpg_nav::context::build_context_pack(
+            graph,
+            &self.project_root,
+            &request,
+            embedding_scores.as_ref(),
+        );
+
+        if result.primary_entities.is_empty() {
+            return Ok(format!("{}No entities found for: {}", notice, params.query,));
+        }
+
+        Ok(format!(
+            "{}{}",
+            notice,
+            rpg_nav::toon::format_context_pack(&result),
+        ))
+    }
+
+    #[tool(
+        description = "Compute the impact radius of an entity: find all entities reachable via dependency edges with edge paths. Use direction='upstream' to answer 'what depends on this?', 'downstream' for 'what does this depend on?'. Returns a flat list with depth, edge paths, and features — ideal for change impact analysis."
+    )]
+    async fn impact_radius(
+        &self,
+        Parameters(params): Parameters<ImpactRadiusParams>,
+    ) -> Result<String, String> {
+        self.ensure_graph().await?;
+        let notice = self.staleness_notice().await;
+        let guard = self.graph.read().await;
+        let graph = guard.as_ref().unwrap();
+
+        let dir = match params.direction.as_deref() {
+            Some("downstream" | "down") => rpg_nav::explore::Direction::Downstream,
+            Some("both") => rpg_nav::explore::Direction::Both,
+            _ => rpg_nav::explore::Direction::Upstream, // Default: "what depends on this?"
+        };
+
+        let max_depth = match params.max_depth {
+            Some(-1) => usize::MAX,
+            Some(d) if d >= 0 => usize::try_from(d).unwrap_or(3),
+            _ => 3,
+        };
+
+        let edge_filter = params.edge_filter.as_deref().and_then(|f| match f {
+            "imports" => Some(rpg_core::graph::EdgeKind::Imports),
+            "invokes" => Some(rpg_core::graph::EdgeKind::Invokes),
+            "inherits" => Some(rpg_core::graph::EdgeKind::Inherits),
+            "composes" => Some(rpg_core::graph::EdgeKind::Composes),
+            "renders" => Some(rpg_core::graph::EdgeKind::Renders),
+            "reads_state" => Some(rpg_core::graph::EdgeKind::ReadsState),
+            "writes_state" => Some(rpg_core::graph::EdgeKind::WritesState),
+            "dispatches" => Some(rpg_core::graph::EdgeKind::Dispatches),
+            "contains" => Some(rpg_core::graph::EdgeKind::Contains),
+            _ => None,
+        });
+
+        let max_results = params.max_results.or(Some(100));
+
+        match rpg_nav::impact::compute_impact_radius(
+            graph,
+            &params.entity_id,
+            dir,
+            max_depth,
+            edge_filter,
+            max_results,
+        ) {
+            Some(result) => Ok(format!(
+                "{}{}",
+                notice,
+                rpg_nav::toon::format_impact_radius(&result),
+            )),
+            None => Err(format!("Entity not found: {}", params.entity_id)),
+        }
     }
 
     #[tool(

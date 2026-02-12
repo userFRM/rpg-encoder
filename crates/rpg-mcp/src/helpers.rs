@@ -17,6 +17,19 @@ pub(crate) fn truncate_source(source: &str, max_lines: usize) -> String {
     out
 }
 
+/// Format a compact dependency context line for an entity.
+/// Returns empty string if the entity has no deps.
+/// Format: `Deps: Called by: a, b | Calls: c, d | Inherits: e`
+/// Delegates to the shared `format_deps_summary` in rpg-nav's context module.
+pub(crate) fn format_dep_context(deps: &rpg_core::graph::EntityDeps) -> String {
+    let summary = rpg_nav::context::format_deps_summary(deps);
+    if summary.is_empty() {
+        String::new()
+    } else {
+        format!("Deps: {}", summary)
+    }
+}
+
 /// Parse a comma-separated entity type filter string into EntityKind values.
 ///
 /// Accepts entity names: function, class, method, page, layout, component,
@@ -102,7 +115,10 @@ pub(crate) fn hierarchy_path_exists(
 
 #[cfg(test)]
 mod tests {
-    use super::{hierarchy_path_exists, is_three_level_hierarchy_path, parse_entity_type_filter};
+    use super::{
+        format_dep_context, hierarchy_path_exists, is_three_level_hierarchy_path,
+        parse_entity_type_filter,
+    };
     use rpg_core::graph::{EntityKind, HierarchyNode};
     use std::collections::BTreeMap;
 
@@ -167,5 +183,39 @@ mod tests {
         let parsed = parse_entity_type_filter("directory,file,function");
         assert!(parsed.contains(&EntityKind::Module));
         assert!(parsed.contains(&EntityKind::Function));
+    }
+
+    #[test]
+    fn test_format_dep_context_with_deps() {
+        use rpg_core::graph::EntityDeps;
+        let deps = EntityDeps {
+            invoked_by: vec!["main".to_string(), "test".to_string()],
+            invokes: vec!["helper".to_string()],
+            ..Default::default()
+        };
+        let result = format_dep_context(&deps);
+        assert!(result.starts_with("Deps:"));
+        assert!(result.contains("Called by: main, test"));
+        assert!(result.contains("Calls: helper"));
+    }
+
+    #[test]
+    fn test_format_dep_context_empty() {
+        use rpg_core::graph::EntityDeps;
+        let deps = EntityDeps::default();
+        let result = format_dep_context(&deps);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_format_dep_context_caps_at_five() {
+        use rpg_core::graph::EntityDeps;
+        let deps = EntityDeps {
+            invokes: (1..=10).map(|i| format!("fn{}", i)).collect(),
+            ..Default::default()
+        };
+        let result = format_dep_context(&deps);
+        assert!(result.contains("fn5"));
+        assert!(!result.contains("fn6"));
     }
 }
