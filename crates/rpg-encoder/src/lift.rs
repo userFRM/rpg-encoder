@@ -140,14 +140,22 @@ fn normalize_field(s: &str) -> String {
     result
 }
 
+/// An auto-lift rule tagged with its source paradigm's languages.
+/// Rules with empty `languages` (core rules) match any file.
+struct TaggedRule {
+    rule: AutoLiftRule,
+    languages: Vec<String>,
+}
+
 /// Engine that matches entities against TOML-defined auto-lift rules.
 ///
 /// Rules are collected from paradigm definitions in priority order.
 /// `core.toml` (priority 100) is always included; framework-specific rules
 /// from detected paradigms are prepended (lower priority number = higher priority
-/// = checked first).
+/// = checked first). Language-specific rules only match entities whose file
+/// extension belongs to the rule's source language.
 pub struct AutoLiftEngine {
-    rules: Vec<AutoLiftRule>,
+    rules: Vec<TaggedRule>,
 }
 
 impl AutoLiftEngine {
@@ -163,17 +171,38 @@ impl AutoLiftEngine {
             let is_core = def.languages.is_empty();
             let is_active = active_paradigm_names.iter().any(|n| n == &def.name);
             if is_core || is_active {
-                rules.extend(def.auto_lift.iter().cloned());
+                for auto_rule in &def.auto_lift {
+                    rules.push(TaggedRule {
+                        rule: auto_rule.clone(),
+                        languages: def.languages.clone(),
+                    });
+                }
             }
         }
         Self { rules }
     }
 
     /// Try to match an entity against auto-lift rules. First match wins.
+    /// Language-specific rules are skipped when the entity's file extension
+    /// doesn't belong to the rule's source language.
     pub fn try_lift(&self, raw: &RawEntity) -> Option<Vec<String>> {
-        for rule in &self.rules {
-            if matches_entity(&rule.match_rule, raw, &raw.file) {
-                return Some(Self::expand_templates(rule, raw));
+        let file_lang = raw
+            .file
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(Language::from_extension);
+
+        for tagged in &self.rules {
+            // Skip language-specific rules that don't match the entity's file language.
+            // When the file language is unknown, language-specific rules are skipped
+            // (only core rules with empty languages apply).
+            if !tagged.languages.is_empty()
+                && !file_lang.is_some_and(|lang| tagged.languages.iter().any(|l| l == lang.name()))
+            {
+                continue;
+            }
+            if matches_entity(&tagged.rule.match_rule, raw, &raw.file) {
+                return Some(Self::expand_templates(&tagged.rule, raw));
             }
         }
         None
@@ -374,10 +403,14 @@ mod tests {
     use rpg_core::graph::EntityKind;
 
     fn make_raw(name: &str, parent: Option<&str>, source: &str) -> RawEntity {
+        make_raw_file(name, parent, source, "src/lib.rs")
+    }
+
+    fn make_raw_file(name: &str, parent: Option<&str>, source: &str, file: &str) -> RawEntity {
         RawEntity {
             name: name.to_string(),
             kind: EntityKind::Method,
-            file: std::path::PathBuf::from("src/lib.rs"),
+            file: std::path::PathBuf::from(file),
             line_start: 1,
             line_end: source.lines().count(),
             parent_class: parent.map(|s| s.to_string()),
@@ -773,6 +806,74 @@ mod tests {
         assert_eq!(
             features.unwrap(),
             vec!["return string representation of user"]
+        );
+    }
+
+    // --- Language scoping tests ---
+
+    fn make_mixed_engine() -> AutoLiftEngine {
+        let defs = rpg_parser::paradigms::defs::load_builtin_defs().unwrap_or_default();
+        // Activate both C and Go paradigms (simulates a mixed-language repo)
+        AutoLiftEngine::new(&defs, &["c".to_string(), "go".to_string()])
+    }
+
+    #[test]
+    fn test_engine_language_scoping_go_init() {
+        // Regression: Go `init()` in a .go file must match go.init ("initialize package"),
+        // NOT c.init ("initialize init") — even though C paradigm is also active.
+        let engine = make_mixed_engine();
+        let raw = make_raw_file("init", None, "func init() { setup() }", "cmd/main.go");
+        let features = engine.try_lift(&raw).unwrap();
+        assert_eq!(
+            features,
+            vec!["initialize package"],
+            "Go init() should match go.init, not c.init"
+        );
+    }
+
+    #[test]
+    fn test_engine_language_scoping_c_init() {
+        // C `init` in a .c file should match c.init
+        let engine = make_mixed_engine();
+        let raw = make_raw_file("init", None, "void init() { setup(); }", "src/module.c");
+        let features = engine.try_lift(&raw).unwrap();
+        assert_eq!(
+            features,
+            vec!["initialize init"],
+            "C init() should match c.init, not go.init"
+        );
+    }
+
+    #[test]
+    fn test_engine_core_rules_match_any_language() {
+        // Core rules (languages = []) should match regardless of file extension
+        let engine = make_mixed_engine();
+        let raw = make_raw_file(
+            "getName",
+            None,
+            "String getName() { return this.name; }",
+            "src/User.java",
+        );
+        let features = engine.try_lift(&raw);
+        assert!(
+            features.is_some(),
+            "core camelCase getter should match .java files"
+        );
+        assert_eq!(features.unwrap(), vec!["return name"]);
+    }
+
+    #[test]
+    fn test_engine_unknown_extension_skips_language_rules() {
+        // Language-specific rules should NOT match files with unknown extensions.
+        // Only core rules (languages = []) should apply.
+        let engine = make_mixed_engine();
+        let raw = make_raw_file("init", None, "func init() { }", "src/module.xyz");
+        // go.init and c.init should both be skipped (unknown extension).
+        // No core rule matches bare "init", so no auto-lift.
+        let features = engine.try_lift(&raw);
+        assert!(
+            features.is_none(),
+            "language-specific rules should not match unknown file extensions"
         );
     }
 }
