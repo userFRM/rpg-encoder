@@ -679,7 +679,9 @@ impl RpgServer {
                 // Save if we auto-lifted anything
                 if auto_lifted > 0 {
                     graph.refresh_metadata();
-                    let _ = rpg_core::storage::save(&self.project_root, graph);
+                    if let Err(e) = rpg_core::storage::save(&self.project_root, graph) {
+                        eprintln!("Warning: failed to persist auto-lifted features: {e}");
+                    }
                 }
 
                 if needs_llm.is_empty() {
@@ -715,6 +717,9 @@ impl RpgServer {
             }
         }
 
+        // Lock order: graph first, then session (consistent with rebuild block above)
+        let guard = self.graph.read().await;
+        let graph = guard.as_ref().ok_or("No RPG loaded")?;
         let session = self.lifting_session.read().await;
         let Some(session) = session.as_ref() else {
             return Err("Lifting session expired. Call get_entities_for_lifting with batch_index=0 to restart.".into());
@@ -730,9 +735,6 @@ impl RpgServer {
 
         let (batch_start, batch_end) = session.batch_ranges[batch_index];
         let batch = &session.raw_entities[batch_start..batch_end];
-
-        let guard = self.graph.read().await;
-        let graph = guard.as_ref().unwrap();
 
         let (lifted, total) = graph.lifting_coverage();
 
