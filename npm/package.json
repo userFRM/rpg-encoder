@@ -1,6 +1,6 @@
 {
   "name": "rpg-encoder",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "RPG-Encoder — semantic code graph for AI-assisted code understanding",
   "license": "MIT",
   "repository": {
