@@ -16,6 +16,7 @@ fn make_entity(id: &str, name: &str, file: &str, features: Vec<&str>) -> Entity 
         feature_source: None,
         hierarchy_path: format!("Area/category/{}", name),
         deps: EntityDeps::default(),
+        signature: None,
     }
 }
 

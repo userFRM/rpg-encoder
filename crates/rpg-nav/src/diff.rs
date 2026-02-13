@@ -137,6 +137,7 @@ mod tests {
             feature_source: None,
             hierarchy_path: "Test".to_string(),
             deps: EntityDeps::default(),
+            signature: None,
         }
     }
 

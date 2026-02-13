@@ -33,6 +33,63 @@ func add(a int, b int) int { return a + b }
 }
 
 #[test]
+fn go_signature_typed_params_and_return() {
+    let source = r"package main
+
+func compute(x int, y string) bool { return true }
+";
+    let entities = extract_entities(Path::new("test.go"), source, Language::GO);
+    assert_eq!(entities.len(), 1);
+    let sig = entities[0]
+        .signature
+        .as_ref()
+        .expect("should have signature");
+    assert_eq!(sig.parameters.len(), 2);
+    assert_eq!(sig.parameters[0].name, "x");
+    assert_eq!(sig.parameters[0].type_annotation.as_deref(), Some("int"));
+    assert_eq!(sig.parameters[1].name, "y");
+    assert_eq!(sig.parameters[1].type_annotation.as_deref(), Some("string"));
+    assert_eq!(sig.return_type.as_deref(), Some("bool"));
+}
+
+#[test]
+fn go_signature_no_return_type() {
+    let source = r"package main
+
+func greet(name string) { }
+";
+    let entities = extract_entities(Path::new("test.go"), source, Language::GO);
+    assert_eq!(entities.len(), 1);
+    let sig = entities[0]
+        .signature
+        .as_ref()
+        .expect("should have signature");
+    assert_eq!(sig.parameters.len(), 1);
+    assert_eq!(sig.parameters[0].name, "name");
+    assert!(sig.return_type.is_none());
+}
+
+#[test]
+fn go_signature_grouped_params() {
+    let source = r"package main
+
+func add(a, b int) int { return a + b }
+";
+    let entities = extract_entities(Path::new("test.go"), source, Language::GO);
+    assert_eq!(entities.len(), 1);
+    let sig = entities[0]
+        .signature
+        .as_ref()
+        .expect("should have signature");
+    // Grouped params: `a, b int` should yield 2 params both with type `int`
+    assert_eq!(sig.parameters.len(), 2);
+    assert_eq!(sig.parameters[0].name, "a");
+    assert_eq!(sig.parameters[0].type_annotation.as_deref(), Some("int"));
+    assert_eq!(sig.parameters[1].name, "b");
+    assert_eq!(sig.parameters[1].type_annotation.as_deref(), Some("int"));
+}
+
+#[test]
 fn go_extract_method_with_receiver() {
     let source = r"package main
 

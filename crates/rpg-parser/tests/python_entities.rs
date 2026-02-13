@@ -3,6 +3,93 @@ use rpg_parser::entities::extract_python_entities;
 use std::path::Path;
 
 #[test]
+fn test_signature_typed_params_and_return() {
+    let source = "def compute(x: int, y: str) -> bool:\n    return True\n";
+    let entities = extract_python_entities(Path::new("test.py"), source);
+    assert_eq!(entities.len(), 1);
+    let sig = entities[0]
+        .signature
+        .as_ref()
+        .expect("should have signature");
+    assert_eq!(sig.parameters.len(), 2);
+    assert_eq!(sig.parameters[0].name, "x");
+    assert_eq!(sig.parameters[0].type_annotation.as_deref(), Some("int"));
+    assert_eq!(sig.parameters[1].name, "y");
+    assert_eq!(sig.parameters[1].type_annotation.as_deref(), Some("str"));
+    assert_eq!(sig.return_type.as_deref(), Some("bool"));
+}
+
+#[test]
+fn test_signature_untyped_params_no_return() {
+    let source = "def greet(name, greeting):\n    print(greeting, name)\n";
+    let entities = extract_python_entities(Path::new("test.py"), source);
+    assert_eq!(entities.len(), 1);
+    let sig = entities[0]
+        .signature
+        .as_ref()
+        .expect("should have signature");
+    assert_eq!(sig.parameters.len(), 2);
+    assert_eq!(sig.parameters[0].name, "name");
+    assert!(sig.parameters[0].type_annotation.is_none());
+    assert_eq!(sig.parameters[1].name, "greeting");
+    assert!(sig.parameters[1].type_annotation.is_none());
+    assert!(sig.return_type.is_none());
+}
+
+#[test]
+fn test_signature_self_skipped() {
+    let source = "\
+class Foo:
+    def bar(self, x: int) -> str:
+        return str(x)
+";
+    let entities = extract_python_entities(Path::new("test.py"), source);
+    let method = entities
+        .iter()
+        .find(|e| e.name == "bar")
+        .expect("should find bar");
+    let sig = method.signature.as_ref().expect("should have signature");
+    // self should be skipped
+    assert_eq!(sig.parameters.len(), 1);
+    assert_eq!(sig.parameters[0].name, "x");
+    assert_eq!(sig.return_type.as_deref(), Some("str"));
+}
+
+#[test]
+fn test_signature_cls_skipped() {
+    let source = "\
+class Foo:
+    @classmethod
+    def create(cls, name: str) -> 'Foo':
+        return Foo()
+";
+    let entities = extract_python_entities(Path::new("test.py"), source);
+    let method = entities
+        .iter()
+        .find(|e| e.name == "create")
+        .expect("should find create");
+    let sig = method.signature.as_ref().expect("should have signature");
+    // cls should be skipped
+    assert_eq!(sig.parameters.len(), 1);
+    assert_eq!(sig.parameters[0].name, "name");
+}
+
+#[test]
+fn test_signature_args_kwargs() {
+    let source = "def variadic(a, *args, **kwargs):\n    pass\n";
+    let entities = extract_python_entities(Path::new("test.py"), source);
+    assert_eq!(entities.len(), 1);
+    let sig = entities[0]
+        .signature
+        .as_ref()
+        .expect("should have signature");
+    assert_eq!(sig.parameters.len(), 3);
+    assert_eq!(sig.parameters[0].name, "a");
+    assert_eq!(sig.parameters[1].name, "*args");
+    assert_eq!(sig.parameters[2].name, "**kwargs");
+}
+
+#[test]
 fn test_simple_function() {
     let source = "def greet(name):\n    print(name)\n";
     let entities = extract_python_entities(Path::new("test.py"), source);

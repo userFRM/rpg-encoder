@@ -17,6 +17,7 @@ fn make_entity(id: &str, name: &str, file: &str) -> Entity {
         feature_source: None,
         hierarchy_path: "Core/test".to_string(),
         deps: EntityDeps::default(),
+        signature: None,
     }
 }
 

@@ -507,6 +507,7 @@ fn extract_reducer_keys(
                 line_end: child.end_position().row + 1,
                 parent_class: Some(slice_name.to_string()),
                 source_text: source[child.byte_range()].to_string(),
+                signature: None,
             });
         }
     }
@@ -557,6 +558,7 @@ fn extract_destructured_hooks(
                                 line_end: child.end_position().row + 1,
                                 parent_class: None,
                                 source_text: source[child.byte_range()].to_string(),
+                                signature: None,
                             });
                         }
                     }

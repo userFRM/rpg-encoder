@@ -144,10 +144,10 @@ When using the RPG to understand or navigate a codebase (after lifting is comple
 - **submit_hierarchy**: Apply your hierarchy assignments to the graph
 - **search_node**: Find code by intent (features/snippets/auto). Results include entity_id for follow-up
 - **fetch_node**: Get entity details. Use `fields` param for projection (features/source/deps/hierarchy)
-- **explore_rpg**: Trace dependency chains. Use `format="compact"` for pipe-delimited rows with entity_ids
+- **explore_rpg**: Trace dependency chains. Use `format="compact"` for pipe-delimited rows with entity_ids. Edge filter values: `imports`, `invokes`, `inherits`, `composes`, `renders`, `reads_state`, `writes_state`, `dispatches`, `data_flow`, `contains`
 - **context_pack**: Single-call search+fetch+explore. Searches, fetches source, expands neighbors, trims to token budget
-- **impact_radius**: BFS reachability with edge paths. Answers "what depends on X?" in one call
+- **impact_radius**: BFS reachability with edge paths. Answers "what depends on X?" in one call. Traverses DataFlow edges for data lineage analysis
 - **plan_change**: Change planning — find relevant entities, dependency-safe modification order, impact radius, and related tests
-- **rpg_info**: Get codebase overview and statistics
+- **rpg_info**: Get codebase overview, statistics, and inter-area connectivity
 - **update_rpg**: Incrementally update after code changes
 - **reload_rpg**: Reload graph from disk

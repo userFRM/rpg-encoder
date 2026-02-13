@@ -4,6 +4,7 @@
 //! ExploreRPG (dependency traversal), and TOON serialization for LLM-optimized output.
 
 pub mod context;
+pub mod dataflow;
 pub mod diff;
 #[cfg(feature = "embeddings")]
 pub mod embeddings;

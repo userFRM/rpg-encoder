@@ -197,6 +197,7 @@ fn is_dependency_edge(kind: EdgeKind) -> bool {
             | EdgeKind::ReadsState
             | EdgeKind::WritesState
             | EdgeKind::Dispatches
+            | EdgeKind::DataFlow
     )
 }
 

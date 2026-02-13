@@ -1,8 +1,22 @@
 //! Extract code entities (functions, classes, methods) from AST.
 
 use crate::languages::Language;
-use rpg_core::graph::{Entity, EntityDeps, EntityKind};
+use rpg_core::graph::{Entity, EntityDeps, EntityKind, Param, Signature};
 use std::path::Path;
+
+/// A raw parameter extracted from AST.
+#[derive(Debug, Clone)]
+pub struct RawParam {
+    pub name: String,
+    pub type_annotation: Option<String>,
+}
+
+/// A raw function/method signature extracted from AST.
+#[derive(Debug, Clone, Default)]
+pub struct RawSignature {
+    pub parameters: Vec<RawParam>,
+    pub return_type: Option<String>,
+}
 
 /// A raw extracted entity before semantic enrichment.
 #[derive(Debug, Clone)]
@@ -14,6 +28,7 @@ pub struct RawEntity {
     pub line_end: usize,
     pub parent_class: Option<String>,
     pub source_text: String,
+    pub signature: Option<RawSignature>,
 }
 
 impl RawEntity {
@@ -28,6 +43,17 @@ impl RawEntity {
     /// Convert to a full Entity (with empty semantic features and deps).
     pub fn into_entity(self) -> Entity {
         let id = self.id();
+        let signature = self.signature.map(|sig| Signature {
+            parameters: sig
+                .parameters
+                .into_iter()
+                .map(|p| Param {
+                    name: p.name,
+                    type_annotation: p.type_annotation,
+                })
+                .collect(),
+            return_type: sig.return_type,
+        });
         Entity {
             id,
             kind: self.kind,
@@ -40,6 +66,7 @@ impl RawEntity {
             feature_source: None,
             hierarchy_path: String::new(),
             deps: EntityDeps::default(),
+            signature,
         }
     }
 }
@@ -86,6 +113,7 @@ fn extract_python_node(
                         line_end: child.end_position().row + 1,
                         parent_class: parent_class.map(String::from),
                         source_text: source[child.byte_range()].to_string(),
+                        signature: extract_python_signature(&child, source),
                     });
                 }
             }
@@ -105,6 +133,7 @@ fn extract_python_node(
                         line_end: child.end_position().row + 1,
                         parent_class: None,
                         source_text: source[child.byte_range()].to_string(),
+                        signature: None,
                     });
                     // Recurse into class body for methods
                     if let Some(body) = child.child_by_field_name("body") {
@@ -163,6 +192,7 @@ fn extract_rust_node(
                         line_end: child.end_position().row + 1,
                         parent_class: parent_struct.map(String::from),
                         source_text: source[child.byte_range()].to_string(),
+                        signature: extract_rust_signature(&child, source),
                     });
                 }
             }
@@ -177,6 +207,7 @@ fn extract_rust_node(
                         line_end: child.end_position().row + 1,
                         parent_class: None,
                         source_text: source[child.byte_range()].to_string(),
+                        signature: None,
                     });
                 }
             }
@@ -200,6 +231,7 @@ fn extract_rust_node(
                         line_end: child.end_position().row + 1,
                         parent_class: None,
                         source_text: source[child.byte_range()].to_string(),
+                        signature: None,
                     });
                     // Recurse into trait body for default method implementations
                     if let Some(body) = child.child_by_field_name("body") {
@@ -290,6 +322,7 @@ fn extract_js_node(
                         line_end: child.end_position().row + 1,
                         parent_class: parent_class.map(String::from),
                         source_text: source[child.byte_range()].to_string(),
+                        signature: extract_js_signature(&child, source),
                     });
                 }
             }
@@ -310,6 +343,7 @@ fn extract_js_node(
                         line_end: child.end_position().row + 1,
                         parent_class: None,
                         source_text: source[child.byte_range()].to_string(),
+                        signature: None,
                     });
                     if let Some(body) = child.child_by_field_name("body") {
                         extract_js_node(&body, path, source, Some(class_name), entities);
@@ -328,6 +362,7 @@ fn extract_js_node(
                         line_end: child.end_position().row + 1,
                         parent_class: None,
                         source_text: source[child.byte_range()].to_string(),
+                        signature: None,
                     });
                 }
             }
@@ -342,6 +377,7 @@ fn extract_js_node(
                         line_end: child.end_position().row + 1,
                         parent_class: parent_class.map(String::from),
                         source_text: source[child.byte_range()].to_string(),
+                        signature: extract_js_signature(&child, source),
                     });
                 }
             }
@@ -379,6 +415,7 @@ fn extract_js_node(
                                 line_end: child.end_position().row + 1,
                                 parent_class: parent_class.map(String::from),
                                 source_text: source[child.byte_range()].to_string(),
+                                signature: None,
                             });
                         } else if let Some(name_node) = decl.child_by_field_name("name") {
                             let name_kind = name_node.kind();
@@ -405,6 +442,7 @@ fn extract_js_node(
                                     line_end: child.end_position().row + 1,
                                     parent_class: parent_class.map(String::from),
                                     source_text: source[child.byte_range()].to_string(),
+                                    signature: None,
                                 });
                             } else {
                                 let name = &source[name_node.byte_range()];
@@ -417,6 +455,7 @@ fn extract_js_node(
                                         line_end: decl.end_position().row + 1,
                                         parent_class: parent_class.map(String::from),
                                         source_text: decl_source.to_string(),
+                                        signature: None,
                                     });
                                     // Extract createSlice reducer keys as child entities
                                     if decl_source.contains("createSlice(") {
@@ -603,6 +642,7 @@ fn extract_create_slice_reducers(
                     line_end: child.end_position().row + 1,
                     parent_class: Some(slice_name.to_string()),
                     source_text: source[child.byte_range()].to_string(),
+                    signature: None,
                 });
             }
         }
@@ -659,6 +699,7 @@ fn extract_destructured_hooks(
                 line_end: outer_decl.end_position().row + 1,
                 parent_class: parent_class.map(String::from),
                 source_text: source[outer_decl.byte_range()].to_string(),
+                signature: None,
             });
         }
     }
@@ -694,6 +735,7 @@ pub fn extract_go_entities(path: &Path, source: &str) -> Vec<RawEntity> {
                         line_end: child.end_position().row + 1,
                         parent_class: None,
                         source_text: source[child.byte_range()].to_string(),
+                        signature: extract_go_signature(&child, source),
                     });
                 }
             }
@@ -723,6 +765,7 @@ pub fn extract_go_entities(path: &Path, source: &str) -> Vec<RawEntity> {
                         line_end: child.end_position().row + 1,
                         parent_class: receiver,
                         source_text: source[child.byte_range()].to_string(),
+                        signature: extract_go_signature(&child, source),
                     });
                 }
             }
@@ -742,6 +785,7 @@ pub fn extract_go_entities(path: &Path, source: &str) -> Vec<RawEntity> {
                             line_end: spec.end_position().row + 1,
                             parent_class: None,
                             source_text: source[spec.byte_range()].to_string(),
+                            signature: None,
                         });
                     }
                 }
@@ -796,6 +840,7 @@ fn extract_java_node(
                         line_end: child.end_position().row + 1,
                         parent_class: parent_class.map(String::from),
                         source_text: source[child.byte_range()].to_string(),
+                        signature: None,
                     });
                     if let Some(body) = child.child_by_field_name("body") {
                         extract_java_node(&body, path, source, Some(class_name), entities);
@@ -813,6 +858,7 @@ fn extract_java_node(
                         line_end: child.end_position().row + 1,
                         parent_class: parent_class.map(String::from),
                         source_text: source[child.byte_range()].to_string(),
+                        signature: extract_java_signature(&child, source),
                     });
                 }
             }
@@ -880,6 +926,7 @@ fn extract_c_node(
                         line_end: child.end_position().row + 1,
                         parent_class: parent_class.map(String::from),
                         source_text: source[child.byte_range()].to_string(),
+                        signature: extract_c_signature(&child, source),
                     });
                 }
             }
@@ -894,6 +941,7 @@ fn extract_c_node(
                         line_end: child.end_position().row + 1,
                         parent_class: None,
                         source_text: source[child.byte_range()].to_string(),
+                        signature: None,
                     });
                     // C++: recurse into class/struct body for methods
                     if lang == Language::CPP
@@ -981,6 +1029,7 @@ fn extract_csharp_node(
                         line_end: child.end_position().row + 1,
                         parent_class: parent_class.map(String::from),
                         source_text: source[child.byte_range()].to_string(),
+                        signature: None,
                     });
                     if let Some(body) = child.child_by_field_name("body") {
                         extract_csharp_node(&body, path, source, Some(class_name), entities);
@@ -998,6 +1047,7 @@ fn extract_csharp_node(
                         line_end: child.end_position().row + 1,
                         parent_class: parent_class.map(String::from),
                         source_text: source[child.byte_range()].to_string(),
+                        signature: extract_csharp_signature(&child, source),
                     });
                 }
             }
@@ -1056,6 +1106,7 @@ fn extract_php_node(
                         line_end: child.end_position().row + 1,
                         parent_class: parent_class.map(String::from),
                         source_text: source[child.byte_range()].to_string(),
+                        signature: None,
                     });
                     if let Some(body) = child.child_by_field_name("body") {
                         extract_php_node(&body, path, source, Some(class_name), entities);
@@ -1073,6 +1124,7 @@ fn extract_php_node(
                         line_end: child.end_position().row + 1,
                         parent_class: parent_class.map(String::from),
                         source_text: source[child.byte_range()].to_string(),
+                        signature: None,
                     });
                 }
             }
@@ -1087,6 +1139,7 @@ fn extract_php_node(
                         line_end: child.end_position().row + 1,
                         parent_class: parent_class.map(String::from),
                         source_text: source[child.byte_range()].to_string(),
+                        signature: None,
                     });
                 }
             }
@@ -1137,6 +1190,7 @@ fn extract_ruby_node(
                         line_end: child.end_position().row + 1,
                         parent_class: parent_class.map(String::from),
                         source_text: source[child.byte_range()].to_string(),
+                        signature: None,
                     });
                     // Recurse into class/module body for methods
                     if let Some(body) = child.child_by_field_name("body") {
@@ -1160,6 +1214,7 @@ fn extract_ruby_node(
                         line_end: child.end_position().row + 1,
                         parent_class: parent_class.map(String::from),
                         source_text: source[child.byte_range()].to_string(),
+                        signature: None,
                     });
                 }
             }
@@ -1174,6 +1229,7 @@ fn extract_ruby_node(
                         line_end: child.end_position().row + 1,
                         parent_class: parent_class.map(String::from),
                         source_text: source[child.byte_range()].to_string(),
+                        signature: None,
                     });
                 }
             }
@@ -1224,6 +1280,7 @@ fn extract_kotlin_node(
                         line_end: child.end_position().row + 1,
                         parent_class: parent_class.map(String::from),
                         source_text: source[child.byte_range()].to_string(),
+                        signature: None,
                     });
                     // kotlin-ng uses "class_body" / "enum_class_body" child nodes (not a "body" field)
                     let body = child.child_by_field_name("body").or_else(|| {
@@ -1253,6 +1310,7 @@ fn extract_kotlin_node(
                         line_end: child.end_position().row + 1,
                         parent_class: parent_class.map(String::from),
                         source_text: source[child.byte_range()].to_string(),
+                        signature: None,
                     });
                 }
             }
@@ -1306,6 +1364,7 @@ fn extract_swift_node(
                         line_end: child.end_position().row + 1,
                         parent_class: parent_class.map(String::from),
                         source_text: source[child.byte_range()].to_string(),
+                        signature: None,
                     });
                     if let Some(body) = child.child_by_field_name("body") {
                         extract_swift_node(&body, path, source, Some(class_name), entities);
@@ -1328,6 +1387,7 @@ fn extract_swift_node(
                         line_end: child.end_position().row + 1,
                         parent_class: parent_class.map(String::from),
                         source_text: source[child.byte_range()].to_string(),
+                        signature: None,
                     });
                 }
             }
@@ -1341,6 +1401,7 @@ fn extract_swift_node(
                     line_end: child.end_position().row + 1,
                     parent_class: parent_class.map(String::from),
                     source_text: source[child.byte_range()].to_string(),
+                    signature: None,
                 });
             }
             "extension_declaration" => {
@@ -1400,6 +1461,7 @@ fn extract_scala_node(
                         line_end: child.end_position().row + 1,
                         parent_class: parent_class.map(String::from),
                         source_text: source[child.byte_range()].to_string(),
+                        signature: None,
                     });
                     if let Some(body) = child.child_by_field_name("body") {
                         extract_scala_node(&body, path, source, Some(class_name), entities);
@@ -1422,6 +1484,7 @@ fn extract_scala_node(
                         line_end: child.end_position().row + 1,
                         parent_class: parent_class.map(String::from),
                         source_text: source[child.byte_range()].to_string(),
+                        signature: None,
                     });
                 }
             }
@@ -1477,10 +1540,408 @@ fn extract_bash_node(
                     line_end: child.end_position().row + 1,
                     parent_class: None,
                     source_text: source[child.byte_range()].to_string(),
+                    signature: None,
                 });
             }
         } else {
             extract_bash_node(&child, path, source, entities);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Signature extraction helpers
+// ---------------------------------------------------------------------------
+
+/// Extract signature from a Rust function_item node.
+pub fn extract_rust_signature(node: &tree_sitter::Node, source: &str) -> Option<RawSignature> {
+    if !matches!(node.kind(), "function_item") {
+        return None;
+    }
+    let params_node = node.child_by_field_name("parameters")?;
+    let mut params = Vec::new();
+    let mut cursor = params_node.walk();
+    for child in params_node.children(&mut cursor) {
+        if child.kind() == "parameter" {
+            let text = &source[child.byte_range()];
+            // Skip self/&self/&mut self
+            let trimmed = text.trim();
+            if trimmed == "self"
+                || trimmed == "&self"
+                || trimmed == "&mut self"
+                || trimmed.starts_with("self:")
+            {
+                continue;
+            }
+            // pattern: type  or  pattern  (Rust uses name: Type)
+            if let Some((name_part, type_part)) = text.split_once(':') {
+                params.push(RawParam {
+                    name: name_part.trim().to_string(),
+                    type_annotation: Some(type_part.trim().to_string()),
+                });
+            } else {
+                params.push(RawParam {
+                    name: text.trim().to_string(),
+                    type_annotation: None,
+                });
+            }
+        }
+    }
+    let return_type = node.child_by_field_name("return_type").map(|rt| {
+        source[rt.byte_range()]
+            .trim_start_matches("->")
+            .trim()
+            .to_string()
+    });
+    Some(RawSignature {
+        parameters: params,
+        return_type,
+    })
+}
+
+/// Extract signature from a Python function_definition node.
+pub fn extract_python_signature(node: &tree_sitter::Node, source: &str) -> Option<RawSignature> {
+    if !matches!(node.kind(), "function_definition") {
+        return None;
+    }
+    let params_node = node.child_by_field_name("parameters")?;
+    let mut params = Vec::new();
+    let mut cursor = params_node.walk();
+    for child in params_node.children(&mut cursor) {
+        match child.kind() {
+            "identifier" => {
+                let name = &source[child.byte_range()];
+                if name == "self" || name == "cls" {
+                    continue;
+                }
+                params.push(RawParam {
+                    name: name.to_string(),
+                    type_annotation: None,
+                });
+            }
+            "typed_parameter" => {
+                // Python typed_parameter: name is first identifier child (no "name" field)
+                let name = child
+                    .child(0)
+                    .filter(|n| n.kind() == "identifier")
+                    .map(|n| source[n.byte_range()].to_string());
+                if let Some(ref n) = name
+                    && (n == "self" || n == "cls")
+                {
+                    continue;
+                }
+                let type_ann = child
+                    .child_by_field_name("type")
+                    .map(|t| source[t.byte_range()].to_string());
+                if let Some(name) = name {
+                    params.push(RawParam {
+                        name,
+                        type_annotation: type_ann,
+                    });
+                }
+            }
+            "default_parameter" | "typed_default_parameter" => {
+                let name = child
+                    .child_by_field_name("name")
+                    .or_else(|| child.child(0).filter(|n| n.kind() == "identifier"))
+                    .map(|n| source[n.byte_range()].to_string());
+                if let Some(ref n) = name
+                    && (n == "self" || n == "cls")
+                {
+                    continue;
+                }
+                let type_ann = child
+                    .child_by_field_name("type")
+                    .map(|t| source[t.byte_range()].to_string());
+                if let Some(name) = name {
+                    params.push(RawParam {
+                        name,
+                        type_annotation: type_ann,
+                    });
+                }
+            }
+            // *args
+            "list_splat_pattern" => {
+                let name = child
+                    .child(1)
+                    .filter(|n| n.kind() == "identifier")
+                    .map(|n| format!("*{}", &source[n.byte_range()]));
+                if let Some(name) = name {
+                    params.push(RawParam {
+                        name,
+                        type_annotation: None,
+                    });
+                }
+            }
+            // **kwargs
+            "dictionary_splat_pattern" => {
+                let name = child
+                    .child(1)
+                    .filter(|n| n.kind() == "identifier")
+                    .map(|n| format!("**{}", &source[n.byte_range()]));
+                if let Some(name) = name {
+                    params.push(RawParam {
+                        name,
+                        type_annotation: None,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    let return_type = node
+        .child_by_field_name("return_type")
+        .map(|rt| source[rt.byte_range()].to_string());
+    Some(RawSignature {
+        parameters: params,
+        return_type,
+    })
+}
+
+/// Extract signature from a JS/TS function_declaration, method_definition, or arrow_function.
+pub fn extract_js_signature(node: &tree_sitter::Node, source: &str) -> Option<RawSignature> {
+    // Find formal_parameters (may be direct child or via field)
+    let params_node = node.child_by_field_name("parameters").or_else(|| {
+        let mut c = node.walk();
+        node.children(&mut c)
+            .find(|n| n.kind() == "formal_parameters")
+    })?;
+    let mut params = Vec::new();
+    let mut cursor = params_node.walk();
+    for child in params_node.children(&mut cursor) {
+        match child.kind() {
+            "identifier" => {
+                params.push(RawParam {
+                    name: source[child.byte_range()].to_string(),
+                    type_annotation: None,
+                });
+            }
+            "required_parameter" | "optional_parameter" => {
+                let name = child
+                    .child_by_field_name("pattern")
+                    .or_else(|| child.child_by_field_name("name"))
+                    .map(|n| source[n.byte_range()].to_string());
+                let type_ann = child.child_by_field_name("type").map(|t| {
+                    source[t.byte_range()]
+                        .trim_start_matches(':')
+                        .trim()
+                        .to_string()
+                });
+                if let Some(name) = name {
+                    params.push(RawParam {
+                        name,
+                        type_annotation: type_ann,
+                    });
+                }
+            }
+            // Simple parameter with type annotation
+            "assignment_pattern" => {
+                if let Some(left) = child.child_by_field_name("left") {
+                    params.push(RawParam {
+                        name: source[left.byte_range()].to_string(),
+                        type_annotation: None,
+                    });
+                }
+            }
+            // ...rest parameter (JS: rest_pattern, TS: rest_parameter)
+            "rest_parameter" | "rest_pattern" => {
+                let name = child
+                    .child_by_field_name("pattern")
+                    .or_else(|| child.child_by_field_name("name"))
+                    .or_else(|| {
+                        // Fallback: find first identifier child after "..."
+                        let mut gc = child.walk();
+                        child.children(&mut gc).find(|n| n.kind() == "identifier")
+                    })
+                    .map(|n| format!("...{}", &source[n.byte_range()]));
+                let type_ann = child.child_by_field_name("type").map(|t| {
+                    source[t.byte_range()]
+                        .trim_start_matches(':')
+                        .trim()
+                        .to_string()
+                });
+                if let Some(name) = name {
+                    params.push(RawParam {
+                        name,
+                        type_annotation: type_ann,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    // Return type (TS only — type_annotation child on the function)
+    let return_type = node.child_by_field_name("return_type").map(|rt| {
+        source[rt.byte_range()]
+            .trim_start_matches(':')
+            .trim()
+            .to_string()
+    });
+    Some(RawSignature {
+        parameters: params,
+        return_type,
+    })
+}
+
+/// Extract signature from a Go function_declaration or method_declaration.
+pub fn extract_go_signature(node: &tree_sitter::Node, source: &str) -> Option<RawSignature> {
+    let params_node = node.child_by_field_name("parameters")?;
+    let mut params = Vec::new();
+    let mut cursor = params_node.walk();
+    for child in params_node.children(&mut cursor) {
+        if child.kind() == "parameter_declaration" {
+            let type_ann = child
+                .child_by_field_name("type")
+                .map(|t| source[t.byte_range()].to_string());
+            // Go allows grouped params: `func foo(a, b int)` → multiple name children
+            let mut gc = child.walk();
+            let names: Vec<String> = child
+                .children(&mut gc)
+                .filter(|n| n.kind() == "identifier")
+                .map(|n| source[n.byte_range()].to_string())
+                .collect();
+            if names.is_empty() {
+                // Fallback to field-based access
+                if let Some(name) = child
+                    .child_by_field_name("name")
+                    .map(|n| source[n.byte_range()].to_string())
+                {
+                    params.push(RawParam {
+                        name,
+                        type_annotation: type_ann,
+                    });
+                }
+            } else {
+                for name in names {
+                    params.push(RawParam {
+                        name,
+                        type_annotation: type_ann.clone(),
+                    });
+                }
+            }
+        }
+    }
+    let return_type = node
+        .child_by_field_name("result")
+        .map(|rt| source[rt.byte_range()].to_string());
+    Some(RawSignature {
+        parameters: params,
+        return_type,
+    })
+}
+
+/// Extract signature from a Java method_declaration or constructor_declaration.
+pub fn extract_java_signature(node: &tree_sitter::Node, source: &str) -> Option<RawSignature> {
+    let params_node = node.child_by_field_name("parameters")?;
+    let mut params = Vec::new();
+    let mut cursor = params_node.walk();
+    for child in params_node.children(&mut cursor) {
+        if child.kind() == "formal_parameter" || child.kind() == "spread_parameter" {
+            let name = child
+                .child_by_field_name("name")
+                .map(|n| source[n.byte_range()].to_string());
+            let type_ann = child
+                .child_by_field_name("type")
+                .map(|t| source[t.byte_range()].to_string());
+            if let Some(name) = name {
+                params.push(RawParam {
+                    name,
+                    type_annotation: type_ann,
+                });
+            }
+        }
+    }
+    // Return type: the `type` field on the method_declaration
+    let return_type = node
+        .child_by_field_name("type")
+        .map(|t| source[t.byte_range()].to_string());
+    Some(RawSignature {
+        parameters: params,
+        return_type,
+    })
+}
+
+/// Extract signature from a C/C++ function_definition.
+pub fn extract_c_signature(node: &tree_sitter::Node, source: &str) -> Option<RawSignature> {
+    if node.kind() != "function_definition" {
+        return None;
+    }
+    // Return type is the `type` field on the function_definition
+    let return_type = node
+        .child_by_field_name("type")
+        .map(|t| source[t.byte_range()].to_string());
+    // Parameters: declarator → parameter_list
+    let declarator = node.child_by_field_name("declarator")?;
+    let param_list = find_child_kind(&declarator, "parameter_list")?;
+    let mut params = Vec::new();
+    let mut cursor = param_list.walk();
+    for child in param_list.children(&mut cursor) {
+        if child.kind() == "parameter_declaration" {
+            let type_ann = child
+                .child_by_field_name("type")
+                .map(|t| source[t.byte_range()].to_string());
+            let name = child.child_by_field_name("declarator").map(|d| {
+                source[d.byte_range()]
+                    .trim_start_matches('*')
+                    .trim()
+                    .to_string()
+            });
+            if let Some(name) = name {
+                params.push(RawParam {
+                    name,
+                    type_annotation: type_ann,
+                });
+            }
+        }
+    }
+    Some(RawSignature {
+        parameters: params,
+        return_type,
+    })
+}
+
+/// Extract signature from a C# method_declaration or constructor_declaration.
+pub fn extract_csharp_signature(node: &tree_sitter::Node, source: &str) -> Option<RawSignature> {
+    let params_node = node.child_by_field_name("parameters")?;
+    let mut params = Vec::new();
+    let mut cursor = params_node.walk();
+    for child in params_node.children(&mut cursor) {
+        if child.kind() == "parameter" {
+            let name = child
+                .child_by_field_name("name")
+                .map(|n| source[n.byte_range()].to_string());
+            let type_ann = child
+                .child_by_field_name("type")
+                .map(|t| source[t.byte_range()].to_string());
+            if let Some(name) = name {
+                params.push(RawParam {
+                    name,
+                    type_annotation: type_ann,
+                });
+            }
+        }
+    }
+    // C# grammar uses "returns" field, not "type", for method return type
+    let return_type = node
+        .child_by_field_name("returns")
+        .or_else(|| node.child_by_field_name("type"))
+        .map(|t| source[t.byte_range()].to_string());
+    Some(RawSignature {
+        parameters: params,
+        return_type,
+    })
+}
+
+/// Find the first child of a specific kind (helper for C signature extraction).
+fn find_child_kind<'a>(node: &tree_sitter::Node<'a>, kind: &str) -> Option<tree_sitter::Node<'a>> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == kind {
+            return Some(child);
+        }
+        if let Some(found) = find_child_kind(&child, kind) {
+            return Some(found);
+        }
+    }
+    None
 }

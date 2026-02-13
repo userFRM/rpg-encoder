@@ -8,7 +8,7 @@ use crate::graph::RPGraph;
 use anyhow::{Context, Result};
 use semver::Version;
 
-const CURRENT_VERSION: &str = "2.0.0";
+const CURRENT_VERSION: &str = "2.1.0";
 
 /// Validate an RPGraph's schema version using semver compatibility.
 ///

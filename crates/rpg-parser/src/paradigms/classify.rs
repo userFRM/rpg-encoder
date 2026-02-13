@@ -162,6 +162,7 @@ mod tests {
             line_end: 10,
             parent_class: None,
             source_text: source.to_string(),
+            signature: None,
         }
     }
 

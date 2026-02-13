@@ -204,18 +204,7 @@ impl RpgServer {
             _ => 2, // Default
         };
 
-        let edge_filter = params.edge_filter.as_deref().and_then(|f| match f {
-            "imports" => Some(rpg_core::graph::EdgeKind::Imports),
-            "invokes" => Some(rpg_core::graph::EdgeKind::Invokes),
-            "inherits" => Some(rpg_core::graph::EdgeKind::Inherits),
-            "composes" => Some(rpg_core::graph::EdgeKind::Composes),
-            "renders" => Some(rpg_core::graph::EdgeKind::Renders),
-            "reads_state" => Some(rpg_core::graph::EdgeKind::ReadsState),
-            "writes_state" => Some(rpg_core::graph::EdgeKind::WritesState),
-            "dispatches" => Some(rpg_core::graph::EdgeKind::Dispatches),
-            "contains" => Some(rpg_core::graph::EdgeKind::Contains),
-            _ => None,
-        });
+        let edge_filter = params.edge_filter.as_deref().and_then(parse_edge_filter);
 
         let entity_type_filter = params
             .entity_type_filter
@@ -297,11 +286,19 @@ impl RpgServer {
         } else {
             "\nembedding_index: not initialized (will load on first semantic search)".to_string()
         };
+        let area_invocations = rpg_nav::dataflow::compute_area_invocations(graph);
+        let area_text = rpg_nav::dataflow::format_area_invocations(&area_invocations);
+        let area_section = if area_text.is_empty() {
+            String::new()
+        } else {
+            format!("\n{}", area_text)
+        };
         Ok(format!(
-            "{}{}{}",
+            "{}{}{}{}",
             notice,
             rpg_nav::toon::format_rpg_info(graph),
             emb_status,
+            area_section,
         ))
     }
 
@@ -534,6 +531,9 @@ impl RpgServer {
         } else {
             None
         };
+
+        // Compute DataFlow edges after merge_features (which may restore signatures)
+        rpg_encoder::dataflow::compute_data_flow_edges(&mut graph);
 
         // Refresh metadata and save
         graph.refresh_metadata();
@@ -2311,18 +2311,7 @@ impl RpgServer {
             _ => 3,
         };
 
-        let edge_filter = params.edge_filter.as_deref().and_then(|f| match f {
-            "imports" => Some(rpg_core::graph::EdgeKind::Imports),
-            "invokes" => Some(rpg_core::graph::EdgeKind::Invokes),
-            "inherits" => Some(rpg_core::graph::EdgeKind::Inherits),
-            "composes" => Some(rpg_core::graph::EdgeKind::Composes),
-            "renders" => Some(rpg_core::graph::EdgeKind::Renders),
-            "reads_state" => Some(rpg_core::graph::EdgeKind::ReadsState),
-            "writes_state" => Some(rpg_core::graph::EdgeKind::WritesState),
-            "dispatches" => Some(rpg_core::graph::EdgeKind::Dispatches),
-            "contains" => Some(rpg_core::graph::EdgeKind::Contains),
-            _ => None,
-        });
+        let edge_filter = params.edge_filter.as_deref().and_then(parse_edge_filter);
 
         let max_results = params.max_results.or(Some(100));
 
@@ -2373,6 +2362,7 @@ impl RpgServer {
             "reads_state" => Some(rpg_core::graph::EdgeKind::ReadsState),
             "writes_state" => Some(rpg_core::graph::EdgeKind::WritesState),
             "dispatches" => Some(rpg_core::graph::EdgeKind::Dispatches),
+            "data_flow" => Some(rpg_core::graph::EdgeKind::DataFlow),
             _ => None,
         });
 
@@ -2870,5 +2860,51 @@ impl RpgServer {
     /// Needed because the macro generates a private method, but `new()` lives in server.rs.
     pub(crate) fn create_tool_router() -> rmcp::handler::server::router::tool::ToolRouter<Self> {
         Self::tool_router()
+    }
+}
+
+/// Parse an edge_filter string into an EdgeKind. Exposed for testing.
+pub fn parse_edge_filter(filter: &str) -> Option<rpg_core::graph::EdgeKind> {
+    match filter {
+        "imports" => Some(rpg_core::graph::EdgeKind::Imports),
+        "invokes" => Some(rpg_core::graph::EdgeKind::Invokes),
+        "inherits" => Some(rpg_core::graph::EdgeKind::Inherits),
+        "composes" => Some(rpg_core::graph::EdgeKind::Composes),
+        "renders" => Some(rpg_core::graph::EdgeKind::Renders),
+        "reads_state" => Some(rpg_core::graph::EdgeKind::ReadsState),
+        "writes_state" => Some(rpg_core::graph::EdgeKind::WritesState),
+        "dispatches" => Some(rpg_core::graph::EdgeKind::Dispatches),
+        "data_flow" => Some(rpg_core::graph::EdgeKind::DataFlow),
+        "contains" => Some(rpg_core::graph::EdgeKind::Contains),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rpg_core::graph::EdgeKind;
+
+    #[test]
+    fn test_parse_edge_filter_data_flow() {
+        assert_eq!(parse_edge_filter("data_flow"), Some(EdgeKind::DataFlow));
+    }
+
+    #[test]
+    fn test_parse_edge_filter_all_kinds() {
+        assert_eq!(parse_edge_filter("imports"), Some(EdgeKind::Imports));
+        assert_eq!(parse_edge_filter("invokes"), Some(EdgeKind::Invokes));
+        assert_eq!(parse_edge_filter("inherits"), Some(EdgeKind::Inherits));
+        assert_eq!(parse_edge_filter("composes"), Some(EdgeKind::Composes));
+        assert_eq!(parse_edge_filter("renders"), Some(EdgeKind::Renders));
+        assert_eq!(parse_edge_filter("reads_state"), Some(EdgeKind::ReadsState));
+        assert_eq!(
+            parse_edge_filter("writes_state"),
+            Some(EdgeKind::WritesState)
+        );
+        assert_eq!(parse_edge_filter("dispatches"), Some(EdgeKind::Dispatches));
+        assert_eq!(parse_edge_filter("data_flow"), Some(EdgeKind::DataFlow));
+        assert_eq!(parse_edge_filter("contains"), Some(EdgeKind::Contains));
+        assert_eq!(parse_edge_filter("unknown"), None);
     }
 }

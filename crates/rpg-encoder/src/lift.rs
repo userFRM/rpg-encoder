@@ -474,6 +474,7 @@ mod tests {
             line_end: source.lines().count(),
             parent_class: parent.map(|s| s.to_string()),
             source_text: source.to_string(),
+            signature: None,
         }
     }
 

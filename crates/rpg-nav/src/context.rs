@@ -206,6 +206,24 @@ pub fn format_deps_summary(deps: &rpg_core::graph::EntityDeps) -> String {
         let names: Vec<&str> = deps.renders.iter().take(5).map(|s| s.as_str()).collect();
         parts.push(format!("Renders: {}", names.join(", ")));
     }
+    if !deps.data_flows_to.is_empty() {
+        let names: Vec<&str> = deps
+            .data_flows_to
+            .iter()
+            .take(5)
+            .map(|s| s.as_str())
+            .collect();
+        parts.push(format!("Data flows to: {}", names.join(", ")));
+    }
+    if !deps.data_flows_from.is_empty() {
+        let names: Vec<&str> = deps
+            .data_flows_from
+            .iter()
+            .take(5)
+            .map(|s| s.as_str())
+            .collect();
+        parts.push(format!("Data from: {}", names.join(", ")));
+    }
     parts.join(" | ")
 }
 
@@ -244,6 +262,7 @@ mod tests {
             feature_source: None,
             hierarchy_path: String::new(),
             deps: EntityDeps::default(),
+            signature: None,
         }
     }
 

@@ -82,3 +82,34 @@ fn csharp_record_declaration() {
     let record = entities.iter().find(|e| e.name == "Person").unwrap();
     assert_eq!(record.kind, EntityKind::Class);
 }
+
+#[test]
+fn csharp_signature_typed_params_and_return() {
+    let source = "public class Foo { public bool Compute(int x, string y) { return true; } }";
+    let entities = extract_entities(Path::new("Foo.cs"), source, Language::CSHARP);
+    let method = entities
+        .iter()
+        .find(|e| e.name == "Compute")
+        .expect("should find Compute");
+    let sig = method.signature.as_ref().expect("should have signature");
+    assert_eq!(sig.parameters.len(), 2);
+    assert_eq!(sig.parameters[0].name, "x");
+    assert_eq!(sig.parameters[0].type_annotation.as_deref(), Some("int"));
+    assert_eq!(sig.parameters[1].name, "y");
+    assert_eq!(sig.parameters[1].type_annotation.as_deref(), Some("string"));
+    assert_eq!(sig.return_type.as_deref(), Some("bool"));
+}
+
+#[test]
+fn csharp_signature_void_return() {
+    let source = "public class Foo { public void Greet(string name) { } }";
+    let entities = extract_entities(Path::new("Foo.cs"), source, Language::CSHARP);
+    let method = entities
+        .iter()
+        .find(|e| e.name == "Greet")
+        .expect("should find Greet");
+    let sig = method.signature.as_ref().expect("should have signature");
+    assert_eq!(sig.parameters.len(), 1);
+    assert_eq!(sig.parameters[0].name, "name");
+    assert_eq!(sig.return_type.as_deref(), Some("void"));
+}

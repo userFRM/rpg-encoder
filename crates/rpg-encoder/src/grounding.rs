@@ -117,6 +117,7 @@ pub fn populate_entity_deps(
                     line_end: e.line_end,
                     parent_class: e.parent_class.clone(),
                     source_text: String::new(),
+                    signature: None,
                 })
                 .collect();
 
@@ -230,6 +231,7 @@ fn push_forward_dep(deps: &mut rpg_core::graph::EntityDeps, kind: EdgeKind, call
         EdgeKind::ReadsState => &mut deps.reads_state,
         EdgeKind::WritesState => &mut deps.writes_state,
         EdgeKind::Dispatches => &mut deps.dispatches,
+        EdgeKind::DataFlow => &mut deps.data_flows_to,
         // These edge kinds are not call-like and are handled separately
         EdgeKind::Imports | EdgeKind::Inherits | EdgeKind::Composes | EdgeKind::Contains => return,
     };

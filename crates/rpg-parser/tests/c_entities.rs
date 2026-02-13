@@ -23,6 +23,37 @@ fn test_extract_c_function_with_params() {
 }
 
 #[test]
+fn test_signature_typed_params_and_return() {
+    let source = "int add(int a, int b) { return a + b; }\n";
+    let entities = extract_entities(Path::new("test.c"), source, Language::C);
+    assert_eq!(entities.len(), 1);
+    let sig = entities[0]
+        .signature
+        .as_ref()
+        .expect("should have signature");
+    assert_eq!(sig.parameters.len(), 2);
+    assert_eq!(sig.parameters[0].name, "a");
+    assert_eq!(sig.parameters[0].type_annotation.as_deref(), Some("int"));
+    assert_eq!(sig.parameters[1].name, "b");
+    assert_eq!(sig.parameters[1].type_annotation.as_deref(), Some("int"));
+    assert_eq!(sig.return_type.as_deref(), Some("int"));
+}
+
+#[test]
+fn test_signature_void_return() {
+    let source = "void greet(char* name) { printf(\"%s\", name); }\n";
+    let entities = extract_entities(Path::new("test.c"), source, Language::C);
+    assert_eq!(entities.len(), 1);
+    let sig = entities[0]
+        .signature
+        .as_ref()
+        .expect("should have signature");
+    assert_eq!(sig.parameters.len(), 1);
+    assert_eq!(sig.parameters[0].name, "name");
+    assert_eq!(sig.return_type.as_deref(), Some("void"));
+}
+
+#[test]
 fn test_extract_c_struct() {
     let source = "struct Point { int x; int y; };\n";
     let entities = extract_entities(Path::new("test.c"), source, Language::C);

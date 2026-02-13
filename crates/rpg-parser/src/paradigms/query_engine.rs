@@ -216,6 +216,7 @@ pub fn execute_entity_queries(
                         line_end: cap.node.end_position().row + 1,
                         parent_class,
                         source_text: source[src_range].to_string(),
+                        signature: None,
                     });
                 }
             }

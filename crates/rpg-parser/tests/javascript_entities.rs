@@ -4,6 +4,38 @@ use rpg_parser::languages::Language;
 use std::path::Path;
 
 #[test]
+fn test_signature_function_params_no_types() {
+    let source = "function add(x, y) { return x + y; }";
+    let entities = extract_entities(Path::new("test.js"), source, Language::JAVASCRIPT);
+    assert_eq!(entities.len(), 1);
+    let sig = entities[0]
+        .signature
+        .as_ref()
+        .expect("should have signature");
+    assert_eq!(sig.parameters.len(), 2);
+    assert_eq!(sig.parameters[0].name, "x");
+    assert!(sig.parameters[0].type_annotation.is_none());
+    assert_eq!(sig.parameters[1].name, "y");
+    assert!(sig.parameters[1].type_annotation.is_none());
+    // JS has no return type annotation
+    assert!(sig.return_type.is_none());
+}
+
+#[test]
+fn test_signature_rest_parameter() {
+    let source = "function collect(first, ...rest) { return [first, ...rest]; }";
+    let entities = extract_entities(Path::new("test.js"), source, Language::JAVASCRIPT);
+    assert_eq!(entities.len(), 1);
+    let sig = entities[0]
+        .signature
+        .as_ref()
+        .expect("should have signature");
+    assert_eq!(sig.parameters.len(), 2);
+    assert_eq!(sig.parameters[0].name, "first");
+    assert_eq!(sig.parameters[1].name, "...rest");
+}
+
+#[test]
 fn test_function_declaration() {
     let source = "function hello() { return 1; }";
     let entities = extract_entities(Path::new("test.js"), source, Language::JAVASCRIPT);
