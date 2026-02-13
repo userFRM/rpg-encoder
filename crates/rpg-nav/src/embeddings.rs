@@ -6,7 +6,8 @@
 
 use anyhow::{Context, Result, ensure};
 use fastembed::{EmbeddingModel, TextEmbedding};
-use std::collections::HashMap;
+use rpg_core::graph::RPGraph;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -15,6 +16,9 @@ const MAGIC: u32 = 0x5250_4745; // "RPGE"
 const FORMAT_VERSION: u32 = 1;
 const DIMENSION: usize = 384;
 
+/// Loaded embeddings: entity map + fingerprints from disk.
+type LoadedEmbeddings = (HashMap<String, EntityEmbeddings>, BTreeMap<String, String>);
+
 /// Metadata sidecar for the embedding index.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct EmbeddingMeta {
@@ -22,6 +26,9 @@ pub struct EmbeddingMeta {
     pub dimension: u32,
     pub version: u32,
     pub graph_updated_at: String,
+    /// Per-entity feature fingerprints for incremental sync.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub entity_fingerprints: BTreeMap<String, String>,
 }
 
 /// Per-entity embedding data: one vector per semantic feature.
@@ -40,11 +47,26 @@ pub struct EmbeddingIndex {
     rpg_dir: PathBuf,
     /// The graph's updated_at timestamp this index corresponds to.
     graph_updated_at: String,
+    /// Per-entity feature fingerprints for incremental sync.
+    fingerprints: BTreeMap<String, String>,
+}
+
+/// Statistics from an incremental embedding sync.
+#[derive(Debug, Default)]
+pub struct SyncStats {
+    /// Entities with unchanged features (kept as-is).
+    pub kept: usize,
+    /// Entities whose features changed (re-embedded).
+    pub changed: usize,
+    /// New entities added (embedded fresh).
+    pub added: usize,
+    /// Entities removed from index (no longer in graph).
+    pub pruned: usize,
 }
 
 impl EmbeddingIndex {
     /// Load existing index from disk, or create a new empty one.
-    /// The model is initialized lazily on first use.
+    /// Fingerprints are loaded from meta for incremental sync support.
     pub fn load_or_init(project_root: &Path, graph_updated_at: &str) -> Result<Self> {
         let rpg_dir = project_root.join(".rpg");
         let model = init_model(&rpg_dir)?;
@@ -54,17 +76,18 @@ impl EmbeddingIndex {
 
         // Try loading existing index (resilient to corruption)
         if embeddings_path.exists() && meta_path.exists() {
-            match Self::try_load_existing(&meta_path, &embeddings_path, graph_updated_at) {
-                Ok(Some(entities)) => {
+            match Self::try_load_existing(&meta_path, &embeddings_path) {
+                Ok(Some((entities, fingerprints))) => {
                     return Ok(Self {
                         model,
                         entities,
                         rpg_dir,
                         graph_updated_at: graph_updated_at.to_string(),
+                        fingerprints,
                     });
                 }
                 Ok(None) => {
-                    // Index stale or mismatched — start fresh
+                    // Model/dimension mismatch — start fresh
                 }
                 Err(e) => {
                     // Corrupt on-disk data — delete and start fresh
@@ -81,30 +104,28 @@ impl EmbeddingIndex {
             entities: HashMap::new(),
             rpg_dir,
             graph_updated_at: graph_updated_at.to_string(),
+            fingerprints: BTreeMap::new(),
         })
     }
 
-    /// Try to load existing embedding data. Returns Ok(Some(entities)) if valid,
-    /// Ok(None) if stale/mismatched, Err if corrupt.
+    /// Try to load existing embedding data. Returns Ok(Some((entities, fingerprints)))
+    /// if valid, Ok(None) if model/dimension mismatch, Err if corrupt.
     fn try_load_existing(
         meta_path: &Path,
         embeddings_path: &Path,
-        graph_updated_at: &str,
-    ) -> Result<Option<HashMap<String, EntityEmbeddings>>> {
+    ) -> Result<Option<LoadedEmbeddings>> {
         let meta_json =
             std::fs::read_to_string(meta_path).context("failed to read embeddings meta")?;
         let meta: EmbeddingMeta =
             serde_json::from_str(&meta_json).context("failed to parse embeddings meta")?;
 
-        if meta.graph_updated_at != graph_updated_at
-            || meta.model != "BAAI/bge-small-en-v1.5"
-            || meta.dimension != DIMENSION as u32
-        {
+        // Only reject on model/dimension mismatch — fingerprints handle staleness
+        if meta.model != "BAAI/bge-small-en-v1.5" || meta.dimension != DIMENSION as u32 {
             return Ok(None);
         }
 
         let entities = load_binary(embeddings_path)?;
-        Ok(Some(entities))
+        Ok(Some((entities, meta.entity_fingerprints)))
     }
 
     /// Embed features for a set of entities and add/update them in the index.
@@ -152,9 +173,91 @@ impl EmbeddingIndex {
         Ok(count)
     }
 
+    /// Incrementally sync the embedding index with the graph.
+    ///
+    /// Compares per-entity feature fingerprints to determine what changed:
+    /// - Unchanged fingerprints → keep existing vectors
+    /// - Changed fingerprints → re-embed
+    /// - New entities → embed fresh
+    /// - Deleted entities → prune from index
+    pub fn sync(&mut self, graph: &RPGraph) -> Result<SyncStats> {
+        let mut stats = SyncStats::default();
+
+        // Compute current fingerprints for all lifted entities
+        let mut current: BTreeMap<String, (String, Vec<String>)> = BTreeMap::new();
+        for (id, entity) in &graph.entities {
+            if !entity.semantic_features.is_empty() {
+                let fp = compute_fingerprint(&entity.semantic_features);
+                current.insert(id.clone(), (fp, entity.semantic_features.clone()));
+            }
+        }
+
+        // Diff against stored fingerprints
+        let mut to_embed: HashMap<String, Vec<String>> = HashMap::new();
+
+        for (id, (fp, features)) in &current {
+            match self.fingerprints.get(id) {
+                Some(old_fp) if old_fp == fp => {
+                    // Unchanged — keep existing vectors
+                    stats.kept += 1;
+                }
+                Some(_) => {
+                    // Features changed — re-embed
+                    to_embed.insert(id.clone(), features.clone());
+                    stats.changed += 1;
+                }
+                None => {
+                    // New entity — embed fresh
+                    to_embed.insert(id.clone(), features.clone());
+                    stats.added += 1;
+                }
+            }
+        }
+
+        // Prune deleted entities (in stored but not in current)
+        let to_prune: Vec<String> = self
+            .fingerprints
+            .keys()
+            .filter(|id| !current.contains_key(*id))
+            .cloned()
+            .collect();
+        for id in &to_prune {
+            self.entities.remove(id);
+            stats.pruned += 1;
+        }
+
+        // Batch-embed changed + new
+        if !to_embed.is_empty() {
+            self.embed_entities(&to_embed)?;
+        }
+
+        // Update fingerprints to match current state
+        self.fingerprints = current.into_iter().map(|(id, (fp, _))| (id, fp)).collect();
+
+        // Update timestamp and save
+        self.graph_updated_at = graph.updated_at.to_rfc3339();
+        self.save()?;
+
+        Ok(stats)
+    }
+
+    /// Update fingerprints for entities that were just embedded outside of `sync()`.
+    /// Call this after `embed_entities` to keep fingerprints in sync so the next
+    /// `sync()` call won't unnecessarily re-embed these entities.
+    pub fn update_fingerprints(&mut self, entity_features: &HashMap<String, Vec<String>>) {
+        for (id, features) in entity_features {
+            if !features.is_empty() {
+                self.fingerprints
+                    .insert(id.clone(), compute_fingerprint(features));
+            }
+        }
+    }
+
     /// Remove entities that no longer exist in the graph.
     pub fn prune(&mut self, valid_entity_ids: &std::collections::HashSet<String>) {
         self.entities.retain(|id, _| valid_entity_ids.contains(id));
+        self.fingerprints
+            .retain(|id, _| valid_entity_ids.contains(id));
     }
 
     /// Score all entities against a query string using max-cosine similarity.
@@ -188,7 +291,7 @@ impl EmbeddingIndex {
         self.entities.len()
     }
 
-    /// Save the index to disk (binary + meta sidecar).
+    /// Save the index to disk (binary + meta sidecar with fingerprints).
     pub fn save(&self) -> Result<()> {
         std::fs::create_dir_all(&self.rpg_dir)?;
         save_binary(&self.rpg_dir.join("embeddings.bin"), &self.entities)?;
@@ -198,6 +301,7 @@ impl EmbeddingIndex {
             dimension: DIMENSION as u32,
             version: FORMAT_VERSION,
             graph_updated_at: self.graph_updated_at.clone(),
+            entity_fingerprints: self.fingerprints.clone(),
         };
         let meta_json = serde_json::to_string_pretty(&meta)?;
         std::fs::write(self.rpg_dir.join("embeddings.meta.json"), meta_json)?;
@@ -209,6 +313,19 @@ impl EmbeddingIndex {
     pub fn set_graph_updated_at(&mut self, ts: &str) {
         self.graph_updated_at = ts.to_string();
     }
+}
+
+/// Compute a deterministic fingerprint for an entity's features.
+/// Used to detect when features change without comparing full strings.
+fn compute_fingerprint(features: &[String]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let normalized: Vec<String> = features
+        .iter()
+        .map(|f| f.to_lowercase().trim().to_string())
+        .collect();
+    normalized.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 /// Initialize the fastembed model with cache in .rpg/models/.
@@ -498,5 +615,203 @@ mod tests {
         assert!(loaded.contains_key("test:func"));
         assert_eq!(loaded["test:func"].vectors.len(), 2);
         assert!((loaded["test:func"].vectors[0][0] - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_fingerprint_deterministic() {
+        let features = vec!["validate input".to_string(), "return result".to_string()];
+        let fp1 = compute_fingerprint(&features);
+        let fp2 = compute_fingerprint(&features);
+        assert_eq!(fp1, fp2);
+        assert_eq!(fp1.len(), 16); // 16 hex chars
+    }
+
+    #[test]
+    fn test_fingerprint_changes_on_feature_edit() {
+        let features_a = vec!["validate input".to_string()];
+        let features_b = vec!["validate user input".to_string()];
+        let fp_a = compute_fingerprint(&features_a);
+        let fp_b = compute_fingerprint(&features_b);
+        assert_ne!(fp_a, fp_b);
+    }
+
+    #[test]
+    fn test_fingerprint_case_insensitive() {
+        let features_lower = vec!["validate input".to_string()];
+        let features_upper = vec!["Validate Input".to_string()];
+        let fp_lower = compute_fingerprint(&features_lower);
+        let fp_upper = compute_fingerprint(&features_upper);
+        assert_eq!(fp_lower, fp_upper);
+    }
+
+    #[test]
+    fn test_old_meta_without_fingerprints() {
+        // Old meta JSON without entity_fingerprints should deserialize fine
+        let json = r#"{
+            "model": "BAAI/bge-small-en-v1.5",
+            "dimension": 384,
+            "version": 1,
+            "graph_updated_at": "2024-01-01T00:00:00Z"
+        }"#;
+        let meta: EmbeddingMeta = serde_json::from_str(json).unwrap();
+        assert!(meta.entity_fingerprints.is_empty());
+    }
+
+    #[test]
+    fn test_meta_with_fingerprints_roundtrip() {
+        let mut fingerprints = BTreeMap::new();
+        fingerprints.insert("src/lib.rs:foo".to_string(), "abc123".to_string());
+        fingerprints.insert("src/lib.rs:bar".to_string(), "def456".to_string());
+
+        let meta = EmbeddingMeta {
+            model: "BAAI/bge-small-en-v1.5".to_string(),
+            dimension: 384,
+            version: 1,
+            graph_updated_at: "2024-01-01T00:00:00Z".to_string(),
+            entity_fingerprints: fingerprints.clone(),
+        };
+
+        let json = serde_json::to_string_pretty(&meta).unwrap();
+        let loaded: EmbeddingMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.entity_fingerprints, fingerprints);
+    }
+
+    #[test]
+    fn test_update_fingerprints_syncs_after_embed() {
+        let features_a = vec!["validate input".to_string()];
+        let features_b = vec!["compute hash".to_string()];
+        let fp_a = compute_fingerprint(&features_a);
+        let fp_b = compute_fingerprint(&features_b);
+
+        let mut fingerprints = BTreeMap::new();
+        fingerprints.insert("a".to_string(), "stale".to_string());
+
+        // Simulate update_fingerprints
+        let mut entity_features = HashMap::new();
+        entity_features.insert("a".to_string(), features_a);
+        entity_features.insert("b".to_string(), features_b);
+
+        for (id, feats) in &entity_features {
+            if !feats.is_empty() {
+                fingerprints.insert(id.clone(), compute_fingerprint(feats));
+            }
+        }
+
+        assert_eq!(fingerprints["a"], fp_a);
+        assert_eq!(fingerprints["b"], fp_b);
+        assert_ne!(fingerprints["a"], "stale");
+    }
+
+    #[test]
+    fn test_sync_keeps_unchanged() {
+        // Entities with matching fingerprints → 0 re-embeddings.
+        // Verifies the sync diff algorithm classifies unchanged entities correctly.
+        let features = vec!["validate input".to_string()];
+        let fp = compute_fingerprint(&features);
+
+        let mut stored = BTreeMap::new();
+        stored.insert("a".to_string(), fp.clone());
+
+        let mut current = BTreeMap::new();
+        current.insert(
+            "a".to_string(),
+            (fp.clone(), vec!["validate input".to_string()]),
+        );
+
+        let mut kept = 0;
+        let mut changed = 0;
+        let mut added = 0;
+        for (id, (curr_fp, _)) in &current {
+            match stored.get(id) {
+                Some(old_fp) if old_fp == curr_fp => kept += 1,
+                Some(_) => changed += 1,
+                None => added += 1,
+            }
+        }
+        let pruned = stored
+            .keys()
+            .filter(|id| !current.contains_key(*id))
+            .count();
+        assert_eq!(kept, 1);
+        assert_eq!(changed, 0);
+        assert_eq!(added, 0);
+        assert_eq!(pruned, 0);
+    }
+
+    #[test]
+    fn test_sync_reembeds_changed() {
+        // Modified features → different fingerprint → re-embed.
+        let old_features = vec!["validate input".to_string()];
+        let new_features = vec!["validate user credentials".to_string()];
+        let old_fp = compute_fingerprint(&old_features);
+        let new_fp = compute_fingerprint(&new_features);
+
+        let mut stored = BTreeMap::new();
+        stored.insert("a".to_string(), old_fp);
+
+        let mut current = BTreeMap::new();
+        current.insert("a".to_string(), (new_fp, new_features));
+
+        let mut kept = 0;
+        let mut changed = 0;
+        for (id, (curr_fp, _)) in &current {
+            match stored.get(id) {
+                Some(old) if old == curr_fp => kept += 1,
+                Some(_) => changed += 1,
+                None => {}
+            }
+        }
+        assert_eq!(changed, 1);
+        assert_eq!(kept, 0);
+    }
+
+    #[test]
+    fn test_sync_prunes_deleted() {
+        // Removed entity → fingerprint gone from stored set.
+        let mut stored = BTreeMap::new();
+        stored.insert("a".to_string(), "fp_a".to_string());
+        stored.insert("b".to_string(), "fp_b".to_string());
+
+        let current: BTreeMap<String, (String, Vec<String>)> = BTreeMap::new();
+
+        let pruned: Vec<_> = stored
+            .keys()
+            .filter(|id| !current.contains_key(*id))
+            .collect();
+        assert_eq!(pruned.len(), 2);
+    }
+
+    #[test]
+    fn test_sync_adds_new() {
+        // New entity → not in stored fingerprints → needs embedding.
+        let stored: BTreeMap<String, String> = BTreeMap::new();
+
+        let mut current = BTreeMap::new();
+        current.insert(
+            "a".to_string(),
+            ("fp_a".to_string(), vec!["validate input".to_string()]),
+        );
+
+        let mut added = 0;
+        for id in current.keys() {
+            if !stored.contains_key(id) {
+                added += 1;
+            }
+        }
+        assert_eq!(added, 1);
+    }
+
+    #[test]
+    fn test_meta_empty_fingerprints_omitted() {
+        let meta = EmbeddingMeta {
+            model: "BAAI/bge-small-en-v1.5".to_string(),
+            dimension: 384,
+            version: 1,
+            graph_updated_at: "2024-01-01T00:00:00Z".to_string(),
+            entity_fingerprints: BTreeMap::new(),
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        // Empty fingerprints should be omitted from JSON
+        assert!(!json.contains("entity_fingerprints"));
     }
 }

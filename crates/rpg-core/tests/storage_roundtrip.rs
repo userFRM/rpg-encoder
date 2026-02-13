@@ -13,6 +13,7 @@ fn make_entity(id: &str, name: &str, file: &str) -> Entity {
         line_end: 10,
         parent_class: None,
         semantic_features: vec!["test".to_string()],
+        feature_source: None,
         hierarchy_path: "Area/cat/sub".to_string(),
         deps: EntityDeps::default(),
     }

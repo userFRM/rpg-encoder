@@ -171,3 +171,14 @@ pub(crate) struct SubmitRoutingDecisionsParams {
     /// Graph revision from get_routing_candidates response. Required. Rejects stale decisions.
     pub(crate) graph_revision: String,
 }
+
+/// Parameters for the `plan_change` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct PlanChangeParams {
+    /// The goal or intent of the change (e.g., "add rate limiting to API endpoints")
+    pub(crate) goal: String,
+    /// Optional hierarchy scope to restrict search (e.g., 'Security/auth')
+    pub(crate) scope: Option<String>,
+    /// Maximum number of relevant entities to include (default: 15)
+    pub(crate) max_entities: Option<usize>,
+}

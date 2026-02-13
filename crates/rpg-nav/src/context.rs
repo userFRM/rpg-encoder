@@ -240,6 +240,7 @@ mod tests {
             line_end: 3,
             parent_class: None,
             semantic_features: features.into_iter().map(|s| s.to_string()).collect(),
+            feature_source: None,
             hierarchy_path: String::new(),
             deps: EntityDeps::default(),
         }

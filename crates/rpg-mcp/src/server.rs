@@ -346,21 +346,9 @@ impl RpgServer {
         let updated_at = graph.updated_at.to_rfc3339();
         match rpg_nav::embeddings::EmbeddingIndex::load_or_init(&self.project_root, &updated_at) {
             Ok(mut idx) => {
-                // Backfill: if index is empty but graph has lifted entities, embed them
-                if idx.entity_count() == 0 {
-                    let entity_features: std::collections::HashMap<String, Vec<String>> = graph
-                        .entities
-                        .iter()
-                        .filter(|(_, e)| !e.semantic_features.is_empty())
-                        .map(|(id, e)| (id.clone(), e.semantic_features.clone()))
-                        .collect();
-                    if !entity_features.is_empty() {
-                        if let Err(e) = idx.embed_entities(&entity_features) {
-                            eprintln!("rpg: embedding backfill failed: {e}");
-                        } else if let Err(e) = idx.save() {
-                            eprintln!("rpg: embedding save after backfill failed: {e}");
-                        }
-                    }
+                // Incremental sync: only re-embed entities whose features changed
+                if let Err(e) = idx.sync(graph) {
+                    eprintln!("rpg: embedding sync failed: {e}");
                 }
                 *self.embedding_index.write().await = Some(idx);
             }
@@ -373,6 +361,7 @@ impl RpgServer {
     }
 
     /// Update embeddings for entities that just received new features.
+    /// Also updates fingerprints so that the next `sync()` won't re-embed these.
     pub(crate) async fn update_embeddings(
         &self,
         entity_features: &std::collections::HashMap<String, Vec<String>>,
@@ -385,6 +374,8 @@ impl RpgServer {
                 eprintln!("rpg: embedding update failed: {e}");
                 return;
             }
+            // Update fingerprints for the newly-embedded entities so sync() sees them as current
+            idx.update_fingerprints(entity_features);
             if let Err(e) = idx.save() {
                 eprintln!("rpg: embedding save failed: {e}");
             }

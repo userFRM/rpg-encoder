@@ -961,6 +961,7 @@ fn build_semantic_hierarchy_graph() -> RPGraph {
             line_end: 5,
             parent_class: None,
             semantic_features: feats,
+            feature_source: None,
             hierarchy_path: hier_path.to_string(),
             deps: rpg_core::graph::EntityDeps::default(),
         };
@@ -1050,6 +1051,7 @@ fn test_reroute_entity_moves_in_hierarchy() {
         line_end: 10,
         parent_class: None,
         semantic_features: vec!["authenticate user".to_string()],
+        feature_source: None,
         hierarchy_path: "DataProcessing/loading".to_string(),
         deps: rpg_core::graph::EntityDeps::default(),
     };
@@ -1107,6 +1109,7 @@ fn test_check_drift_and_reroute_below_threshold() {
             "authenticate user".to_string(),
             "validate credentials".to_string(),
         ],
+        feature_source: None,
         hierarchy_path: "Authentication/login".to_string(),
         deps: rpg_core::graph::EntityDeps::default(),
     };
@@ -1147,6 +1150,7 @@ fn test_check_drift_and_reroute_above_threshold() {
         line_end: 10,
         parent_class: None,
         semantic_features: vec!["authenticate user".to_string()],
+        feature_source: None,
         hierarchy_path: "Authentication/login".to_string(),
         deps: rpg_core::graph::EntityDeps::default(),
     };
@@ -1192,6 +1196,7 @@ fn test_route_new_entity_places_in_semantic_hierarchy() {
             "validate credentials".to_string(),
             "authenticate user".to_string(),
         ],
+        feature_source: None,
         hierarchy_path: "src/auth/verify".to_string(), // file-path-based
         deps: rpg_core::graph::EntityDeps::default(),
     };
@@ -1234,6 +1239,7 @@ fn test_route_new_entity_skips_without_semantic_hierarchy() {
         line_end: 5,
         parent_class: None,
         semantic_features: vec!["start application".to_string()],
+        feature_source: None,
         hierarchy_path: "src/main".to_string(),
         deps: rpg_core::graph::EntityDeps::default(),
     };
@@ -1308,6 +1314,7 @@ fn test_check_drift_and_reroute_restores_on_no_match() {
         line_end: 10,
         parent_class: None,
         semantic_features: vec!["authenticate user".to_string()],
+        feature_source: None,
         hierarchy_path: "Authentication".to_string(),
         deps: rpg_core::graph::EntityDeps::default(),
     };

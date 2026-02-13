@@ -79,6 +79,26 @@ pub fn matches_entity(m: &EntityMatch, entity: &RawEntity, file: &Path) -> bool 
         return false;
     }
 
+    // Structural signal filters (max_branches, max_loops, max_calls)
+    if m.max_branches.is_some() || m.max_loops.is_some() || m.max_calls.is_some() {
+        let signals = crate::signals::analyze(&entity.source_text);
+        if let Some(max_br) = m.max_branches
+            && signals.branch_count > max_br
+        {
+            return false;
+        }
+        if let Some(max_lp) = m.max_loops
+            && signals.loop_count > max_lp
+        {
+            return false;
+        }
+        if let Some(max_cl) = m.max_calls
+            && signals.call_count > max_cl
+        {
+            return false;
+        }
+    }
+
     // name_starts_uppercase filter
     if let Some(true) = m.name_starts_uppercase
         && !entity.name.starts_with(|c: char| c.is_ascii_uppercase())
@@ -309,6 +329,71 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let entity = make_entity("long_fn", EntityKind::Function, &long_source, "src/lib.rs");
+        assert!(!matches_entity(&m, &entity, Path::new("src/lib.rs")));
+    }
+
+    #[test]
+    fn test_max_branches_filter() {
+        use crate::paradigms::defs::EntityMatch;
+
+        let m = EntityMatch {
+            max_branches: Some(1),
+            ..EntityMatch::default()
+        };
+
+        // 0 branches should pass
+        let entity = make_entity(
+            "simple",
+            EntityKind::Function,
+            "fn simple() { return 1; }",
+            "src/lib.rs",
+        );
+        assert!(matches_entity(&m, &entity, Path::new("src/lib.rs")));
+
+        // 1 branch should pass
+        let entity = make_entity(
+            "one_branch",
+            EntityKind::Function,
+            "fn one_branch(x: i32) { if x > 0 { return x; } }",
+            "src/lib.rs",
+        );
+        assert!(matches_entity(&m, &entity, Path::new("src/lib.rs")));
+
+        // 2 branches should be rejected
+        let entity = make_entity(
+            "two_branches",
+            EntityKind::Function,
+            "fn two_branches(x: i32) { if x > 0 { return 1; } if x < 0 { return -1; } }",
+            "src/lib.rs",
+        );
+        assert!(!matches_entity(&m, &entity, Path::new("src/lib.rs")));
+    }
+
+    #[test]
+    fn test_max_calls_filter() {
+        use crate::paradigms::defs::EntityMatch;
+
+        let m = EntityMatch {
+            max_calls: Some(2),
+            ..EntityMatch::default()
+        };
+
+        // 1 call should pass
+        let entity = make_entity(
+            "one_call",
+            EntityKind::Function,
+            "fn one_call() { init(); }",
+            "src/lib.rs",
+        );
+        assert!(matches_entity(&m, &entity, Path::new("src/lib.rs")));
+
+        // 4 calls should be rejected (one_call itself + init + configure + start + run)
+        let entity = make_entity(
+            "many_calls",
+            EntityKind::Function,
+            "fn many_calls() { init(); configure(); start(); run(); }",
+            "src/lib.rs",
+        );
         assert!(!matches_entity(&m, &entity, Path::new("src/lib.rs")));
     }
 }

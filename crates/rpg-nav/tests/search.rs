@@ -12,6 +12,7 @@ fn make_entity(id: &str, name: &str, file: &str, features: Vec<&str>, hierarchy:
         line_end: 10,
         parent_class: None,
         semantic_features: features.into_iter().map(String::from).collect(),
+        feature_source: None,
         hierarchy_path: hierarchy.to_string(),
         deps: EntityDeps::default(),
     }

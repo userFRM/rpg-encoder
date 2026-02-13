@@ -8,6 +8,7 @@ pub mod deps;
 pub mod entities;
 pub mod languages;
 pub mod paradigms;
+pub mod signals;
 pub mod treesitter;
 
 use entities::RawEntity;

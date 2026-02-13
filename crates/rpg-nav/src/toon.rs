@@ -742,6 +742,7 @@ mod tests {
                 line_end: 10,
                 parent_class: None,
                 semantic_features: vec!["validate input".to_string()],
+                feature_source: None,
                 hierarchy_path: "Core/util/validate".to_string(),
                 deps: EntityDeps {
                     invokes: vec!["bar".to_string()],
@@ -787,6 +788,7 @@ mod tests {
                 line_end: 20,
                 parent_class: None,
                 semantic_features: vec![],
+                feature_source: None,
                 hierarchy_path: String::new(),
                 deps: EntityDeps::default(),
             },

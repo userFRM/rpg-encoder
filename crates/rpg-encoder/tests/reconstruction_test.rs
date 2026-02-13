@@ -11,6 +11,7 @@ fn entity(id: &str, name: &str, hierarchy_path: &str, kind: EntityKind) -> Entit
         line_end: 2,
         parent_class: None,
         semantic_features: vec![],
+        feature_source: None,
         hierarchy_path: hierarchy_path.to_string(),
         deps: EntityDeps::default(),
     }

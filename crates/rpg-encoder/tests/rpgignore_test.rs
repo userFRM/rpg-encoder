@@ -144,6 +144,7 @@ fn make_test_entity(id: &str, name: &str, file: &str) -> Entity {
         line_end: 10,
         parent_class: None,
         semantic_features: vec![],
+        feature_source: None,
         hierarchy_path: String::new(),
         deps: EntityDeps::default(),
     }

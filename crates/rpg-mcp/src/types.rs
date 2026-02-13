@@ -22,6 +22,8 @@ pub(crate) struct LiftingSession {
     pub(crate) batch_ranges: Vec<(usize, usize)>,
     /// Number of entities auto-lifted during session setup.
     pub(crate) auto_lifted: usize,
+    /// Entities auto-lifted with Review confidence — shown in batch 0 for LLM verification.
+    pub(crate) review_candidates: Vec<(String, Vec<String>)>,
 }
 
 /// An entity pending LLM-based semantic routing.
@@ -69,4 +71,52 @@ pub(crate) fn clear_pending_routing(project_root: &std::path::Path) {
 /// (which stays constant across lift/routing operations).
 pub(crate) fn graph_revision(graph: &RPGraph) -> String {
     graph.updated_at.to_rfc3339()
+}
+
+/// Format review candidates section for batch 0 output.
+/// Returns empty string if there are no review candidates.
+pub(crate) fn format_review_candidates(candidates: &[(String, Vec<String>)]) -> String {
+    if candidates.is_empty() {
+        return String::new();
+    }
+    let mut output = format!(
+        "## REVIEW CANDIDATES ({} entities)\n\nThese entities were auto-lifted but have moderate complexity. \
+         Verify the features below are correct. To override, include the entity in your `submit_lift_results` call.\n\n",
+        candidates.len(),
+    );
+    for (eid, features) in candidates {
+        output.push_str(&format!("- `{}`: {}\n", eid, features.join(", ")));
+    }
+    output.push('\n');
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_review_in_batch_0_output() {
+        let candidates = vec![
+            (
+                "src/server.rs:Server::get_name".to_string(),
+                vec!["return name".to_string()],
+            ),
+            (
+                "src/config.rs:Config::get_value".to_string(),
+                vec!["return value".to_string()],
+            ),
+        ];
+        let output = format_review_candidates(&candidates);
+        assert!(output.contains("## REVIEW CANDIDATES (2 entities)"));
+        assert!(output.contains("src/server.rs:Server::get_name"));
+        assert!(output.contains("return name"));
+        assert!(output.contains("submit_lift_results"));
+    }
+
+    #[test]
+    fn test_review_candidates_empty() {
+        let output = format_review_candidates(&[]);
+        assert!(output.is_empty());
+    }
 }

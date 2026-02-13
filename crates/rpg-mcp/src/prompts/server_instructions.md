@@ -19,6 +19,21 @@ No API keys or local LLMs needed. YOU are the LLM — you analyze the code direc
 
 **At any point, call `lifting_status` to see where you are.**
 
+## REVIEW CANDIDATES (auto-lift verification)
+
+Some entities are auto-lifted with moderate confidence. These appear in batch 0
+under a `## REVIEW CANDIDATES` section with pre-filled features. For each:
+
+- **Accept**: If the features look correct, do nothing — they're already applied.
+- **Override**: If features are wrong or incomplete, include corrected features in
+  your `submit_lift_results` call. Your submission replaces the auto-generated features.
+
+Review candidates are entities that matched an auto-lift pattern but had minor
+structural complexity (exactly 1 branch, or 3+ calls). High-confidence matches
+(0 branches, 0 loops, ≤2 calls) are applied silently. Entities with higher
+complexity (2+ branches or any loop) are rejected and appear as regular entities
+for full LLM analysis.
+
 ## SEMANTIC ROUTING (optional, after submit_lift_results)
 
 When `submit_lift_results` reports a `## ROUTING` block, entities need semantic
@@ -108,7 +123,8 @@ When using the RPG to understand or navigate a codebase (after lifting is comple
 3. **Precision verification** — `fetch_node(entity_id="...", fields="features,deps")` to inspect specific fields without retrieving everything.
 4. **Local expansion** — `explore_rpg(entity_id="...", direction="both", format="compact")` for pipe-delimited rows with entity_ids preserved.
 5. **Impact analysis** — `impact_radius(entity_id="...", direction="upstream")` to find all entities that depend on a target, with edge paths.
-6. **Pinpoint retrieval** — `search_node(query="...", mode="snippets")` for exact name/path lookups.
+6. **Change planning** — `plan_change(goal="add rate limiting")` to find relevant entities, compute dependency-safe modification order, and assess impact radius in one call.
+7. **Pinpoint retrieval** — `search_node(query="...", mode="snippets")` for exact name/path lookups.
 
 **Token-saving tips:**
 - Use `fetch_node(fields="features,deps")` to skip source code (~80% smaller output)
@@ -120,7 +136,7 @@ When using the RPG to understand or navigate a codebase (after lifting is comple
 ## TOOLS
 - **lifting_status**: Dashboard — coverage, per-area progress, unlifted files, NEXT STEP
 - **build_rpg**: Index the codebase (run once, instant)
-- **get_entities_for_lifting** + **submit_lift_results**: YOU analyze the code (trivial entities auto-lifted)
+- **get_entities_for_lifting** + **submit_lift_results**: YOU analyze the code (trivial entities auto-lifted, moderate ones flagged for review)
 - **get_routing_candidates** + **submit_routing_decisions**: LLM-based semantic routing (optional)
 - **finalize_lifting**: Aggregate file-level features, rebuild hierarchy metadata (auto-routes pending if skipped)
 - **get_files_for_synthesis** + **submit_file_syntheses**: YOU synthesize file-level features
@@ -131,6 +147,7 @@ When using the RPG to understand or navigate a codebase (after lifting is comple
 - **explore_rpg**: Trace dependency chains. Use `format="compact"` for pipe-delimited rows with entity_ids
 - **context_pack**: Single-call search+fetch+explore. Searches, fetches source, expands neighbors, trims to token budget
 - **impact_radius**: BFS reachability with edge paths. Answers "what depends on X?" in one call
+- **plan_change**: Change planning — find relevant entities, dependency-safe modification order, impact radius, and related tests
 - **rpg_info**: Get codebase overview and statistics
 - **update_rpg**: Incrementally update after code changes
 - **reload_rpg**: Reload graph from disk

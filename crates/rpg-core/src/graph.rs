@@ -71,6 +71,9 @@ pub struct Entity {
     pub parent_class: Option<String>,
     /// Semantic features f: atomic verb-object phrases.
     pub semantic_features: Vec<String>,
+    /// Provenance of semantic features: "auto", "llm", or "synthesized".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature_source: Option<String>,
     pub hierarchy_path: String,
     pub deps: EntityDeps,
 }
@@ -773,6 +776,7 @@ impl RPGraph {
                 line_end,
                 parent_class: None,
                 semantic_features: Vec::new(),
+                feature_source: None,
                 hierarchy_path: String::new(),
                 deps: EntityDeps::default(),
             };

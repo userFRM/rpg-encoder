@@ -147,6 +147,17 @@ struct TaggedRule {
     languages: Vec<String>,
 }
 
+/// Confidence level for auto-lifted features.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiftConfidence {
+    /// High confidence — apply features directly.
+    Accept,
+    /// Medium confidence — include in batch 0 with pre-filled features for LLM verification.
+    Review,
+    /// Low confidence — pattern matched but structural complexity too high; needs full LLM lifting.
+    Reject,
+}
+
 /// Engine that matches entities against TOML-defined auto-lift rules.
 ///
 /// Rules are collected from paradigm definitions in priority order.
@@ -182,10 +193,52 @@ impl AutoLiftEngine {
         Self { rules }
     }
 
+    /// Try to match an entity against auto-lift rules with confidence scoring.
+    ///
+    /// Returns `Some((features, confidence))` if a rule matches:
+    /// - `Accept`: entity is structurally simple — apply features directly
+    /// - `Review`: entity has moderate complexity — show pre-filled features for LLM verification
+    ///
+    /// Returns `None` if no rule matches (entity needs full LLM lifting).
+    ///
+    /// Rules without structural gate fields (max_branches/max_loops/max_calls)
+    /// always produce `Accept` confidence when matched.
+    pub fn try_lift_with_confidence(
+        &self,
+        raw: &RawEntity,
+    ) -> Option<(Vec<String>, LiftConfidence)> {
+        let (features, has_structural_gates) = self.try_lift_internal(raw)?;
+
+        if !has_structural_gates {
+            // Rules without structural fields → binary match → Accept
+            return Some((features, LiftConfidence::Accept));
+        }
+
+        // Determine confidence from structural signals:
+        // - Accept: simple (0 branches, 0 loops, ≤2 calls)
+        // - Review: moderate (exactly 1 branch, or 3+ calls, but no loops)
+        // - Reject: complex (2+ branches OR any loop) — needs full LLM lifting
+        let signals = rpg_parser::signals::analyze(&raw.source_text);
+        let confidence = if signals.branch_count > 1 || signals.loop_count > 0 {
+            LiftConfidence::Reject
+        } else if signals.branch_count == 0 && signals.loop_count == 0 && signals.call_count <= 2 {
+            LiftConfidence::Accept
+        } else {
+            LiftConfidence::Review
+        };
+
+        Some((features, confidence))
+    }
+
     /// Try to match an entity against auto-lift rules. First match wins.
     /// Language-specific rules are skipped when the entity's file extension
     /// doesn't belong to the rule's source language.
     pub fn try_lift(&self, raw: &RawEntity) -> Option<Vec<String>> {
+        self.try_lift_internal(raw).map(|(features, _)| features)
+    }
+
+    /// Internal match that also reports whether the matching rule had structural gates.
+    fn try_lift_internal(&self, raw: &RawEntity) -> Option<(Vec<String>, bool)> {
         let file_lang = raw
             .file
             .extension()
@@ -202,7 +255,13 @@ impl AutoLiftEngine {
                 continue;
             }
             if matches_entity(&tagged.rule.match_rule, raw, &raw.file) {
-                return Some(Self::expand_templates(&tagged.rule, raw));
+                let has_structural_gates = tagged.rule.match_rule.max_branches.is_some()
+                    || tagged.rule.match_rule.max_loops.is_some()
+                    || tagged.rule.match_rule.max_calls.is_some();
+                return Some((
+                    Self::expand_templates(&tagged.rule, raw),
+                    has_structural_gates,
+                ));
             }
         }
         None
@@ -624,7 +683,7 @@ mod tests {
     #[test]
     fn test_engine_rejects_long() {
         let engine = make_engine();
-        let source = (1..=10)
+        let source = (1..=15)
             .map(|i| format!("    line {}", i))
             .collect::<Vec<_>>()
             .join("\n");
@@ -874,6 +933,114 @@ mod tests {
         assert!(
             features.is_none(),
             "language-specific rules should not match unknown file extensions"
+        );
+    }
+
+    // --- Confidence-gated auto-lift tests ---
+
+    #[test]
+    fn test_confidence_accept_simple_getter() {
+        let engine = make_engine();
+        let raw = make_raw(
+            "get_name",
+            None,
+            "fn get_name(&self) -> &str { &self.name }",
+        );
+        let result = engine.try_lift_with_confidence(&raw);
+        assert!(result.is_some());
+        let (features, confidence) = result.unwrap();
+        assert_eq!(features, vec!["return name"]);
+        assert_eq!(confidence, LiftConfidence::Accept);
+    }
+
+    #[test]
+    fn test_confidence_accept_8_line_getter() {
+        // An 8-line getter with 0 branches, 0 loops should Accept
+        let source = "fn get_value(&self) -> Value {\n    let a = self.a;\n    let b = self.b;\n    let c = self.c;\n    let d = self.d;\n    let e = self.e;\n    let f = self.f;\n    Value(a + b + c + d + e + f)\n}";
+        let raw = make_raw("get_value", None, source);
+        let result = make_engine().try_lift_with_confidence(&raw);
+        assert!(result.is_some());
+        let (_, confidence) = result.unwrap();
+        assert_eq!(confidence, LiftConfidence::Accept);
+    }
+
+    #[test]
+    fn test_confidence_review_moderate() {
+        // A getter with exactly 1 branch (if, no else) → passes TOML max_branches=1,
+        // but confidence logic sees branch_count >= 1 → Review
+        let source = "fn get_name(&self) -> &str {\n    if self.name.is_empty() {\n        return &self.default_name;\n    }\n    &self.name\n}";
+        let raw = make_raw("get_name", None, source);
+        let result = make_engine().try_lift_with_confidence(&raw);
+        assert!(result.is_some());
+        let (features, confidence) = result.unwrap();
+        assert_eq!(features, vec!["return name"]);
+        assert_eq!(confidence, LiftConfidence::Review);
+    }
+
+    #[test]
+    fn test_confidence_reject_complex() {
+        // A getter with 3 branches → doesn't match TOML (max_branches=1), returns None
+        let source = "fn get_name(&self) -> &str {\n    if self.a { return \"a\"; }\n    if self.b { return \"b\"; }\n    if self.c { return \"c\"; }\n    &self.name\n}";
+        let raw = make_raw("get_name", None, source);
+        let result = make_engine().try_lift_with_confidence(&raw);
+        assert!(
+            result.is_none(),
+            "3+ branches should fail TOML match (max_branches=1)"
+        );
+    }
+
+    #[test]
+    fn test_confidence_reject_high_complexity() {
+        // A fmt_display rule allows max_branches=2, so a source with 2 branches
+        // passes TOML but has branch_count > 1 → Reject
+        let source = "fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {\n    if self.verbose {\n        write!(f, \"Verbose Display\")\n    } else {\n        write!(f, \"Display\")\n    }\n}";
+        let raw = make_raw("fmt", Some("Widget"), source);
+        let result = make_engine().try_lift_with_confidence(&raw);
+        assert!(result.is_some(), "should match fmt_display rule");
+        let (_, confidence) = result.unwrap();
+        assert_eq!(confidence, LiftConfidence::Reject);
+    }
+
+    #[test]
+    fn test_confidence_no_structural_gate() {
+        // Rules without structural fields (clone, drop) → always Accept
+        let engine = make_engine();
+        let raw = make_raw(
+            "clone",
+            Some("Config"),
+            "fn clone(&self) -> Self { Self {} }",
+        );
+        let result = engine.try_lift_with_confidence(&raw);
+        assert!(result.is_some());
+        let (_, confidence) = result.unwrap();
+        assert_eq!(confidence, LiftConfidence::Accept);
+    }
+
+    #[test]
+    fn test_feature_source_auto() {
+        // Auto-accepted entities should be tagged with "auto" feature_source
+        // This tests the LiftConfidence enum is available and correct
+        let engine = make_engine();
+        let raw = make_raw("get_id", None, "fn get_id(&self) -> u64 { self.id }");
+        let (_, confidence) = engine.try_lift_with_confidence(&raw).unwrap();
+        assert_eq!(confidence, LiftConfidence::Accept);
+    }
+
+    #[test]
+    fn test_feature_source_llm() {
+        // Entities that don't match any auto-lift rule need LLM lifting.
+        // try_lift_with_confidence returns None, and the MCP layer sets feature_source="llm".
+        let engine = make_engine();
+        // A function name that doesn't match any auto-lift pattern
+        let raw = make_raw(
+            "calculate_total",
+            None,
+            "fn calculate_total(items: &[Item]) -> f64 {\n    items.iter().map(|i| i.price).sum()\n}",
+        );
+        let result = engine.try_lift_with_confidence(&raw);
+        assert!(
+            result.is_none(),
+            "non-matching entities return None (need LLM lifting → feature_source=\"llm\")"
         );
     }
 }

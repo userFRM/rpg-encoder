@@ -37,6 +37,7 @@ impl RawEntity {
             line_end: self.line_end,
             parent_class: self.parent_class,
             semantic_features: Vec::new(),
+            feature_source: None,
             hierarchy_path: String::new(),
             deps: EntityDeps::default(),
         }

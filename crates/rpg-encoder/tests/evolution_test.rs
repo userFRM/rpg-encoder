@@ -14,6 +14,7 @@ fn make_entity(id: &str, name: &str, file: &str) -> Entity {
         line_end: 10,
         parent_class: None,
         semantic_features: vec!["test".to_string()],
+        feature_source: None,
         hierarchy_path: String::new(),
         deps: EntityDeps::default(),
     }
@@ -179,6 +180,7 @@ fn make_lifted_entity(id: &str, name: &str, file: &str, features: &[&str]) -> En
         line_end: 10,
         parent_class: None,
         semantic_features: features.iter().map(|s| s.to_string()).collect(),
+        feature_source: None,
         hierarchy_path: String::new(),
         deps: EntityDeps::default(),
     }
@@ -194,6 +196,7 @@ fn make_module_entity(id: &str, name: &str, file: &str, features: &[&str]) -> En
         line_end: 0,
         parent_class: None,
         semantic_features: features.iter().map(|s| s.to_string()).collect(),
+        feature_source: None,
         hierarchy_path: String::new(),
         deps: EntityDeps::default(),
     }

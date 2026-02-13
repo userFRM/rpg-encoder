@@ -10,5 +10,6 @@ pub mod explore;
 pub mod export;
 pub mod fetch;
 pub mod impact;
+pub mod planner;
 pub mod search;
 pub mod toon;

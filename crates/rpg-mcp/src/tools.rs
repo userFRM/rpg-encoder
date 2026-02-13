@@ -499,8 +499,19 @@ impl RpgServer {
         // Update in-memory state
         let meta = graph.metadata.clone();
         *self.graph.write().await = Some(graph);
-        // Invalidate embedding index (full rebuild needed after build_rpg)
-        *self.embedding_index.write().await = None;
+        // Sync embedding index incrementally (fingerprints detect what changed)
+        {
+            let graph_guard = self.graph.read().await;
+            if let Some(ref graph) = *graph_guard {
+                let mut emb_guard = self.embedding_index.write().await;
+                if let Some(ref mut idx) = *emb_guard
+                    && let Err(e) = idx.sync(graph)
+                {
+                    eprintln!("rpg: embedding sync failed: {e}");
+                    *emb_guard = None;
+                }
+            }
+        }
         self.embedding_init_failed
             .store(false, std::sync::atomic::Ordering::Relaxed);
         // Clear stale pending routing (graph was fully replaced)
@@ -662,6 +673,7 @@ impl RpgServer {
                 );
                 let mut auto_lifted = 0usize;
                 let mut needs_llm = Vec::new();
+                let mut review_candidates: Vec<(String, Vec<String>)> = Vec::new();
                 for raw in all_raw_entities {
                     // Skip entities that already have curated features
                     let already_lifted = graph
@@ -671,14 +683,28 @@ impl RpgServer {
                     if already_lifted {
                         continue;
                     }
-                    if let Some(features) = engine.try_lift(&raw) {
-                        // Apply features directly to the graph
-                        if let Some(entity) = graph.entities.get_mut(&raw.id()) {
-                            entity.semantic_features = features;
-                            auto_lifted += 1;
+                    match engine.try_lift_with_confidence(&raw) {
+                        Some((features, rpg_encoder::lift::LiftConfidence::Accept)) => {
+                            // High confidence — apply features directly
+                            if let Some(entity) = graph.entities.get_mut(&raw.id()) {
+                                entity.semantic_features = features;
+                                entity.feature_source = Some("auto".to_string());
+                                auto_lifted += 1;
+                            }
                         }
-                    } else {
-                        needs_llm.push(raw);
+                        Some((features, rpg_encoder::lift::LiftConfidence::Review)) => {
+                            // Medium confidence — apply features but flag for review
+                            let eid = raw.id();
+                            if let Some(entity) = graph.entities.get_mut(&eid) {
+                                entity.semantic_features = features.clone();
+                                entity.feature_source = Some("auto".to_string());
+                                auto_lifted += 1;
+                            }
+                            review_candidates.push((eid, features));
+                        }
+                        Some((_, rpg_encoder::lift::LiftConfidence::Reject)) | None => {
+                            needs_llm.push(raw);
+                        }
                     }
                 }
 
@@ -719,6 +745,7 @@ impl RpgServer {
                     raw_entities: needs_llm,
                     batch_ranges,
                     auto_lifted: auto_lift_count,
+                    review_candidates,
                 });
             }
         }
@@ -768,6 +795,11 @@ impl RpgServer {
                     auto_lifted_count,
                 ));
             }
+
+            // Show review candidates — auto-lifted with medium confidence
+            output.push_str(&crate::types::format_review_candidates(
+                &session.review_candidates,
+            ));
             let project_name = self
                 .project_root
                 .file_name()
@@ -923,6 +955,7 @@ impl RpgServer {
 
                     if let Some(entity) = graph.entities.get_mut(eid) {
                         entity.semantic_features = feats.clone();
+                        entity.feature_source = Some("llm".to_string());
                         resolved_features.insert(eid.clone(), feats.clone());
                         updated += 1;
                     }
@@ -1064,6 +1097,19 @@ impl RpgServer {
                 "\n## ROUTING\n\n{} entities need semantic routing.\nCall `get_routing_candidates` to review and route them, or they will be auto-routed when you call `finalize_lifting`.\n",
                 routing_count,
             ));
+        }
+
+        // Quality critique — soft feedback on submitted features
+        {
+            let mut all_warnings = Vec::new();
+            for (eid, feats) in &resolved_features {
+                let warnings = rpg_encoder::critic::critique(eid, feats);
+                all_warnings.extend(warnings);
+            }
+            let quality_output = rpg_encoder::critic::format_warnings(&all_warnings);
+            if !quality_output.is_empty() {
+                result.push_str(&quality_output);
+            }
         }
 
         // Per-area coverage breakdown
@@ -1460,8 +1506,16 @@ impl RpgServer {
 
         // Clear lifting session — entity list changed
         *self.lifting_session.write().await = None;
-        // Invalidate embedding index — entities changed
-        *self.embedding_index.write().await = None;
+        // Sync embedding index incrementally — entities changed
+        {
+            let mut emb_guard = self.embedding_index.write().await;
+            if let Some(ref mut idx) = *emb_guard
+                && let Err(e) = idx.sync(g)
+            {
+                eprintln!("rpg: embedding sync failed: {e}");
+                *emb_guard = None;
+            }
+        }
         self.embedding_init_failed
             .store(false, std::sync::atomic::Ordering::Relaxed);
         // Reconcile pending routing against the updated graph:
@@ -1564,8 +1618,19 @@ impl RpgServer {
             Ok(g) => {
                 let entities = g.metadata.total_entities;
                 *self.graph.write().await = Some(g);
-                // Invalidate embedding index — will reload on next search
-                *self.embedding_index.write().await = None;
+                // Sync embedding index incrementally
+                {
+                    let graph_guard = self.graph.read().await;
+                    if let Some(ref graph) = *graph_guard {
+                        let mut emb_guard = self.embedding_index.write().await;
+                        if let Some(ref mut idx) = *emb_guard
+                            && let Err(e) = idx.sync(graph)
+                        {
+                            eprintln!("rpg: embedding sync failed: {e}");
+                            *emb_guard = None;
+                        }
+                    }
+                }
                 self.embedding_init_failed
                     .store(false, std::sync::atomic::Ordering::Relaxed);
                 // Reload pending routing from disk (may have changed externally)
@@ -1874,6 +1939,7 @@ impl RpgServer {
 
                     if !features.is_empty() {
                         module.semantic_features = features;
+                        module.feature_source = Some("synthesized".to_string());
                         updated += 1;
                     }
                 }
@@ -2145,6 +2211,51 @@ impl RpgServer {
             )),
             None => Err(format!("Entity not found: {}", params.entity_id)),
         }
+    }
+
+    #[tool(
+        description = "Plan code changes: find relevant entities, compute modification order, assess impact radius. Returns dependency-ordered entity list with blast radius analysis."
+    )]
+    async fn plan_change(
+        &self,
+        Parameters(params): Parameters<PlanChangeParams>,
+    ) -> Result<String, String> {
+        self.ensure_graph().await?;
+        let notice = self.staleness_notice().await;
+        let guard = self.graph.read().await;
+        let graph = guard.as_ref().unwrap();
+
+        // Attempt hybrid embedding search
+        self.try_init_embeddings(graph).await;
+        let embedding_scores = {
+            let mut emb_guard = self.embedding_index.write().await;
+            if let Some(ref mut idx) = *emb_guard {
+                idx.score_all(&params.goal).ok().filter(|s| !s.is_empty())
+            } else {
+                None
+            }
+        };
+
+        let request = rpg_nav::planner::PlanChangeRequest {
+            goal: &params.goal,
+            scope: params.scope.as_deref(),
+            max_entities: params.max_entities.unwrap_or(15),
+        };
+
+        let plan = rpg_nav::planner::plan_change(graph, &request, embedding_scores.as_ref());
+
+        if plan.relevant_entities.is_empty() {
+            return Ok(format!(
+                "{}No relevant entities found for: {}",
+                notice, params.goal
+            ));
+        }
+
+        Ok(format!(
+            "{}{}",
+            notice,
+            rpg_nav::planner::format_change_plan(&plan),
+        ))
     }
 
     #[tool(
