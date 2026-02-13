@@ -20,6 +20,8 @@ chrono.workspace = true
 git2.workspace = true
 ignore.workspace = true
 globset.workspace = true
+kodama = "0.3.0"
+
 [dev-dependencies]
 tempfile.workspace = true
 rpg-nav.workspace = true

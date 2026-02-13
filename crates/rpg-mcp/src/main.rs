@@ -3,6 +3,7 @@
 //! Gives any connected LLM full semantic understanding of a codebase.
 
 mod helpers;
+mod hierarchy_helpers;
 mod params;
 mod server;
 mod tools;

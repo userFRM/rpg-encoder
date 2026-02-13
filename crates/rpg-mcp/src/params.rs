@@ -18,6 +18,8 @@ pub(crate) struct SearchNodeParams {
     pub(crate) file_pattern: Option<String>,
     /// Comma-separated entity type filter (e.g., "function,class,method"). Valid: function, class, method, file, module.
     pub(crate) entity_type_filter: Option<String>,
+    /// Git commit to diff from for proximity-based ranking (e.g., "HEAD~10", "abc123"). Boosts entities in changed files and their dependencies.
+    pub(crate) since_commit: Option<String>,
 }
 
 /// Parameters for the `fetch_node` tool.
@@ -181,4 +183,30 @@ pub(crate) struct PlanChangeParams {
     pub(crate) scope: Option<String>,
     /// Maximum number of relevant entities to include (default: 15)
     pub(crate) max_entities: Option<usize>,
+}
+
+/// Parameters for the `find_paths` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct FindPathsParams {
+    /// Source entity ID
+    pub(crate) source: String,
+    /// Target entity ID
+    pub(crate) target: String,
+    /// Maximum path length (default: 5). Use -1 for unlimited.
+    pub(crate) max_hops: Option<i64>,
+    /// Maximum number of paths to return (default: 3)
+    pub(crate) max_paths: Option<usize>,
+    /// Filter edges by kind: 'imports', 'invokes', 'inherits', 'composes', 'contains', 'renders', 'reads_state', 'writes_state', or 'dispatches'
+    pub(crate) edge_filter: Option<String>,
+}
+
+/// Parameters for the `slice_between` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct SliceBetweenParams {
+    /// Entity IDs to connect (minimum 2)
+    pub(crate) entity_ids: Vec<String>,
+    /// Maximum path length when searching for connections (default: 3)
+    pub(crate) max_depth: Option<usize>,
+    /// Include entity metadata (name, file, features) in output
+    pub(crate) include_metadata: Option<bool>,
 }

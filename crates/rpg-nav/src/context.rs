@@ -54,6 +54,7 @@ pub fn build_context_pack(
             file_pattern: None,
             entity_type_filter: None,
             embedding_scores,
+            diff_context: None,
         },
     );
 

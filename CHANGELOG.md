@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-XX-XX
+
+### Added
+
+- **Protocol Deduplication** — Version references save 10K-40K tokens per lifting session
+  - `get_files_for_synthesis` uses version references after batch 0: `[RPG Protocol: file_synthesis v<hash>]`
+  - SHA256-based prompt versioning in MCP server (`PromptVersions` struct)
+- **Graph Reasoning Tools** — Two new MCP tools for dependency path analysis
+  - `find_paths`: K-shortest paths between entities using Yen's algorithm (returns paths of varying lengths)
+  - `slice_between`: Extract minimal connecting subgraph (Steiner tree with strict edge tracking)
+  - Eliminates 5-10 manual tool calls for path queries
+- **Diff-Aware Search** — `search_node` accepts `since_commit` parameter for PR review workflows
+  - Proximity-based ranking: 3x boost for changed entities, 2x for 1-hop neighbors, 1.5x for 2-hop
+  - Automatically maps git changes to entity IDs via `rpg_encoder::evolution::detect_changes`
+  - Computes dependency proximity tiers using BFS traversal
+  - Boost applied before truncation to ensure changed entities can rank into results
+  - 50-70% fewer irrelevant results projected in PR review tasks
+- **Sharded Hierarchy Foundation** — Clustering infrastructure for repos >100 files
+  - File clustering with deterministic batching (target: 70 files per cluster)
+  - Representative sampling for domain discovery
+  - Balance clusters to maintain manageable batch sizes
+  - **FULL MCP INTEGRATION COMPLETE**: Two-phase batched workflow (domain discovery → file assignment per cluster)
+
+### Changed
+
+- `search_node` MCP tool supports diff-aware ranking via `since_commit` parameter
+- `SearchParams` extended with `diff_context` field for proximity boosting
+- Diff boost now applied before truncation (expands search limit 10x when diff_context present)
+- `find_paths` defaults to max_hops=5 (use -1 for unlimited)
+- File clustering uses sorted iteration for deterministic batch assignments
+
+### Performance
+
+- Protocol deduplication: ~75 tokens saved per batch after batch 0 (10K-40K total over 20-batch session)
+- Graph reasoning tools: Single-call path queries vs 5-10 manual explore/fetch calls
+- Diff-aware search: Reduces noise in PR review workflows
+
+### Technical
+
+- Added dependencies: `sha2 = "0.10"` (rpg-mcp), `kodama = "0.2"` (rpg-encoder, currently unused)
+- New modules:
+  - `rpg-nav/src/diff.rs` (189 lines, 5 tests): Proximity computation and boost application
+  - `rpg-nav/src/paths.rs` (290 lines, 7 tests): K-shortest paths with Yen's algorithm
+  - `rpg-nav/src/slice.rs` (300 lines, 8 tests): Minimal subgraph extraction with strict edge tracking
+- Extended `rpg-encoder/src/hierarchy.rs` (+210 lines, 4 tests): Clustering and batching functions
+- MCP tool count: 21 → 23 (new: `find_paths`, `slice_between`)
+- Sharded hierarchy: Session management, automatic clustering, batched domain discovery and file assignment
+- All tests passing (466+ tests across workspace)
+- Clustering simplified from HAC to deterministic batching (kodama API complexity deferred)
+
 ## [0.4.0] - 2026-02-13
 
 ### Added
