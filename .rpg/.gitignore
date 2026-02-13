@@ -1,1 +1,13 @@
+# User-specific configuration
 config.toml
+
+# Embedding index (derived from graph.json, auto-generated on first search)
+# Why ignored: Regenerable in ~5-10s, model-version dependent, changes frequently
+embeddings.bin
+embeddings.meta.json
+
+# Downloaded ML models (auto-downloaded by fastembed on first use)
+models/
+
+# Backup files (created by rpg-encoder build/update)
+*.backup.json

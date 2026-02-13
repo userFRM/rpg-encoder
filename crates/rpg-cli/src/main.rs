@@ -634,6 +634,7 @@ fn cmd_search(
             file_pattern,
             entity_type_filter: None,
             embedding_scores: None,
+            diff_context: None,
         },
     );
 

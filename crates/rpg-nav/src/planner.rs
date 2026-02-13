@@ -73,6 +73,7 @@ pub fn plan_change(
             file_pattern: None,
             entity_type_filter: None,
             embedding_scores,
+            diff_context: None,
         },
     );
 

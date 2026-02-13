@@ -42,6 +42,18 @@ pub(crate) struct PendingRoutingState {
     pub(crate) entries: Vec<PendingRouting>,
 }
 
+/// Hierarchy construction session for sharded workflows (>100 files).
+pub(crate) struct HierarchySession {
+    /// File clusters for batched processing
+    pub(crate) clusters: Vec<rpg_encoder::hierarchy::FileCluster>,
+    /// Approved functional areas from batch 0 (domain discovery)
+    pub(crate) functional_areas: Option<Vec<String>>,
+    /// Accumulated hierarchy assignments across batches
+    pub(crate) assignments: std::collections::HashMap<String, String>,
+    /// Number of batches completed (0 = domain discovery, 1+ = file assignment)
+    pub(crate) batches_completed: usize,
+}
+
 /// Load pending routing state from disk, if it exists.
 pub(crate) fn load_pending_routing(project_root: &std::path::Path) -> Option<PendingRoutingState> {
     let path = storage::pending_routing_file(project_root);

@@ -247,6 +247,7 @@ fn test_search_with_file_pattern() {
             file_pattern: Some("auth*"),
             entity_type_filter: None,
             embedding_scores: None,
+            diff_context: None,
         },
     );
     // Only auth.rs matches the pattern "auth*"
@@ -294,6 +295,7 @@ fn test_search_with_line_nums() {
             file_pattern: None,
             entity_type_filter: None,
             embedding_scores: None,
+            diff_context: None,
         },
     );
     // Only "late" should match (lines 50-60 overlaps 40-70)
@@ -334,6 +336,7 @@ fn test_search_params_combined() {
             file_pattern: Some("auth*"),
             entity_type_filter: None,
             embedding_scores: None,
+            diff_context: None,
         },
     );
     assert_eq!(results.len(), 1);

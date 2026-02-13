@@ -70,6 +70,48 @@ impl RpgServer {
             None
         };
 
+        // Compute diff-aware search context if since_commit is provided
+        let mut diff_warning = String::new();
+        let diff_context = if let Some(ref commit) = params.since_commit {
+            match rpg_encoder::evolution::detect_changes(&self.project_root, graph, Some(commit)) {
+                Ok(changes) => {
+                    let mut changed_entities = std::collections::HashSet::new();
+                    for change in &changes {
+                        let file_path = match change {
+                            rpg_encoder::evolution::FileChange::Added(p)
+                            | rpg_encoder::evolution::FileChange::Modified(p) => p,
+                            rpg_encoder::evolution::FileChange::Deleted(_) => continue,
+                            rpg_encoder::evolution::FileChange::Renamed { to, .. } => to,
+                        };
+                        if let Some(entity_ids) = graph.file_index.get(file_path) {
+                            changed_entities.extend(entity_ids.iter().cloned());
+                        }
+                    }
+                    if !changed_entities.is_empty() {
+                        Some(rpg_nav::diff::compute_change_proximity(
+                            graph,
+                            changed_entities,
+                        ))
+                    } else {
+                        diff_warning = format!(
+                            "[Warning: No entities found in changed files since {}]\n",
+                            commit
+                        );
+                        None
+                    }
+                }
+                Err(e) => {
+                    diff_warning = format!(
+                        "[Warning: Failed to detect changes since {}: {}. Using standard search.]\n",
+                        commit, e
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let results = rpg_nav::search::search_with_params(
             graph,
             &rpg_nav::search::SearchParams {
@@ -81,19 +123,21 @@ impl RpgServer {
                 file_pattern: params.file_pattern.as_deref(),
                 entity_type_filter,
                 embedding_scores: embedding_scores.as_ref(),
+                diff_context: diff_context.as_ref(),
             },
         );
 
         if results.is_empty() {
             return Ok(format!(
-                "{}No results found for: {} (search_mode: {})",
-                notice, params.query, search_mode_label,
+                "{}{}No results found for: {} (search_mode: {})",
+                notice, diff_warning, params.query, search_mode_label,
             ));
         }
 
         Ok(format!(
-            "{}{}\n\nsearch_mode: {}",
+            "{}{}{}\n\nsearch_mode: {}",
             notice,
+            diff_warning,
             rpg_nav::toon::format_search_results(&results),
             search_mode_label,
         ))
@@ -499,6 +543,11 @@ impl RpgServer {
         // Update in-memory state
         let meta = graph.metadata.clone();
         *self.graph.write().await = Some(graph);
+
+        // Clear sessions — graph structure changed
+        *self.lifting_session.write().await = None;
+        *self.hierarchy_session.write().await = None;
+
         // Sync embedding index incrementally (fingerprints detect what changed)
         {
             let graph_guard = self.graph.read().await;
@@ -1504,8 +1553,10 @@ impl RpgServer {
 
         storage::save(&self.project_root, g).map_err(|e| format!("Failed to save RPG: {}", e))?;
 
-        // Clear lifting session — entity list changed
+        // Clear sessions — entity list changed
         *self.lifting_session.write().await = None;
+        *self.hierarchy_session.write().await = None;
+
         // Sync embedding index incrementally — entities changed
         {
             let mut emb_guard = self.embedding_index.write().await;
@@ -1633,6 +1684,11 @@ impl RpgServer {
                 }
                 self.embedding_init_failed
                     .store(false, std::sync::atomic::Ordering::Relaxed);
+
+                // Clear sessions — graph reloaded
+                *self.lifting_session.write().await = None;
+                *self.hierarchy_session.write().await = None;
+
                 // Reload pending routing from disk (may have changed externally)
                 let pending = load_pending_routing(&self.project_root)
                     .map(|s| s.entries)
@@ -1860,6 +1916,12 @@ impl RpgServer {
                 output.push_str(&synthesis_hints);
                 output.push('\n');
             }
+        } else {
+            // Subsequent batches: use protocol version reference
+            output.push_str(&format!(
+                "[RPG Protocol: file_synthesis v{}]\nFor full instructions, see batch 0.\n\n",
+                self.prompt_versions.synthesis
+            ));
         }
 
         output.push_str("## Files\n\n");
@@ -2011,12 +2073,6 @@ impl RpgServer {
             ));
         }
 
-        let repo_name = self
-            .project_root
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown");
-
         // Collect Module entities with features (file-level features)
         let mut file_features = String::new();
         let mut module_count = 0usize;
@@ -2062,10 +2118,84 @@ impl RpgServer {
             }
         }
 
+        // Check for sharding (>100 files)
+        let needs_sharding = module_count > 100;
+
+        // Drop graph guard before acquiring session write lock
+        drop(guard);
+
+        // Handle sharded workflow
+        if needs_sharding {
+            let mut session_guard = self.hierarchy_session.write().await;
+
+            // Initialize session if it doesn't exist
+            if session_guard.is_none() {
+                let graph_guard = self.graph.read().await;
+                let graph = graph_guard.as_ref().unwrap();
+
+                let clusters = rpg_encoder::hierarchy::cluster_files_for_hierarchy(graph, 70);
+                let total_clusters = clusters.len();
+
+                *session_guard = Some(HierarchySession {
+                    clusters,
+                    functional_areas: None,
+                    assignments: std::collections::HashMap::new(),
+                    batches_completed: 0,
+                });
+
+                drop(graph_guard);
+                drop(session_guard);
+
+                // Return batch 0 (domain discovery)
+                return self.build_batch_0_domain_discovery(total_clusters).await;
+            }
+
+            // Session exists - continue with next batch
+            let session = session_guard.as_mut().unwrap();
+            let total_batches = session.clusters.len() + 1; // +1 for domain discovery
+            let clusters_len = session.clusters.len();
+
+            if session.batches_completed == 0 {
+                // Still on batch 0 - waiting for functional areas
+                drop(session_guard);
+                return self.build_batch_0_domain_discovery(clusters_len).await;
+            }
+
+            if session.batches_completed > session.clusters.len() {
+                // All batches complete
+                *session_guard = None;
+                return Ok(format!(
+                    "All {} batches complete. Hierarchy has been applied.",
+                    total_batches
+                ));
+            }
+
+            // Return next file assignment batch
+            let batch_idx = session.batches_completed - 1; // -1 because batch 0 is domain discovery
+            let cluster = session.clusters[batch_idx].clone();
+            let functional_areas = session.functional_areas.clone().unwrap_or_default();
+
+            drop(session_guard);
+
+            return self
+                .build_cluster_batch(batch_idx + 1, total_batches, &cluster, &functional_areas)
+                .await;
+        }
+
+        // Non-sharded workflow (≤100 files) - original single-shot behavior
+        let guard = self.graph.read().await;
+        let graph = guard.as_ref().unwrap();
+
         let domain_prompt =
             include_str!("../../../crates/rpg-encoder/src/prompts/domain_discovery.md");
         let hierarchy_prompt =
             include_str!("../../../crates/rpg-encoder/src/prompts/hierarchy_construction.md");
+
+        let repo_name = self
+            .project_root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
 
         let mut output = String::new();
         output.push_str(&format!(
@@ -2214,6 +2344,143 @@ impl RpgServer {
     }
 
     #[tool(
+        description = "Find multiple dependency paths between two entities (returns up to max_paths results of equal shortest length). Returns paths with entity IDs and edge kinds."
+    )]
+    async fn find_paths(
+        &self,
+        Parameters(params): Parameters<FindPathsParams>,
+    ) -> Result<String, String> {
+        self.ensure_graph().await?;
+        let notice = self.staleness_notice().await;
+        let guard = self.graph.read().await;
+        let graph = guard.as_ref().unwrap();
+
+        // Parse max_hops (default: 5, use -1 for unlimited)
+        let max_hops = match params.max_hops {
+            Some(h) if h < 0 => None, // -1 means unlimited
+            Some(h) => usize::try_from(h).ok(),
+            None => Some(5), // default to 5
+        };
+
+        // Parse edge_filter
+        let edge_filter = params.edge_filter.as_deref().and_then(|f| match f {
+            "imports" => Some(rpg_core::graph::EdgeKind::Imports),
+            "invokes" => Some(rpg_core::graph::EdgeKind::Invokes),
+            "inherits" => Some(rpg_core::graph::EdgeKind::Inherits),
+            "composes" => Some(rpg_core::graph::EdgeKind::Composes),
+            "contains" => Some(rpg_core::graph::EdgeKind::Contains),
+            "renders" => Some(rpg_core::graph::EdgeKind::Renders),
+            "reads_state" => Some(rpg_core::graph::EdgeKind::ReadsState),
+            "writes_state" => Some(rpg_core::graph::EdgeKind::WritesState),
+            "dispatches" => Some(rpg_core::graph::EdgeKind::Dispatches),
+            _ => None,
+        });
+
+        let max_paths = params.max_paths.unwrap_or(3);
+
+        let paths = rpg_nav::paths::find_paths(
+            graph,
+            &params.source,
+            &params.target,
+            max_hops,
+            max_paths,
+            edge_filter,
+        );
+
+        if paths.is_empty() {
+            return Ok(format!(
+                "{}No paths found from {} to {}",
+                notice, params.source, params.target
+            ));
+        }
+
+        let mut output = format!(
+            "{}Found {} path(s) from {} to {}:\n\n",
+            notice,
+            paths.len(),
+            params.source,
+            params.target
+        );
+
+        for (i, path) in paths.iter().enumerate() {
+            output.push_str(&format!("Path {} (length {}):\n", i + 1, path.len()));
+            output.push_str(&format!("  Nodes: {}\n", path.nodes.join(" → ")));
+            if !path.edges.is_empty() {
+                output.push_str(&format!(
+                    "  Edges: {}\n",
+                    path.edges
+                        .iter()
+                        .map(|e| format!("{:?}", e))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            output.push('\n');
+        }
+
+        Ok(output)
+    }
+
+    #[tool(
+        description = "Extract minimal connecting subgraph between a set of entities. Returns entities and edges on shortest paths connecting the specified entities."
+    )]
+    async fn slice_between(
+        &self,
+        Parameters(params): Parameters<SliceBetweenParams>,
+    ) -> Result<String, String> {
+        self.ensure_graph().await?;
+        let notice = self.staleness_notice().await;
+        let guard = self.graph.read().await;
+        let graph = guard.as_ref().unwrap();
+
+        let max_depth = params.max_depth.unwrap_or(3);
+        let include_metadata = params.include_metadata.unwrap_or(false);
+
+        let result =
+            rpg_nav::slice::slice_between(graph, &params.entity_ids, max_depth, include_metadata)?;
+
+        let mut output = format!(
+            "{}Minimal subgraph connecting {} entities:\n\n",
+            notice,
+            params.entity_ids.len()
+        );
+
+        output.push_str(&format!("Entities: {} nodes\n", result.entities.len()));
+        output.push_str(&format!("Edges: {} connections\n\n", result.edges.len()));
+
+        if include_metadata {
+            if let Some(ref meta) = result.metadata {
+                output.push_str("Entity Details:\n");
+                for info in meta.values() {
+                    output.push_str(&format!(
+                        "  - {} ({}) [{}]\n",
+                        info.name,
+                        info.file,
+                        info.features.join(", ")
+                    ));
+                }
+                output.push('\n');
+            }
+        } else {
+            output.push_str("Entities:\n");
+            for entity_id in &result.entities {
+                output.push_str(&format!("  - {}\n", entity_id));
+            }
+            output.push('\n');
+        }
+
+        output.push_str("Edges:\n");
+        for edge in &result.edges {
+            output.push_str(&format!(
+                "  {} --{:?}--> {}\n",
+                edge.source, edge.kind, edge.target
+            ));
+        }
+
+        Ok(output)
+    }
+
+    #[tool(
         description = "Plan code changes: find relevant entities, compute modification order, assess impact radius. Returns dependency-ordered entity list with blast radius analysis."
     )]
     async fn plan_change(
@@ -2267,7 +2534,201 @@ impl RpgServer {
     ) -> Result<String, String> {
         self.ensure_graph().await?;
 
-        // Parse the JSON assignments
+        // Check if we have an active hierarchy session
+        let mut session_guard = self.hierarchy_session.write().await;
+
+        if let Some(session) = session_guard.as_mut() {
+            // BATCHED WORKFLOW
+
+            // Batch 0: Domain discovery (functional areas registration)
+            if session.batches_completed == 0 {
+                // Parse as areas array
+                #[derive(serde::Deserialize)]
+                struct AreasPayload {
+                    areas: Vec<String>,
+                }
+                let payload: AreasPayload = serde_json::from_str(&params.assignments)
+                    .map_err(|e| format!(
+                        "Invalid JSON for batch 0: {}. Expected {{\"areas\": [\"Area1\", \"Area2\", ...]}}",
+                        e
+                    ))?;
+
+                if payload.areas.is_empty() {
+                    return Err("Empty areas list. Provide at least one functional area.".into());
+                }
+
+                session.functional_areas = Some(payload.areas.clone());
+                session.batches_completed += 1;
+
+                return Ok(format!(
+                    "Functional areas registered: {}\n\nCall build_semantic_hierarchy to get batch 1 for file assignment.",
+                    payload.areas.join(", ")
+                ));
+            }
+
+            // Batch 1+: File assignments
+            let assignments: std::collections::HashMap<String, String> =
+                serde_json::from_str(&params.assignments).map_err(|e| {
+                    format!(
+                        "Invalid JSON: {}. Expected {{\"file_path\": \"Area/cat/subcat\", ...}}",
+                        e
+                    )
+                })?;
+
+            if assignments.is_empty() {
+                return Err(
+                    "Empty assignments. Provide at least one file → hierarchy path mapping.".into(),
+                );
+            }
+
+            // Validate all paths are strict 3-level hierarchy format
+            let invalid: Vec<String> = assignments
+                .iter()
+                .filter_map(|(file, path)| {
+                    if is_three_level_hierarchy_path(path) {
+                        None
+                    } else {
+                        Some(format!("{} -> {}", file, path))
+                    }
+                })
+                .collect();
+            if !invalid.is_empty() {
+                let sample: Vec<&str> = invalid.iter().take(10).map(|s| s.as_str()).collect();
+                return Err(format!(
+                    "Hierarchy paths must be `Area/category/subcategory` (3 levels).\n\
+                     Invalid (showing up to 10):\n{}",
+                    sample.join("\n"),
+                ));
+            }
+
+            // Accumulate assignments
+            for (file, path) in assignments {
+                session.assignments.insert(file, path);
+            }
+            session.batches_completed += 1;
+
+            let total_batches = session.clusters.len() + 1; // +1 for domain discovery
+
+            // Check if all batches are complete
+            if session.batches_completed == total_batches {
+                // Apply accumulated assignments
+                let accumulated_assignments = session.assignments.clone();
+                let clusters_count = session.clusters.len();
+
+                // Drop the session before acquiring graph write lock
+                *session_guard = None;
+                drop(session_guard);
+
+                // Now apply the hierarchy
+                let mut guard = self.graph.write().await;
+                let graph = guard.as_mut().ok_or("No RPG loaded")?;
+
+                // Convert file paths to Module entity IDs for apply_hierarchy
+                let mut entity_assignments: std::collections::HashMap<String, String> =
+                    std::collections::HashMap::new();
+                let mut matched = 0usize;
+                let mut unmatched = Vec::new();
+
+                for (file_path, hierarchy_path) in &accumulated_assignments {
+                    let mut found = false;
+
+                    // Try matching by file path in entity file field
+                    for (id, entity) in &graph.entities {
+                        let entity_file = entity.file.display().to_string();
+                        if (entity_file == *file_path
+                            || entity_file.ends_with(file_path)
+                            || file_path.ends_with(&entity_file))
+                            && entity.kind == rpg_core::graph::EntityKind::Module
+                        {
+                            entity_assignments.insert(id.clone(), hierarchy_path.clone());
+                            found = true;
+                            matched += 1;
+                            break;
+                        }
+                    }
+
+                    // If no Module entity found, assign all entities in this file directly
+                    if !found {
+                        let mut file_entities = Vec::new();
+                        for (id, entity) in &graph.entities {
+                            let entity_file = entity.file.display().to_string();
+                            if entity_file == *file_path
+                                || entity_file.ends_with(file_path)
+                                || file_path.ends_with(&entity_file)
+                            {
+                                file_entities.push(id.clone());
+                            }
+                        }
+
+                        if file_entities.is_empty() {
+                            unmatched.push(file_path.clone());
+                        } else {
+                            matched += 1;
+                            for id in file_entities {
+                                entity_assignments.insert(id, hierarchy_path.clone());
+                            }
+                        }
+                    }
+                }
+
+                // Clear existing hierarchy and apply new assignments
+                graph.hierarchy.clear();
+                rpg_encoder::hierarchy::apply_hierarchy(graph, &entity_assignments);
+                graph.metadata.semantic_hierarchy = true;
+
+                // Re-enrich hierarchy metadata and grounding
+                graph.assign_hierarchy_ids();
+                graph.aggregate_hierarchy_features();
+                graph.materialize_containment_edges();
+                rpg_encoder::grounding::ground_hierarchy(graph);
+                graph.refresh_metadata();
+
+                // Save
+                storage::save(&self.project_root, graph)
+                    .map_err(|e| format!("Failed to save RPG: {}", e))?;
+
+                let mut result = format!(
+                    "Hierarchy applied (batched workflow, {} file batches).\nfiles_matched: {}\nfiles_unmatched: {}\nhierarchy_type: semantic\n",
+                    clusters_count,
+                    matched,
+                    unmatched.len()
+                );
+
+                if !unmatched.is_empty() {
+                    result.push_str(&format!(
+                        "unmatched_files: {}\n",
+                        unmatched
+                            .iter()
+                            .take(10)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+
+                // Show hierarchy summary
+                result.push_str("\nHierarchy areas:\n");
+                for (area_name, area_node) in &graph.hierarchy {
+                    result.push_str(&format!(
+                        "  - {} ({} entities)\n",
+                        area_name,
+                        area_node.entity_count()
+                    ));
+                }
+
+                return Ok(result);
+            }
+
+            // More batches remaining
+            return Ok(format!(
+                "Batch {}/{} complete. Call build_semantic_hierarchy for next batch.",
+                session.batches_completed, total_batches
+            ));
+        }
+
+        // NO SESSION: Single-shot mode (backward compatibility)
+        drop(session_guard);
+
         let assignments: std::collections::HashMap<String, String> =
             serde_json::from_str(&params.assignments).map_err(|e| {
                 format!(

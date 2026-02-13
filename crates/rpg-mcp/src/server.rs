@@ -8,7 +8,31 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
-use crate::types::{LiftingSession, PendingRouting, load_pending_routing};
+use crate::types::{HierarchySession, LiftingSession, PendingRouting, load_pending_routing};
+
+/// Cached protocol prompt versions (SHA256 hashes) for deduplication.
+#[derive(Clone)]
+pub(crate) struct PromptVersions {
+    pub(crate) synthesis: String,
+}
+
+impl PromptVersions {
+    /// Compute SHA256 hash of a prompt and return first 8 hex chars as version ID.
+    fn hash_prompt(content: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(content.as_bytes());
+        let result = hasher.finalize();
+        format!("{:x}", result)[..8].to_string()
+    }
+
+    /// Initialize with hashes of all protocol prompts.
+    pub(crate) fn new() -> Self {
+        Self {
+            synthesis: Self::hash_prompt(include_str!("prompts/synthesis_instructions.md")),
+        }
+    }
+}
 
 /// The RPG MCP server state.
 #[derive(Clone)]
@@ -17,11 +41,14 @@ pub(crate) struct RpgServer {
     pub(crate) graph: Arc<RwLock<Option<RPGraph>>>,
     pub(crate) config: Arc<RwLock<RpgConfig>>,
     pub(crate) lifting_session: Arc<RwLock<Option<LiftingSession>>>,
+    pub(crate) hierarchy_session: Arc<RwLock<Option<HierarchySession>>>,
     pub(crate) pending_routing: Arc<RwLock<Vec<PendingRouting>>>,
     pub(crate) embedding_index: Arc<RwLock<Option<rpg_nav::embeddings::EmbeddingIndex>>>,
     /// Set to true after first failed init to avoid retrying every search.
     pub(crate) embedding_init_failed: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) tool_router: rmcp::handler::server::router::tool::ToolRouter<Self>,
+    /// Protocol prompt versions for deduplication.
+    pub(crate) prompt_versions: PromptVersions,
 }
 
 impl std::fmt::Debug for RpgServer {
@@ -47,10 +74,12 @@ impl RpgServer {
             graph: Arc::new(RwLock::new(graph)),
             config: Arc::new(RwLock::new(config)),
             lifting_session: Arc::new(RwLock::new(None)),
+            hierarchy_session: Arc::new(RwLock::new(None)),
             pending_routing: Arc::new(RwLock::new(pending)),
             embedding_index: Arc::new(RwLock::new(None)),
             embedding_init_failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             tool_router: Self::create_tool_router(),
+            prompt_versions: PromptVersions::new(),
         }
     }
 
@@ -393,5 +422,38 @@ impl ServerHandler for RpgServer {
                 .build(),
             ..Default::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_prompt_version_stability() {
+        // Hash should be stable for same content
+        let v1 = PromptVersions::new();
+        let v2 = PromptVersions::new();
+        assert_eq!(v1.synthesis, v2.synthesis);
+    }
+
+    #[test]
+    fn test_prompt_version_format() {
+        // Version should be exactly 8 hex characters
+        let versions = PromptVersions::new();
+        assert_eq!(versions.synthesis.len(), 8);
+        assert!(
+            versions.synthesis.chars().all(|c| c.is_ascii_hexdigit()),
+            "Version should be hex: {}",
+            versions.synthesis
+        );
+    }
+
+    #[test]
+    fn test_prompt_version_different_content() {
+        // Different content should produce different hashes
+        let hash1 = PromptVersions::hash_prompt("content A");
+        let hash2 = PromptVersions::hash_prompt("content B");
+        assert_ne!(hash1, hash2);
     }
 }

@@ -24,6 +24,7 @@ tokio.workspace = true
 anyhow.workspace = true
 ignore.workspace = true
 globset.workspace = true
+sha2 = "0.10"
 
 [dev-dependencies]
 tempfile.workspace = true

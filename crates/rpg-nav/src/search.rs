@@ -41,6 +41,8 @@ pub struct SearchParams<'a> {
     /// Pre-computed embedding scores (entity_id → cosine score) for hybrid blending.
     /// When provided, features-mode search uses rank-based hybrid scoring.
     pub embedding_scores: Option<&'a std::collections::HashMap<String, f64>>,
+    /// Diff-aware search context for proximity-based ranking boost.
+    pub diff_context: Option<&'a crate::diff::DiffContext>,
 }
 
 /// Search the RPG for entities matching a query with a configurable result limit.
@@ -62,8 +64,41 @@ pub fn search(
             file_pattern: None,
             entity_type_filter: None,
             embedding_scores: None,
+            diff_context: None,
         },
     )
+}
+
+/// Apply diff-aware proximity boost to search results if context is provided.
+fn apply_diff_boost(
+    mut results: Vec<SearchResult>,
+    diff_context: Option<&crate::diff::DiffContext>,
+) -> Vec<SearchResult> {
+    if let Some(ctx) = diff_context {
+        // Build score map
+        let score_map: HashMap<String, f64> = results
+            .iter()
+            .map(|r| (r.entity_id.clone(), r.score))
+            .collect();
+
+        // Apply proximity boost
+        let boosted = crate::diff::apply_proximity_boost(&score_map, ctx);
+
+        // Update results with boosted scores
+        for result in &mut results {
+            if let Some(&new_score) = boosted.get(&result.entity_id) {
+                result.score = new_score;
+            }
+        }
+
+        // Re-sort by boosted scores
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+    results
 }
 
 /// Search with full parameters (paper-complete SearchNode).
@@ -121,22 +156,31 @@ pub fn search_with_params(graph: &RPGraph, params: &SearchParams) -> Vec<SearchR
     // This ensures semantic-only results from embeddings respect the same filters.
     let candidate_ids: HashSet<&String> = entities.iter().map(|(id, _)| *id).collect();
 
-    match params.mode {
+    // When diff-aware boosting is requested, expand search limit to ensure changed
+    // entities outside the normal top-N have a chance to be boosted into results.
+    // Apply boost before final truncation.
+    let search_limit = if params.diff_context.is_some() {
+        params.limit * 10
+    } else {
+        params.limit
+    };
+
+    let mut results = match params.mode {
         SearchMode::Features => {
-            let lexical = search_features(&entities, &query_terms, params.limit);
+            let lexical = search_features(&entities, &query_terms, search_limit);
             maybe_hybrid_rerank(
                 graph,
                 &candidate_ids,
                 lexical,
                 params.embedding_scores,
-                params.limit,
+                search_limit,
             )
         }
-        SearchMode::Snippets => search_snippets(&entities, &query_terms, params.limit),
+        SearchMode::Snippets => search_snippets(&entities, &query_terms, search_limit),
         SearchMode::Auto => {
             // Merge features + snippets.
-            let feat_results = search_features(&entities, &query_terms, params.limit * 2);
-            let snip_results = search_snippets(&entities, &query_terms, params.limit * 2);
+            let feat_results = search_features(&entities, &query_terms, search_limit * 2);
+            let snip_results = search_snippets(&entities, &query_terms, search_limit * 2);
 
             let mut score_map: std::collections::HashMap<String, SearchResult> =
                 std::collections::HashMap::new();
@@ -166,7 +210,7 @@ pub fn search_with_params(graph: &RPGraph, params: &SearchParams) -> Vec<SearchR
                     .partial_cmp(&a.score)
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
-            merged.truncate(params.limit);
+            merged.truncate(search_limit);
 
             // Apply hybrid reranking if embeddings available
             maybe_hybrid_rerank(
@@ -174,10 +218,15 @@ pub fn search_with_params(graph: &RPGraph, params: &SearchParams) -> Vec<SearchR
                 &candidate_ids,
                 merged,
                 params.embedding_scores,
-                params.limit,
+                search_limit,
             )
         }
-    }
+    };
+
+    // Apply diff-aware proximity boost if provided, then truncate to requested limit
+    results = apply_diff_boost(results, params.diff_context);
+    results.truncate(params.limit);
+    results
 }
 
 /// Compute Jaccard similarity between two token sets.
