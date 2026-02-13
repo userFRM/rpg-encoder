@@ -14,6 +14,7 @@ const DEPENDENCY_EDGE_KINDS: &[EdgeKind] = &[
     EdgeKind::ReadsState,
     EdgeKind::WritesState,
     EdgeKind::Dispatches,
+    EdgeKind::DataFlow,
 ];
 
 /// A single entity in the impact set with its path from the origin.
@@ -156,6 +157,7 @@ mod tests {
             feature_source: None,
             hierarchy_path: String::new(),
             deps: EntityDeps::default(),
+            signature: None,
         }
     }
 

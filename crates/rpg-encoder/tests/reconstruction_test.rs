@@ -14,6 +14,7 @@ fn entity(id: &str, name: &str, hierarchy_path: &str, kind: EntityKind) -> Entit
         feature_source: None,
         hierarchy_path: hierarchy_path.to_string(),
         deps: EntityDeps::default(),
+        signature: None,
     }
 }
 

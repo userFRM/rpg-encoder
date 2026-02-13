@@ -63,3 +63,34 @@ fn java_extract_class_with_constructor() {
     assert_eq!(ctor.name, "Foo");
     assert_eq!(ctor.parent_class.as_deref(), Some("Foo"));
 }
+
+#[test]
+fn java_signature_typed_params_and_return() {
+    let source = "public class Foo { public boolean compute(int x, String y) { return true; } }";
+    let entities = extract_entities(Path::new("Foo.java"), source, Language::JAVA);
+    let method = entities
+        .iter()
+        .find(|e| e.name == "compute")
+        .expect("should find compute");
+    let sig = method.signature.as_ref().expect("should have signature");
+    assert_eq!(sig.parameters.len(), 2);
+    assert_eq!(sig.parameters[0].name, "x");
+    assert_eq!(sig.parameters[0].type_annotation.as_deref(), Some("int"));
+    assert_eq!(sig.parameters[1].name, "y");
+    assert_eq!(sig.parameters[1].type_annotation.as_deref(), Some("String"));
+    assert_eq!(sig.return_type.as_deref(), Some("boolean"));
+}
+
+#[test]
+fn java_signature_void_return() {
+    let source = "public class Foo { public void greet(String name) { } }";
+    let entities = extract_entities(Path::new("Foo.java"), source, Language::JAVA);
+    let method = entities
+        .iter()
+        .find(|e| e.name == "greet")
+        .expect("should find greet");
+    let sig = method.signature.as_ref().expect("should have signature");
+    assert_eq!(sig.parameters.len(), 1);
+    assert_eq!(sig.parameters[0].name, "name");
+    assert_eq!(sig.return_type.as_deref(), Some("void"));
+}

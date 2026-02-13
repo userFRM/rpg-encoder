@@ -199,6 +199,7 @@ mod tests {
             feature_source: None,
             hierarchy_path: String::new(),
             deps: EntityDeps::default(),
+            signature: None,
         }
     }
 

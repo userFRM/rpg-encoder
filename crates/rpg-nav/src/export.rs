@@ -77,6 +77,7 @@ pub fn export_dot(graph: &RPGraph) -> String {
             EdgeKind::ReadsState => "dashed",
             EdgeKind::WritesState => "bold",
             EdgeKind::Dispatches => "solid",
+            EdgeKind::DataFlow => "dashed",
             EdgeKind::Contains => "dotted",
         };
         let label = match edge.kind {
@@ -88,6 +89,7 @@ pub fn export_dot(graph: &RPGraph) -> String {
             EdgeKind::ReadsState => "reads_state",
             EdgeKind::WritesState => "writes_state",
             EdgeKind::Dispatches => "dispatches",
+            EdgeKind::DataFlow => "data_flow",
             EdgeKind::Contains => "contains",
         };
         writeln!(
@@ -170,7 +172,7 @@ pub fn export_mermaid(graph: &RPGraph) -> String {
             | EdgeKind::Composes
             | EdgeKind::Renders
             | EdgeKind::Dispatches => "-->",
-            EdgeKind::Imports => "-.->",
+            EdgeKind::Imports | EdgeKind::DataFlow => "-.->",
             EdgeKind::Inherits | EdgeKind::WritesState => "==>",
             EdgeKind::ReadsState => "-.->",
         };
@@ -183,6 +185,7 @@ pub fn export_mermaid(graph: &RPGraph) -> String {
             EdgeKind::ReadsState => "reads_state",
             EdgeKind::WritesState => "writes_state",
             EdgeKind::Dispatches => "dispatches",
+            EdgeKind::DataFlow => "data_flow",
             EdgeKind::Contains => "contains",
         };
         writeln!(out, "  {} {}|{}| {}", src, arrow, label, tgt).unwrap();

@@ -47,6 +47,9 @@ pub struct GraphMetadata {
     /// Number of entities that have been semantically lifted.
     #[serde(default)]
     pub lifted_entities: usize,
+    /// Number of DataFlow edges in the graph.
+    #[serde(default)]
+    pub data_flow_edges: usize,
     /// Whether the hierarchy is LLM-generated (true) or file-path structural (false).
     #[serde(default)]
     pub semantic_hierarchy: bool,
@@ -76,6 +79,9 @@ pub struct Entity {
     pub feature_source: Option<String>,
     pub hierarchy_path: String,
     pub deps: EntityDeps,
+    /// Typed function/method signature extracted from AST.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<Signature>,
 }
 
 /// Resolved dependency relationships for an entity (forward and reverse).
@@ -94,6 +100,8 @@ pub struct EntityDeps {
     pub writes_state: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dispatches: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data_flows_to: Vec<String>,
     pub imported_by: Vec<String>,
     pub invoked_by: Vec<String>,
     pub inherited_by: Vec<String>,
@@ -107,6 +115,8 @@ pub struct EntityDeps {
     pub state_written_by: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dispatched_by: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data_flows_from: Vec<String>,
 }
 
 impl EntityDeps {
@@ -120,6 +130,7 @@ impl EntityDeps {
         self.reads_state.clear();
         self.writes_state.clear();
         self.dispatches.clear();
+        self.data_flows_to.clear();
     }
 
     /// Clear all reverse dependency vectors.
@@ -132,10 +143,11 @@ impl EntityDeps {
         self.state_read_by.clear();
         self.state_written_by.clear();
         self.dispatched_by.clear();
+        self.data_flows_from.clear();
     }
 
     /// Iterate all forward dep vectors with their edge kinds.
-    pub fn forward_deps(&self) -> [(EdgeKind, &Vec<String>); 8] {
+    pub fn forward_deps(&self) -> [(EdgeKind, &Vec<String>); 9] {
         [
             (EdgeKind::Imports, &self.imports),
             (EdgeKind::Invokes, &self.invokes),
@@ -145,6 +157,7 @@ impl EntityDeps {
             (EdgeKind::ReadsState, &self.reads_state),
             (EdgeKind::WritesState, &self.writes_state),
             (EdgeKind::Dispatches, &self.dispatches),
+            (EdgeKind::DataFlow, &self.data_flows_to),
         ]
     }
 
@@ -159,6 +172,7 @@ impl EntityDeps {
             EdgeKind::ReadsState => &mut self.state_read_by,
             EdgeKind::WritesState => &mut self.state_written_by,
             EdgeKind::Dispatches => &mut self.dispatched_by,
+            EdgeKind::DataFlow => &mut self.data_flows_from,
             EdgeKind::Contains => return,
         };
         if !vec.contains(&source_id) {
@@ -330,8 +344,26 @@ pub enum EdgeKind {
     WritesState,
     /// E_dep: state/event dispatch dependency.
     Dispatches,
+    /// E_dep: data flow between entities (parameter passing and return values).
+    DataFlow,
     /// E_feature: hierarchy containment (parent → child).
     Contains,
+}
+
+/// Typed function/method signature extracted from AST.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Signature {
+    pub parameters: Vec<Param>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_type: Option<String>,
+}
+
+/// A single parameter in a function signature.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Param {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_annotation: Option<String>,
 }
 
 /// The kind of code entity extracted from source.
@@ -360,7 +392,7 @@ impl RPGraph {
     pub fn new(language: impl Into<String>) -> Self {
         let now = Utc::now();
         Self {
-            version: "2.0.0".to_string(),
+            version: "2.1.0".to_string(),
             created_at: now,
             updated_at: now,
             base_commit: None,
@@ -374,6 +406,7 @@ impl RPGraph {
                 dependency_edges: 0,
                 containment_edges: 0,
                 lifted_entities: 0,
+                data_flow_edges: 0,
                 semantic_hierarchy: false,
                 repo_summary: None,
                 paradigms: Vec::new(),
@@ -407,6 +440,11 @@ impl RPGraph {
             .entities
             .values()
             .filter(|e| !e.semantic_features.is_empty())
+            .count();
+        self.metadata.data_flow_edges = self
+            .edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::DataFlow)
             .count();
         self.updated_at = Utc::now();
         self.rebuild_edge_index();
@@ -779,6 +817,7 @@ impl RPGraph {
                 feature_source: None,
                 hierarchy_path: String::new(),
                 deps: EntityDeps::default(),
+                signature: None,
             };
             self.entities.insert(module_id.clone(), entity);
             self.file_index.entry(file).or_default().push(module_id);

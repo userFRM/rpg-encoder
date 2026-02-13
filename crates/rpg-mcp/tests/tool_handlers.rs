@@ -1,6 +1,7 @@
 use rpg_core::graph::*;
 use rpg_core::storage;
 use rpg_encoder::grounding;
+use rpg_nav::dataflow::{compute_area_invocations, format_area_invocations};
 use rpg_nav::explore::{Direction, explore, format_tree};
 use rpg_nav::fetch::{FetchOutput, fetch};
 use rpg_nav::search::{SearchMode, search};
@@ -27,6 +28,7 @@ fn make_entity(id: &str, name: &str, file: &str, features: Vec<&str>, hierarchy:
         feature_source: None,
         hierarchy_path: hierarchy.to_string(),
         deps: EntityDeps::default(),
+        signature: None,
     }
 }
 
@@ -647,6 +649,7 @@ fn test_restore_only_routing_refreshes_hierarchy_ids_and_containment() {
         feature_source: None,
         hierarchy_path: "Auth/login".to_string(),
         deps: EntityDeps::default(),
+        signature: None,
     };
     graph.insert_entity(auth_entity);
     graph.insert_into_hierarchy("Auth/login", "src/auth.py:login");
@@ -664,6 +667,7 @@ fn test_restore_only_routing_refreshes_hierarchy_ids_and_containment() {
         feature_source: None,
         hierarchy_path: "Data/loading".to_string(),
         deps: EntityDeps::default(),
+        signature: None,
     };
     graph.insert_entity(data_entity);
     graph.insert_into_hierarchy("Data/loading", "src/data.py:load");
@@ -776,4 +780,169 @@ fn test_restore_only_routing_refreshes_hierarchy_ids_and_containment() {
             .contains(&"src/auth.py:login".to_string()),
         "entity should be present in Auth/login hierarchy node"
     );
+}
+
+#[test]
+fn test_explore_data_flow_edge_filter() {
+    let mut graph = RPGraph::new("rust");
+
+    let mut caller = make_entity(
+        "main.rs:caller",
+        "caller",
+        "main.rs",
+        vec!["call function"],
+        "Core/entry",
+    );
+    caller.deps.data_flows_to = vec!["lib.rs:callee".to_string()];
+    graph.insert_entity(caller);
+
+    let mut callee = make_entity(
+        "lib.rs:callee",
+        "callee",
+        "lib.rs",
+        vec!["compute result"],
+        "Core/processing",
+    );
+    callee.deps.data_flows_from = vec!["main.rs:caller".to_string()];
+    graph.insert_entity(callee);
+
+    graph.edges.push(DependencyEdge {
+        source: "main.rs:caller".to_string(),
+        target: "lib.rs:callee".to_string(),
+        kind: EdgeKind::DataFlow,
+    });
+    graph.refresh_metadata();
+
+    // Explore with DataFlow edge filter (mirrors MCP handler's parse_edge_filter("data_flow"))
+    let tree = explore(
+        &graph,
+        "main.rs:caller",
+        Direction::Downstream,
+        2,
+        Some(EdgeKind::DataFlow),
+    );
+    assert!(tree.is_some(), "should find DataFlow traversal tree");
+    let tree = tree.unwrap();
+    let child_names: Vec<&str> = tree
+        .children
+        .iter()
+        .map(|c| c.entity_name.as_str())
+        .collect();
+    assert!(
+        child_names.contains(&"callee"),
+        "DataFlow downstream should include callee; got: {:?}",
+        child_names
+    );
+
+    // Explore with Invokes edge filter — should NOT find callee (no Invokes edge)
+    let tree_invokes = explore(
+        &graph,
+        "main.rs:caller",
+        Direction::Downstream,
+        2,
+        Some(EdgeKind::Invokes),
+    );
+    if let Some(t) = tree_invokes {
+        assert!(
+            t.children.is_empty(),
+            "Invokes filter should yield no children when only DataFlow edges exist"
+        );
+    }
+}
+
+#[test]
+fn test_rpg_info_data_flow_edges_count() {
+    let mut graph = RPGraph::new("rust");
+    graph.insert_entity(make_entity(
+        "a.rs:f1",
+        "f1",
+        "a.rs",
+        vec!["feature"],
+        "Core/a",
+    ));
+    graph.insert_entity(make_entity(
+        "b.rs:f2",
+        "f2",
+        "b.rs",
+        vec!["feature"],
+        "Core/b",
+    ));
+    graph.edges.push(DependencyEdge {
+        source: "a.rs:f1".to_string(),
+        target: "b.rs:f2".to_string(),
+        kind: EdgeKind::DataFlow,
+    });
+    graph.refresh_metadata();
+
+    // Compose rpg_info output the same way the MCP handler does: toon + area section
+    let toon_info = toon::format_rpg_info(&graph);
+    let area_invs = compute_area_invocations(&graph);
+    let area_text = format_area_invocations(&area_invs);
+    let info = if area_text.is_empty() {
+        toon_info.clone()
+    } else {
+        format!("{}\n{}", toon_info, area_text)
+    };
+    assert!(
+        info.contains("data_flow_edges: 1"),
+        "rpg_info should show data_flow_edges count; got:\n{}",
+        info
+    );
+}
+
+#[test]
+fn test_rpg_info_area_connectivity() {
+    let mut graph = RPGraph::new("rust");
+
+    // Auth entity
+    let auth = make_entity(
+        "auth.rs:validate",
+        "validate",
+        "auth.rs",
+        vec!["validate token"],
+        "Auth/tokens",
+    );
+    graph.insert_entity(auth);
+    graph.insert_into_hierarchy("Auth/tokens", "auth.rs:validate");
+
+    // DB entity
+    let db = make_entity(
+        "db.rs:query",
+        "query",
+        "db.rs",
+        vec!["run query"],
+        "Database/queries",
+    );
+    graph.insert_entity(db);
+    graph.insert_into_hierarchy("Database/queries", "db.rs:query");
+
+    // Cross-area invocation: Auth -> Database
+    graph.edges.push(DependencyEdge {
+        source: "auth.rs:validate".to_string(),
+        target: "db.rs:query".to_string(),
+        kind: EdgeKind::Invokes,
+    });
+    graph.refresh_metadata();
+
+    // Compose rpg_info the same way the MCP handler does: toon + area section
+    let toon_info = toon::format_rpg_info(&graph);
+    let invocations = compute_area_invocations(&graph);
+    let area_text = format_area_invocations(&invocations);
+    let composed = format!("{}\n{}", toon_info, area_text);
+
+    // Verify area connectivity section is present in the composed output
+    assert!(
+        composed.contains("Auth") && composed.contains("Database"),
+        "composed rpg_info should contain Auth -> Database; got:\n{}",
+        composed
+    );
+    assert!(
+        composed.contains("query"),
+        "composed rpg_info should contain sample callee 'query'; got:\n{}",
+        composed
+    );
+    assert_eq!(invocations.len(), 1);
+    assert_eq!(invocations[0].source_area, "Auth");
+    assert_eq!(invocations[0].target_area, "Database");
+    assert_eq!(invocations[0].edge_count, 1);
 }

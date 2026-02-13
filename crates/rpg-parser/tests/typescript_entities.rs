@@ -41,6 +41,37 @@ fn test_function_declaration() {
 }
 
 #[test]
+fn test_signature_typed_params_and_return() {
+    let source = r"function compute(x: number, y: string): boolean { return true; }";
+    let entities = extract_entities(Path::new("test.ts"), source, Language::TYPESCRIPT);
+    assert_eq!(entities.len(), 1);
+    let sig = entities[0]
+        .signature
+        .as_ref()
+        .expect("should have signature");
+    assert_eq!(sig.parameters.len(), 2);
+    assert_eq!(sig.parameters[0].name, "x");
+    assert_eq!(sig.parameters[0].type_annotation.as_deref(), Some("number"));
+    assert_eq!(sig.parameters[1].name, "y");
+    assert_eq!(sig.parameters[1].type_annotation.as_deref(), Some("string"));
+    assert!(sig.return_type.is_some());
+}
+
+#[test]
+fn test_signature_rest_parameter() {
+    let source = r"function collect(first: string, ...rest: number[]): void { }";
+    let entities = extract_entities(Path::new("test.ts"), source, Language::TYPESCRIPT);
+    assert_eq!(entities.len(), 1);
+    let sig = entities[0]
+        .signature
+        .as_ref()
+        .expect("should have signature");
+    assert_eq!(sig.parameters.len(), 2);
+    assert_eq!(sig.parameters[0].name, "first");
+    assert_eq!(sig.parameters[1].name, "...rest");
+}
+
+#[test]
 fn test_class_with_method() {
     let source = "\
 class Foo {

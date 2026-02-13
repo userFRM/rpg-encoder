@@ -98,6 +98,11 @@ pub fn merge_features(new_graph: &mut RPGraph, old_graph: &RPGraph) -> MergeStat
                 new_entity.hierarchy_path = old_entity.hierarchy_path.clone();
                 stats.hierarchy_restored += 1;
             }
+
+            // Restore signature if new extraction didn't produce one
+            if new_entity.signature.is_none() && old_entity.signature.is_some() {
+                new_entity.signature = old_entity.signature.clone();
+            }
         }
     }
 
@@ -987,6 +992,7 @@ pub fn run_update(
         grounding_ctx.as_ref(),
     );
     grounding::resolve_dependencies(graph);
+    crate::dataflow::compute_data_flow_edges(graph);
 
     // Step 6: Re-ground hierarchy
     grounding::ground_hierarchy(graph);

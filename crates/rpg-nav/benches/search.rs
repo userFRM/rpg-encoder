@@ -17,6 +17,7 @@ fn make_entity(id: &str, name: &str, file: &str, features: Vec<&str>, hierarchy:
         feature_source: None,
         hierarchy_path: hierarchy.to_string(),
         deps: EntityDeps::default(),
+        signature: None,
     }
 }
 

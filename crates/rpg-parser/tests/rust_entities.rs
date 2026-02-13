@@ -3,6 +3,69 @@ use rpg_parser::entities::extract_rust_entities;
 use std::path::Path;
 
 #[test]
+fn test_signature_with_typed_params_and_return() {
+    let source = "fn compute(x: i32, y: String) -> bool { true }\n";
+    let entities = extract_rust_entities(Path::new("test.rs"), source);
+    assert_eq!(entities.len(), 1);
+    let sig = entities[0]
+        .signature
+        .as_ref()
+        .expect("should have signature");
+    assert_eq!(sig.parameters.len(), 2);
+    assert_eq!(sig.parameters[0].name, "x");
+    assert_eq!(sig.parameters[0].type_annotation.as_deref(), Some("i32"));
+    assert_eq!(sig.parameters[1].name, "y");
+    assert_eq!(sig.parameters[1].type_annotation.as_deref(), Some("String"));
+    assert_eq!(sig.return_type.as_deref(), Some("bool"));
+}
+
+#[test]
+fn test_signature_no_return_type() {
+    let source = "fn greet(name: &str) { println!(\"{}\", name); }\n";
+    let entities = extract_rust_entities(Path::new("test.rs"), source);
+    assert_eq!(entities.len(), 1);
+    let sig = entities[0]
+        .signature
+        .as_ref()
+        .expect("should have signature");
+    assert_eq!(sig.parameters.len(), 1);
+    assert_eq!(sig.parameters[0].name, "name");
+    assert!(sig.return_type.is_none());
+}
+
+#[test]
+fn test_signature_self_param_skipped() {
+    let source = "\
+struct Foo;
+impl Foo {
+    fn do_work(&self, count: usize) -> bool { true }
+}
+";
+    let entities = extract_rust_entities(Path::new("test.rs"), source);
+    let method = entities
+        .iter()
+        .find(|e| e.name == "do_work")
+        .expect("should find do_work");
+    let sig = method.signature.as_ref().expect("should have signature");
+    // &self should be skipped
+    assert_eq!(sig.parameters.len(), 1);
+    assert_eq!(sig.parameters[0].name, "count");
+    assert_eq!(sig.return_type.as_deref(), Some("bool"));
+}
+
+#[test]
+fn test_signature_no_params() {
+    let source = "fn hello() -> String { String::new() }\n";
+    let entities = extract_rust_entities(Path::new("test.rs"), source);
+    let sig = entities[0]
+        .signature
+        .as_ref()
+        .expect("should have signature");
+    assert!(sig.parameters.is_empty());
+    assert_eq!(sig.return_type.as_deref(), Some("String"));
+}
+
+#[test]
 fn test_simple_function() {
     let source = "fn main() {\n    println!(\"hello\");\n}\n";
     let entities = extract_rust_entities(Path::new("test.rs"), source);

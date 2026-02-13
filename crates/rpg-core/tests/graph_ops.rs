@@ -14,6 +14,7 @@ fn make_entity(id: &str, name: &str, file: &str) -> Entity {
         feature_source: None,
         hierarchy_path: String::new(),
         deps: EntityDeps::default(),
+        signature: None,
     }
 }
 
@@ -360,4 +361,62 @@ fn test_refresh_metadata_edge_counts() {
     assert_eq!(graph.metadata.total_edges, 2);
     assert_eq!(graph.metadata.dependency_edges, 1);
     assert_eq!(graph.metadata.containment_edges, 1);
+}
+
+#[test]
+fn test_forward_deps_returns_nine_entries() {
+    let deps = EntityDeps::default();
+    let fwd = deps.forward_deps();
+    assert_eq!(fwd.len(), 9);
+    // Verify DataFlow is included
+    assert!(fwd.iter().any(|(kind, _)| *kind == EdgeKind::DataFlow));
+}
+
+#[test]
+fn test_push_reverse_data_flow() {
+    let mut deps = EntityDeps::default();
+    deps.push_reverse(EdgeKind::DataFlow, "src.rs:source".to_string());
+    assert_eq!(deps.data_flows_from, vec!["src.rs:source".to_string()]);
+    // Dedup: pushing same value again should not duplicate
+    deps.push_reverse(EdgeKind::DataFlow, "src.rs:source".to_string());
+    assert_eq!(deps.data_flows_from.len(), 1);
+}
+
+#[test]
+fn test_refresh_metadata_data_flow_edges() {
+    let mut graph = RPGraph::new("rust");
+    graph.insert_entity(make_entity("a.rs:f1", "f1", "a.rs"));
+    graph.edges.push(DependencyEdge {
+        source: "a.rs:f1".to_string(),
+        target: "b.rs:f2".to_string(),
+        kind: EdgeKind::DataFlow,
+    });
+    graph.edges.push(DependencyEdge {
+        source: "b.rs:f2".to_string(),
+        target: "a.rs:f1".to_string(),
+        kind: EdgeKind::DataFlow,
+    });
+    graph.refresh_metadata();
+    assert_eq!(graph.metadata.data_flow_edges, 2);
+    assert_eq!(graph.metadata.dependency_edges, 2);
+}
+
+#[test]
+fn test_clear_forward_includes_data_flows_to() {
+    let mut deps = EntityDeps {
+        data_flows_to: vec!["target".to_string()],
+        ..Default::default()
+    };
+    deps.clear_forward();
+    assert!(deps.data_flows_to.is_empty());
+}
+
+#[test]
+fn test_clear_reverse_includes_data_flows_from() {
+    let mut deps = EntityDeps {
+        data_flows_from: vec!["source".to_string()],
+        ..Default::default()
+    };
+    deps.clear_reverse();
+    assert!(deps.data_flows_from.is_empty());
 }

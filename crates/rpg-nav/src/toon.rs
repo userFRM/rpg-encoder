@@ -120,6 +120,12 @@ struct FetchEntityOutput {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     dispatched_by: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    data_flows_to: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    data_flows_from: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signature: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     siblings: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     source: Option<String>,
@@ -290,6 +296,17 @@ pub fn format_fetch_result_projected(result: &FetchResult, projection: &FetchPro
         } else {
             Vec::new()
         },
+        data_flows_to: if include_deps {
+            entity.deps.data_flows_to.clone()
+        } else {
+            Vec::new()
+        },
+        data_flows_from: if include_deps {
+            entity.deps.data_flows_from.clone()
+        } else {
+            Vec::new()
+        },
+        signature: entity.signature.as_ref().map(format_signature),
         siblings: if include_hierarchy {
             result.hierarchy_context.clone()
         } else {
@@ -335,6 +352,9 @@ pub fn format_fetch_result(result: &FetchResult) -> String {
         state_written_by: entity.deps.state_written_by.clone(),
         dispatches: entity.deps.dispatches.clone(),
         dispatched_by: entity.deps.dispatched_by.clone(),
+        data_flows_to: entity.deps.data_flows_to.clone(),
+        data_flows_from: entity.deps.data_flows_from.clone(),
+        signature: entity.signature.as_ref().map(format_signature),
         siblings: result.hierarchy_context.clone(),
         source: result.source_code.clone(),
     };
@@ -348,6 +368,23 @@ pub fn format_fetch_result(result: &FetchResult) -> String {
     }
 
     toon
+}
+
+/// Format a Signature into a human-readable string like `(x: i32, y: String) -> bool`.
+fn format_signature(sig: &rpg_core::graph::Signature) -> String {
+    let params: Vec<String> = sig
+        .parameters
+        .iter()
+        .map(|p| match &p.type_annotation {
+            Some(t) => format!("{}: {}", p.name, t),
+            None => p.name.clone(),
+        })
+        .collect();
+    let params_str = format!("({})", params.join(", "));
+    match &sig.return_type {
+        Some(rt) => format!("{} -> {}", params_str, rt),
+        None => params_str,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -439,6 +476,7 @@ struct RpgInfoOutput {
     files: usize,
     areas: usize,
     edges: usize,
+    data_flow_edges: usize,
     hierarchy_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     summary: Option<String>,
@@ -499,6 +537,7 @@ pub fn format_rpg_info(graph: &RPGraph) -> String {
         files: graph.metadata.total_files,
         areas: graph.metadata.functional_areas,
         edges: graph.metadata.total_edges,
+        data_flow_edges: graph.metadata.data_flow_edges,
         hierarchy_type: if graph.metadata.semantic_hierarchy {
             "semantic".to_string()
         } else {
@@ -748,6 +787,7 @@ mod tests {
                     invokes: vec!["bar".to_string()],
                     ..Default::default()
                 },
+                signature: None,
             },
             source_code: Some("fn foo() { bar() }".to_string()),
             hierarchy_context: vec!["sibling".to_string()],
@@ -791,6 +831,7 @@ mod tests {
                 feature_source: None,
                 hierarchy_path: String::new(),
                 deps: EntityDeps::default(),
+                signature: None,
             },
             source_code: Some(long_source),
             hierarchy_context: vec![],

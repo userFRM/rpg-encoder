@@ -8,6 +8,7 @@
 //! protocol (get_entities_for_lifting → submit_lift_results), not by external LLM API calls.
 
 pub mod critic;
+pub mod dataflow;
 pub mod evolution;
 pub mod grounding;
 pub mod hierarchy;

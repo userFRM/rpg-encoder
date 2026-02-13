@@ -17,6 +17,7 @@ fn make_entity(id: &str, name: &str, file: &str) -> Entity {
         feature_source: None,
         hierarchy_path: String::new(),
         deps: EntityDeps::default(),
+        signature: None,
     }
 }
 
@@ -183,6 +184,7 @@ fn make_lifted_entity(id: &str, name: &str, file: &str, features: &[&str]) -> En
         feature_source: None,
         hierarchy_path: String::new(),
         deps: EntityDeps::default(),
+        signature: None,
     }
 }
 
@@ -199,6 +201,7 @@ fn make_module_entity(id: &str, name: &str, file: &str, features: &[&str]) -> En
         feature_source: None,
         hierarchy_path: String::new(),
         deps: EntityDeps::default(),
+        signature: None,
     }
 }
 
