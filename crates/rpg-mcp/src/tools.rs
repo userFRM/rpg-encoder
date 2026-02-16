@@ -547,6 +547,8 @@ impl RpgServer {
         // Clear sessions — graph structure changed
         *self.lifting_session.write().await = None;
         *self.hierarchy_session.write().await = None;
+        *self.generation_session.write().await = None;
+        let _ = storage::clear_generation_plan(&self.project_root);
 
         // Sync embedding index incrementally (fingerprints detect what changed)
         {
@@ -1556,6 +1558,8 @@ impl RpgServer {
         // Clear sessions — entity list changed
         *self.lifting_session.write().await = None;
         *self.hierarchy_session.write().await = None;
+        *self.generation_session.write().await = None;
+        let _ = storage::clear_generation_plan(&self.project_root);
 
         // Sync embedding index incrementally — entities changed
         {
@@ -1688,6 +1692,9 @@ impl RpgServer {
                 // Clear sessions — graph reloaded
                 *self.lifting_session.write().await = None;
                 *self.hierarchy_session.write().await = None;
+                // Reload generation session from disk (may have changed externally)
+                *self.generation_session.write().await =
+                    crate::types::load_generation_session(&self.project_root);
 
                 // Reload pending routing from disk (may have changed externally)
                 let pending = load_pending_routing(&self.project_root)
@@ -2852,6 +2859,543 @@ impl RpgServer {
         }
 
         Ok(result)
+    }
+
+    // =========================================================================
+    // Generation Tools
+    // =========================================================================
+
+    #[tool(
+        description = "Initialize a new code generation session from a natural language specification. Returns prompts and instructions for the next step."
+    )]
+    async fn init_generation(
+        &self,
+        Parameters(params): Parameters<InitGenerationParams>,
+    ) -> Result<String, String> {
+        let (plan, output) = crate::generation::init_generation(
+            &self.project_root,
+            params.spec,
+            params.language,
+            params.reference_repo,
+        )?;
+
+        // Store session
+        let batches =
+            if let rpg_gen::GenerationState::DesigningInterfaces { feature_tree, .. } = &plan.state
+            {
+                crate::generation::build_interface_batches(feature_tree)
+            } else {
+                Vec::new()
+            };
+
+        *self.generation_session.write().await = Some(crate::types::GenerationSession {
+            plan,
+            interface_batches: batches,
+            task_batches: Vec::new(),
+        });
+
+        Ok(output)
+    }
+
+    #[tool(
+        description = "Get the current feature tree for review. Shows the decomposed specification structure."
+    )]
+    async fn get_feature_tree(&self) -> Result<String, String> {
+        let session = self.generation_session.read().await;
+        let session = session
+            .as_ref()
+            .ok_or("No generation session. Call init_generation first.")?;
+        crate::generation::get_feature_tree(&session.plan)
+    }
+
+    #[tool(description = "Submit the LLM-decomposed feature tree from spec_decomposition.")]
+    async fn submit_feature_tree(
+        &self,
+        Parameters(params): Parameters<SubmitFeatureTreeParams>,
+    ) -> Result<String, String> {
+        let mut session = self.generation_session.write().await;
+        let session = session
+            .as_mut()
+            .ok_or("No generation session. Call init_generation first.")?;
+
+        let result = crate::generation::submit_feature_tree(
+            &self.project_root,
+            &mut session.plan,
+            &params.features,
+            params.revision.as_deref(),
+        )?;
+
+        // Update interface batches
+        if let rpg_gen::GenerationState::DesigningInterfaces { feature_tree, .. } =
+            &session.plan.state
+        {
+            session.interface_batches = crate::generation::build_interface_batches(feature_tree);
+        }
+
+        Ok(result)
+    }
+
+    #[tool(
+        description = "Get a batch of features for interface design. Returns features and instructions."
+    )]
+    async fn get_interfaces_for_design(
+        &self,
+        Parameters(params): Parameters<GetInterfacesForDesignParams>,
+    ) -> Result<String, String> {
+        let session = self.generation_session.read().await;
+        let session = session
+            .as_ref()
+            .ok_or("No generation session. Call init_generation first.")?;
+
+        let batch_index = params.batch_index.unwrap_or(0);
+        crate::generation::get_interfaces_for_design(&session.plan, session, batch_index)
+    }
+
+    #[tool(
+        description = "Submit designed interfaces for a batch. Merges with existing interfaces."
+    )]
+    async fn submit_interface_design(
+        &self,
+        Parameters(params): Parameters<SubmitInterfaceDesignParams>,
+    ) -> Result<String, String> {
+        let mut session = self.generation_session.write().await;
+        let session = session
+            .as_mut()
+            .ok_or("No generation session. Call init_generation first.")?;
+
+        let (output, task_batches) = crate::generation::submit_interface_design(
+            &self.project_root,
+            &mut session.plan,
+            &params.interfaces,
+            params.revision.as_deref(),
+        )?;
+
+        // If we transitioned to Executing, store task batches
+        if let Some(batches) = task_batches {
+            session.task_batches = batches;
+        }
+
+        Ok(output)
+    }
+
+    #[tool(
+        description = "Get a batch of tasks for code generation. Returns tasks with context and instructions."
+    )]
+    async fn get_tasks_for_generation(
+        &self,
+        Parameters(params): Parameters<GetTasksForGenerationParams>,
+    ) -> Result<String, String> {
+        let session = self.generation_session.read().await;
+        let session = session
+            .as_ref()
+            .ok_or("No generation session. Complete interface design first.")?;
+
+        let batch_index = params.batch_index.unwrap_or(0);
+        crate::generation::get_tasks_for_generation(
+            &self.project_root,
+            &session.plan,
+            session,
+            batch_index,
+        )
+    }
+
+    #[tool(
+        description = "Submit generated code completions. Maps task IDs to file paths where code was written."
+    )]
+    async fn submit_generated_code(
+        &self,
+        Parameters(params): Parameters<SubmitGeneratedCodeParams>,
+    ) -> Result<String, String> {
+        let mut session = self.generation_session.write().await;
+        let session = session.as_mut().ok_or("No generation session.")?;
+
+        crate::generation::submit_generated_code(
+            &self.project_root,
+            &mut session.plan,
+            &params.completions,
+            params.revision.as_deref(),
+        )
+    }
+
+    #[tool(
+        description = "Validate generated code against the plan. Checks file existence, hash integrity, and basic structure."
+    )]
+    async fn validate_generation(
+        &self,
+        Parameters(params): Parameters<ValidateGenerationParams>,
+    ) -> Result<String, String> {
+        let mut session = self.generation_session.write().await;
+        let session = session.as_mut().ok_or("No generation session.")?;
+
+        crate::generation::validate_generation(
+            &self.project_root,
+            &mut session.plan,
+            params.task_ids,
+        )
+    }
+
+    #[tool(
+        description = "Get generation status dashboard: phase, progress, statistics, and next step."
+    )]
+    async fn generation_status(&self) -> Result<String, String> {
+        let session = self.generation_session.read().await;
+        match session.as_ref() {
+            Some(s) => Ok(crate::generation::generation_status(&s.plan, Some(s))),
+            None => Ok("No generation session. Call init_generation to start.".into()),
+        }
+    }
+
+    #[tool(
+        description = "Reset the generation session. Clears all state and allows starting fresh."
+    )]
+    async fn reset_generation(&self) -> Result<String, String> {
+        *self.generation_session.write().await = None;
+        crate::generation::reset_generation(&self.project_root)
+    }
+
+    #[tool(
+        description = "Report the outcome of a TDD iteration for a task. Records pass/fail, routes to next action (fix code, fix test, retry), and tracks iteration history."
+    )]
+    async fn report_task_outcome(
+        &self,
+        Parameters(params): Parameters<ReportTaskOutcomeParams>,
+    ) -> Result<String, String> {
+        let mut session = self.generation_session.write().await;
+        let session = session.as_mut().ok_or("No generation session.")?;
+
+        crate::generation::report_task_outcome(
+            &self.project_root,
+            &mut session.plan,
+            &params.task_id,
+            &params.outcome,
+            params.test_results.as_deref(),
+            params.telemetry.as_deref(),
+            params.file_path.as_deref(),
+            params.revision.as_deref(),
+        )
+    }
+
+    #[tool(
+        description = "Autonomous test execution loop for a generation task. Runs tests in local/docker sandbox, applies lightweight command adaptations, classifies failures, and reports telemetry + outcome routing."
+    )]
+    async fn run_task_test_loop(
+        &self,
+        Parameters(params): Parameters<RunTaskTestLoopParams>,
+    ) -> Result<String, String> {
+        let sandbox_mode = match params.sandbox_mode.as_deref().unwrap_or("local") {
+            "local" => rpg_gen::SandboxMode::Local,
+            "docker" => rpg_gen::SandboxMode::Docker,
+            "none" => rpg_gen::SandboxMode::None,
+            other => return Err(format!("invalid sandbox_mode '{}'", other)),
+        };
+
+        let mut session = self.generation_session.write().await;
+        let session = session.as_mut().ok_or("No generation session.")?;
+        let config = self.get_config_blocking();
+
+        let resolved_docker_image = if matches!(sandbox_mode, rpg_gen::SandboxMode::Docker) {
+            if let Some(image) = params.docker_image.clone() {
+                Some(image)
+            } else {
+                let key = session.plan.language.to_lowercase();
+                config
+                    .generation
+                    .docker_images
+                    .get(&key)
+                    .cloned()
+                    .or_else(|| {
+                        config
+                            .generation
+                            .docker_images
+                            .iter()
+                            .find(|(k, _)| k.eq_ignore_ascii_case(&session.plan.language))
+                            .map(|(_, v)| v.clone())
+                    })
+            }
+        } else {
+            None
+        };
+
+        crate::generation::run_task_test_loop(
+            &self.project_root,
+            &mut session.plan,
+            &params.task_id,
+            &params.test_command,
+            params.file_path.as_deref(),
+            params.working_dir.as_deref(),
+            sandbox_mode,
+            resolved_docker_image.as_deref(),
+            params.max_auto_adapt.unwrap_or(1),
+            params.model.as_deref(),
+            params.backbone.as_deref(),
+            params.prompt_tokens,
+            params.completion_tokens,
+            params.revision.as_deref(),
+        )
+    }
+
+    #[tool(
+        description = "Export generation cost/efficiency metrics and quality-vs-cost curves across recorded backbones."
+    )]
+    async fn generation_efficiency_report(
+        &self,
+        Parameters(_params): Parameters<GenerationEfficiencyReportParams>,
+    ) -> Result<String, String> {
+        let session = self.generation_session.read().await;
+        let session = session.as_ref().ok_or("No generation session.")?;
+        crate::generation::generation_efficiency_report(&self.project_root, &session.plan)
+    }
+
+    #[tool(
+        description = "Seed missing or low-confidence semantic features using a lightweight built-in ontology."
+    )]
+    async fn seed_ontology_features(
+        &self,
+        Parameters(params): Parameters<SeedOntologyFeaturesParams>,
+    ) -> Result<String, String> {
+        self.ensure_graph().await?;
+        let mut graph = self.graph.write().await;
+        let graph = graph.as_mut().ok_or("No RPG loaded.")?;
+        crate::quality::seed_ontology_features(
+            &self.project_root,
+            graph,
+            params.max_per_entity.unwrap_or(2),
+        )
+    }
+
+    #[tool(
+        description = "Assess representation quality at scale with confidence scoring and semantic drift checks."
+    )]
+    async fn assess_representation_quality(
+        &self,
+        Parameters(params): Parameters<AssessRepresentationQualityParams>,
+    ) -> Result<String, String> {
+        self.ensure_graph().await?;
+        let graph = self.graph.read().await;
+        let graph = graph.as_ref().ok_or("No RPG loaded.")?;
+        crate::quality::assess_representation_quality(
+            &self.project_root,
+            graph,
+            params.drift_threshold.unwrap_or(0.5),
+            params.write_baseline.unwrap_or(true),
+            params.max_examples.unwrap_or(20),
+        )
+    }
+
+    #[tool(
+        description = "Run retrieval/localization ablations and persist metrics (Acc@k, file-Acc@k, MRR) for full graph vs reduced variants."
+    )]
+    async fn run_representation_ablation(
+        &self,
+        Parameters(params): Parameters<RunRepresentationAblationParams>,
+    ) -> Result<String, String> {
+        self.ensure_graph().await?;
+        let graph = self.graph.read().await;
+        let graph = graph.as_ref().ok_or("No RPG loaded.")?;
+        crate::quality::run_representation_ablation(
+            &self.project_root,
+            graph,
+            params.max_queries.unwrap_or(200),
+            params.k.unwrap_or(5),
+        )
+    }
+
+    #[tool(
+        description = "Export a blinded external-validation bundle (tasks + template + private answer key) for third-party reproduction."
+    )]
+    async fn export_external_validation_bundle(
+        &self,
+        Parameters(params): Parameters<ExportExternalValidationBundleParams>,
+    ) -> Result<String, String> {
+        self.ensure_graph().await?;
+        let graph = self.graph.read().await;
+        let graph = graph.as_ref().ok_or("No RPG loaded.")?;
+        crate::quality::export_external_validation_bundle(
+            &self.project_root,
+            graph,
+            params.sample_size.unwrap_or(200),
+            params.k.unwrap_or(5),
+        )
+    }
+
+    #[tool(
+        description = "Retry failed tasks. Resets failed tasks to pending status for re-generation."
+    )]
+    async fn retry_failed_tasks(&self) -> Result<String, String> {
+        let mut session = self.generation_session.write().await;
+        let session = session.as_mut().ok_or("No generation session.")?;
+
+        crate::generation::retry_failed_tasks(&self.project_root, &mut session.plan)
+    }
+
+    #[tool(
+        description = "Finalize generation: verify all tasks complete and build RPG from generated code."
+    )]
+    async fn finalize_generation(&self) -> Result<String, String> {
+        use rpg_parser::languages::Language;
+
+        let mut session_guard = self.generation_session.write().await;
+        let session = session_guard.as_mut().ok_or("No generation session.")?;
+
+        // First, verify all tasks are complete and mark plan as done
+        let (result, task_snapshot) =
+            crate::generation::finalize_generation(&self.project_root, &mut session.plan)?;
+
+        // Now build the RPG from the generated code
+        let project_root = &self.project_root;
+
+        // Detect languages
+        let languages: Vec<Language> = {
+            let detected = Language::detect_all(project_root);
+            if detected.is_empty() {
+                // Use the plan's language as fallback
+                let lang_name = &session.plan.language;
+                let lang = Language::from_name(lang_name)
+                    .or_else(|| Language::from_extension(lang_name))
+                    .ok_or_else(|| format!("unsupported language: {}", lang_name))?;
+                vec![lang]
+            } else {
+                detected
+            }
+        };
+
+        let primary = languages[0].name();
+        let mut graph = RPGraph::new(primary);
+        graph.metadata.languages = languages.iter().map(|l| l.name().to_string()).collect();
+
+        // Load paradigm definitions
+        let paradigm_defs = rpg_parser::paradigms::defs::load_builtin_defs().map_err(|errs| {
+            format!(
+                "paradigm definition errors: {}",
+                errs.iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )
+        })?;
+        let qcache = rpg_parser::paradigms::query_engine::QueryCache::compile_all(&paradigm_defs)
+            .map_err(|errs| format!("query compile errors: {}", errs.join("; ")))?;
+
+        let active_defs =
+            rpg_parser::paradigms::detect_paradigms_toml(project_root, &languages, &paradigm_defs);
+        graph.metadata.paradigms = active_defs.iter().map(|d| d.name.clone()).collect();
+
+        // Parse all code entities
+        let walker = ignore::WalkBuilder::new(project_root)
+            .hidden(true)
+            .git_ignore(true)
+            .add_custom_ignore_filename(".rpgignore")
+            .build();
+
+        for entry in walker.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let Some(file_lang) = Language::from_extension(ext) else {
+                continue;
+            };
+            if !languages.contains(&file_lang) {
+                continue;
+            }
+
+            let Ok(source) = std::fs::read_to_string(path) else {
+                continue;
+            };
+
+            let rel_path = path.strip_prefix(project_root).unwrap_or(path);
+
+            let mut raw_entities =
+                rpg_parser::entities::extract_entities(rel_path, &source, file_lang);
+            rpg_parser::paradigms::classify::classify_entities(
+                &active_defs,
+                rel_path,
+                &mut raw_entities,
+            );
+            let extra = rpg_parser::paradigms::query_engine::execute_entity_queries(
+                &qcache,
+                &active_defs,
+                rel_path,
+                &source,
+                file_lang,
+                &raw_entities,
+            );
+            raw_entities.extend(extra);
+            rpg_parser::paradigms::features::apply_builtin_entity_features(
+                &active_defs,
+                rel_path,
+                &source,
+                file_lang,
+                &mut raw_entities,
+            );
+
+            for raw in raw_entities {
+                graph.insert_entity(raw.into_entity());
+            }
+        }
+
+        // Build hierarchy and resolve dependencies
+        graph.create_module_entities();
+        graph.build_file_path_hierarchy();
+        graph.assign_hierarchy_ids();
+        graph.aggregate_hierarchy_features();
+        graph.materialize_containment_edges();
+
+        let cfg = self.get_config_blocking();
+        let paradigm_ctx = rpg_encoder::grounding::ParadigmContext {
+            active_defs: active_defs.clone(),
+            qcache: &qcache,
+        };
+        rpg_encoder::grounding::populate_entity_deps(
+            &mut graph,
+            project_root,
+            cfg.encoding.broadcast_imports,
+            None,
+            Some(&paradigm_ctx),
+        );
+        rpg_encoder::grounding::ground_hierarchy(&mut graph);
+        rpg_encoder::grounding::resolve_dependencies(&mut graph);
+
+        if let Ok(sha) = rpg_encoder::evolution::get_head_sha(project_root) {
+            graph.base_commit = Some(sha);
+        }
+
+        rpg_encoder::dataflow::compute_data_flow_edges(&mut graph);
+
+        // Pre-seed semantic features from the generation plan
+        let seeded_count = crate::generation::preseed_features(&mut graph, &task_snapshot);
+
+        graph.refresh_metadata();
+        storage::save(project_root, &graph).map_err(|e| format!("Failed to save RPG: {}", e))?;
+        let _ = storage::ensure_gitignore(project_root);
+
+        // Update server state
+        let entity_count = graph.entities.len();
+        *self.graph.write().await = Some(graph);
+        *self.lifting_session.write().await = None;
+        *self.hierarchy_session.write().await = None;
+        self.pending_routing.write().await.clear();
+        clear_pending_routing(&self.project_root);
+
+        // Return combined result
+        Ok(format!(
+            "{}\n\n\
+            ## RPG BUILT\n\n\
+            entities: {}\n\
+            pre-seeded features: {}\n\
+            languages: {}\n\n\
+            The generated code has been indexed with pre-seeded semantic features.\n\
+            Use search_node, fetch_node, and explore_rpg to navigate.\n",
+            result,
+            entity_count,
+            seeded_count,
+            languages
+                .iter()
+                .map(|l| l.name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
     }
 }
 

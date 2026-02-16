@@ -210,3 +210,156 @@ pub(crate) struct SliceBetweenParams {
     /// Include entity metadata (name, file, features) in output
     pub(crate) include_metadata: Option<bool>,
 }
+
+// =============================================================================
+// Generation Tools
+// =============================================================================
+
+/// Parameters for the `init_generation` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct InitGenerationParams {
+    /// Natural language specification of the code to generate
+    pub(crate) spec: String,
+    /// Target programming language (rust, python, typescript, etc.)
+    pub(crate) language: String,
+    /// Optional path to a reference repository for pattern retrieval
+    pub(crate) reference_repo: Option<String>,
+}
+
+/// Parameters for the `submit_feature_tree` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct SubmitFeatureTreeParams {
+    /// JSON object containing the feature tree decomposition.
+    /// See spec_decomposition.md prompt for expected format.
+    pub(crate) features: String,
+    /// Plan revision from init_generation or generation_status. Required to prevent stale submissions.
+    pub(crate) revision: Option<String>,
+}
+
+/// Parameters for the `get_interfaces_for_design` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct GetInterfacesForDesignParams {
+    /// Batch index to retrieve (0-based). Omit or 0 for first batch.
+    pub(crate) batch_index: Option<usize>,
+}
+
+/// Parameters for the `submit_interface_design` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct SubmitInterfaceDesignParams {
+    /// JSON object containing the interface design.
+    /// See interface_design.md prompt for expected format.
+    pub(crate) interfaces: String,
+    /// Plan revision from generation_status. Required to prevent stale submissions.
+    pub(crate) revision: Option<String>,
+}
+
+/// Parameters for the `get_tasks_for_generation` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct GetTasksForGenerationParams {
+    /// Batch index to retrieve (0-based). Omit or 0 for first batch.
+    pub(crate) batch_index: Option<usize>,
+}
+
+/// Parameters for the `submit_generated_code` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct SubmitGeneratedCodeParams {
+    /// JSON object mapping planned_id to file path where code was written.
+    /// Example: {"auth.login": "src/auth/login.rs", "auth.logout": "src/auth/logout.rs"}
+    pub(crate) completions: String,
+    /// Plan revision from generation_status. Required to prevent stale submissions.
+    pub(crate) revision: Option<String>,
+}
+
+/// Parameters for the `validate_generation` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ValidateGenerationParams {
+    /// Optional list of specific task IDs to validate. If omitted, validates all completed tasks.
+    pub(crate) task_ids: Option<Vec<String>>,
+}
+
+/// Parameters for the `report_task_outcome` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ReportTaskOutcomeParams {
+    /// Planned entity ID (task ID from get_tasks_for_generation)
+    pub(crate) task_id: String,
+    /// JSON describing outcome: {"kind":"pass"} or {"kind":"test_failure","failing_count":3,"summary":"..."}
+    pub(crate) outcome: String,
+    /// Optional JSON: {"total":5,"passed":3,"failed":2,"test_file":"tests/test_auth.rs"}
+    pub(crate) test_results: Option<String>,
+    /// Optional JSON telemetry payload (sandbox/latency/token/cost metadata)
+    pub(crate) telemetry: Option<String>,
+    /// File path where code was written (for completed tasks)
+    pub(crate) file_path: Option<String>,
+    /// Plan revision for staleness check
+    pub(crate) revision: Option<String>,
+}
+
+/// Parameters for `run_task_test_loop`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct RunTaskTestLoopParams {
+    /// Planned entity ID (task ID from get_tasks_for_generation)
+    pub(crate) task_id: String,
+    /// Command that runs tests for this task (e.g. "cargo test -p app auth::tests::login")
+    pub(crate) test_command: String,
+    /// File path where the generated code lives (required when task passes)
+    pub(crate) file_path: Option<String>,
+    /// Optional working directory relative to project root.
+    pub(crate) working_dir: Option<String>,
+    /// Sandbox mode: local, docker, or none.
+    pub(crate) sandbox_mode: Option<String>,
+    /// Docker image when sandbox_mode=docker. If omitted, resolved from
+    /// `.rpg/config.toml` `[generation.docker_images]` using plan language.
+    pub(crate) docker_image: Option<String>,
+    /// Maximum automatic command adaptations before giving up (default: 1).
+    pub(crate) max_auto_adapt: Option<usize>,
+    /// Optional model name for cost estimation.
+    pub(crate) model: Option<String>,
+    /// Optional backbone family name for aggregated efficiency curves.
+    pub(crate) backbone: Option<String>,
+    /// Optional prompt token count for this loop iteration.
+    pub(crate) prompt_tokens: Option<usize>,
+    /// Optional completion token count for this loop iteration.
+    pub(crate) completion_tokens: Option<usize>,
+    /// Plan revision for staleness check.
+    pub(crate) revision: Option<String>,
+}
+
+/// Parameters for `generation_efficiency_report`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct GenerationEfficiencyReportParams {}
+
+/// Parameters for `seed_ontology_features`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct SeedOntologyFeaturesParams {
+    /// Maximum ontology-seeded features to add per entity (default: 2)
+    pub(crate) max_per_entity: Option<usize>,
+}
+
+/// Parameters for `assess_representation_quality`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct AssessRepresentationQualityParams {
+    /// Drift threshold for alerting significant semantic changes (default: 0.5)
+    pub(crate) drift_threshold: Option<f64>,
+    /// Persist current features as new drift baseline (default: true)
+    pub(crate) write_baseline: Option<bool>,
+    /// Max entities to show in low-confidence and high-drift examples (default: 20)
+    pub(crate) max_examples: Option<usize>,
+}
+
+/// Parameters for `run_representation_ablation`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct RunRepresentationAblationParams {
+    /// Maximum query-target pairs to evaluate (default: 200)
+    pub(crate) max_queries: Option<usize>,
+    /// Evaluate Acc@k and MRR@k (default: 5)
+    pub(crate) k: Option<usize>,
+}
+
+/// Parameters for `export_external_validation_bundle`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ExportExternalValidationBundleParams {
+    /// Number of blinded tasks to export (default: 200)
+    pub(crate) sample_size: Option<usize>,
+    /// Retrieval cutoff for leaderboard reporting template (default: 5)
+    pub(crate) k: Option<usize>,
+}

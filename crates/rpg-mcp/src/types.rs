@@ -54,6 +54,16 @@ pub(crate) struct HierarchySession {
     pub(crate) batches_completed: usize,
 }
 
+/// Code generation session — tracks state across generation phases.
+pub(crate) struct GenerationSession {
+    /// The generation plan (state machine)
+    pub(crate) plan: rpg_gen::GenerationPlan,
+    /// Interface design batches (start, end) ranges
+    pub(crate) interface_batches: Vec<(usize, usize)>,
+    /// Task generation batches (start, end) ranges
+    pub(crate) task_batches: Vec<(usize, usize)>,
+}
+
 /// Load pending routing state from disk, if it exists.
 pub(crate) fn load_pending_routing(project_root: &std::path::Path) -> Option<PendingRoutingState> {
     let path = storage::pending_routing_file(project_root);
@@ -76,6 +86,39 @@ pub(crate) fn save_pending_routing(
 pub(crate) fn clear_pending_routing(project_root: &std::path::Path) {
     let path = storage::pending_routing_file(project_root);
     let _ = std::fs::remove_file(&path);
+}
+
+/// Load generation session from disk, if it exists.
+pub(crate) fn load_generation_session(project_root: &std::path::Path) -> Option<GenerationSession> {
+    let json = storage::load_generation_plan(project_root).ok()??;
+    let plan: rpg_gen::GenerationPlan = serde_json::from_str(&json).ok()?;
+
+    // Rebuild batches based on plan state
+    let interface_batches = match &plan.state {
+        rpg_gen::GenerationState::DesigningInterfaces { feature_tree, .. } => {
+            crate::generation::build_interface_batches(feature_tree)
+        }
+        _ => Vec::new(),
+    };
+
+    let task_batches = match &plan.state {
+        rpg_gen::GenerationState::Executing { task_graph, .. } => {
+            // Rebuild task batches from topological order
+            let batch_size = 8;
+            let len = task_graph.topological_order.len();
+            (0..len)
+                .step_by(batch_size)
+                .map(|start| (start, (start + batch_size).min(len)))
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+
+    Some(GenerationSession {
+        plan,
+        interface_batches,
+        task_batches,
+    })
 }
 
 /// Get the graph revision string for stale-decision protection.

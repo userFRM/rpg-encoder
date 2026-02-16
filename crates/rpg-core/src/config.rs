@@ -4,6 +4,7 @@
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Top-level RPG configuration.
@@ -13,6 +14,7 @@ pub struct RpgConfig {
     pub encoding: EncodingConfig,
     pub navigation: NavigationConfig,
     pub storage: StorageConfig,
+    pub generation: GenerationConfig,
 }
 
 /// Storage configuration.
@@ -59,6 +61,19 @@ pub struct NavigationConfig {
     pub search_result_limit: usize,
 }
 
+/// Generation runtime configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GenerationConfig {
+    /// Language -> docker image mapping used by run_task_test_loop when sandbox_mode=docker.
+    ///
+    /// Example:
+    /// [generation.docker_images]
+    /// rust = "rust:1.86"
+    /// python = "python:3.12"
+    pub docker_images: BTreeMap<String, String>,
+}
+
 impl Default for EncodingConfig {
     fn default() -> Self {
         Self {
@@ -103,6 +118,14 @@ impl RpgConfig {
         } else {
             Self::default()
         };
+
+        // Normalize generation runtime mapping keys to lowercase for stable lookup.
+        // This keeps TOML ergonomic for users while avoiding case-sensitive misses.
+        let normalized_images = std::mem::take(&mut config.generation.docker_images)
+            .into_iter()
+            .map(|(k, v)| (k.to_lowercase(), v))
+            .collect();
+        config.generation.docker_images = normalized_images;
 
         // Environment variable overrides
         env_override(
@@ -155,22 +178,30 @@ mod tests {
         assert_eq!(config.encoding.drift_ignore_threshold, 0.3);
         assert_eq!(config.encoding.drift_auto_threshold, 0.7);
         assert_eq!(config.navigation.search_result_limit, 10);
+        assert!(config.generation.docker_images.is_empty());
     }
 
     #[test]
     fn test_config_from_toml() {
-        let toml_str = r"
+        let toml_str = r#"
 [encoding]
 batch_size = 64
 max_batch_tokens = 24000
 
 [navigation]
 search_result_limit = 20
-";
+
+[generation.docker_images]
+rust = "rust:1.86"
+"#;
         let config: RpgConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.encoding.batch_size, 64);
         assert_eq!(config.encoding.max_batch_tokens, 24000);
         assert_eq!(config.navigation.search_result_limit, 20);
+        assert_eq!(
+            config.generation.docker_images.get("rust"),
+            Some(&"rust:1.86".to_string())
+        );
         // Defaults for unspecified fields
         assert_eq!(config.encoding.hierarchy_chunk_size, 50);
         assert_eq!(config.encoding.drift_threshold, 0.5);
@@ -180,5 +211,26 @@ search_result_limit = 20
     fn test_config_load_nonexistent() {
         let config = RpgConfig::load(Path::new("/nonexistent/path")).unwrap();
         assert_eq!(config.encoding.batch_size, 50);
+    }
+
+    #[test]
+    fn test_load_normalizes_docker_image_keys_to_lowercase() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rpg_dir = tmp.path().join(".rpg");
+        std::fs::create_dir_all(&rpg_dir).unwrap();
+        std::fs::write(
+            rpg_dir.join("config.toml"),
+            r#"
+[generation.docker_images]
+Rust = "rust:1.86"
+"#,
+        )
+        .unwrap();
+
+        let config = RpgConfig::load(tmp.path()).unwrap();
+        assert_eq!(
+            config.generation.docker_images.get("rust"),
+            Some(&"rust:1.86".to_string())
+        );
     }
 }

@@ -5,6 +5,7 @@ members = [
     "crates/rpg-parser",
     "crates/rpg-encoder",
     "crates/rpg-nav",
+    "crates/rpg-gen",
     "crates/rpg-cli",
     "crates/rpg-mcp",
 ]
@@ -156,3 +157,4 @@ rpg-core = { path = "crates/rpg-core" }
 rpg-parser = { path = "crates/rpg-parser" }
 rpg-encoder = { path = "crates/rpg-encoder" }
 rpg-nav = { path = "crates/rpg-nav" }
+rpg-gen = { path = "crates/rpg-gen" }

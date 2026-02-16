@@ -2,9 +2,11 @@
 //! Exposes SearchNode, FetchNode, ExploreRPG, BuildRPG, UpdateRPG as MCP tools over stdio.
 //! Gives any connected LLM full semantic understanding of a codebase.
 
+mod generation;
 mod helpers;
 mod hierarchy_helpers;
 mod params;
+mod quality;
 mod server;
 mod tools;
 mod types;

@@ -8,7 +8,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
-use crate::types::{HierarchySession, LiftingSession, PendingRouting, load_pending_routing};
+use crate::types::{
+    GenerationSession, HierarchySession, LiftingSession, PendingRouting, load_pending_routing,
+};
 
 /// Cached protocol prompt versions (SHA256 hashes) for deduplication.
 #[derive(Clone)]
@@ -46,6 +48,7 @@ pub(crate) struct RpgServer {
     pub(crate) embedding_index: Arc<RwLock<Option<rpg_nav::embeddings::EmbeddingIndex>>>,
     /// Set to true after first failed init to avoid retrying every search.
     pub(crate) embedding_init_failed: Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) generation_session: Arc<RwLock<Option<GenerationSession>>>,
     pub(crate) tool_router: rmcp::handler::server::router::tool::ToolRouter<Self>,
     /// Protocol prompt versions for deduplication.
     pub(crate) prompt_versions: PromptVersions,
@@ -69,6 +72,8 @@ impl RpgServer {
         let pending = load_pending_routing(&project_root)
             .map(|s| s.entries)
             .unwrap_or_default();
+        // Restore generation session from disk if present
+        let generation = crate::types::load_generation_session(&project_root);
         Self {
             project_root,
             graph: Arc::new(RwLock::new(graph)),
@@ -78,6 +83,7 @@ impl RpgServer {
             pending_routing: Arc::new(RwLock::new(pending)),
             embedding_index: Arc::new(RwLock::new(None)),
             embedding_init_failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            generation_session: Arc::new(RwLock::new(generation)),
             tool_router: Self::create_tool_router(),
             prompt_versions: PromptVersions::new(),
         }

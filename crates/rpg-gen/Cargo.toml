@@ -1,32 +1,27 @@
 [package]
-name = "rpg-mcp"
+name = "rpg-gen"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "MCP server exposing RPG navigation tools"
-
-[[bin]]
-name = "rpg-mcp-server"
-path = "src/main.rs"
+description = "Code generation planning and orchestration for RPG"
 
 [dependencies]
 rpg-core.workspace = true
-rpg-nav = { workspace = true, features = ["embeddings"] }
-rpg-encoder.workspace = true
 rpg-parser.workspace = true
-rpg-gen.workspace = true
-rmcp.workspace = true
-schemars.workspace = true
+rpg-encoder.workspace = true
+rpg-nav.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
 anyhow.workspace = true
-ignore.workspace = true
-globset.workspace = true
-sha2 = "0.10"
+thiserror.workspace = true
+tracing.workspace = true
 chrono.workspace = true
+globset.workspace = true
+
+# Hashing for content verification
+sha2 = "0.10"
 
 [dev-dependencies]
 tempfile.workspace = true

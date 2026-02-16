@@ -133,6 +133,107 @@ When using the RPG to understand or navigate a codebase (after lifting is comple
 - Use `context_pack` instead of search→fetch→explore chains (1 call vs 3-5, ~44% fewer tokens)
 - Use `impact_radius` for richer reachability analysis with edge paths (1 call vs multi-step explore)
 
+## GENERATION PROTOCOL (code generation from spec)
+
+When the user asks you to "generate code", "create a new project", "implement from spec",
+or provides a natural language specification:
+
+### Step-by-step workflow
+
+1. `init_generation(spec="...", language="rust")` — Initialize with specification and target language
+2. Decompose the spec into features using the prompt returned by init_generation
+3. `submit_feature_tree({...})` — Submit the decomposed feature tree
+4. `get_interfaces_for_design(batch_index=0)` — Get features for interface design
+5. Design interfaces using the interface_design prompt
+6. `submit_interface_design({...})` — Submit designed interfaces
+7. Repeat steps 4-6 for each batch until all interfaces designed
+8. `get_tasks_for_generation(batch_index=0)` — Get tasks with dependency context + TDD instructions
+9. **For each task, follow the TDD loop** (see below)
+10. Repeat steps 8-9 for each batch until all tasks completed
+11. `validate_generation()` — Verify generated code against plan (signature comparison)
+12. `finalize_generation()` — Complete the session, build RPG with pre-seeded features
+13. `generation_efficiency_report()` — Export cost/latency/failure telemetry and quality-vs-cost curves
+
+**At any point, call `generation_status` to see where you are.**
+
+### TDD Loop (per task)
+
+Each task returned by `get_tasks_for_generation` includes dependency source code and TDD instructions.
+For every task:
+
+1. **Write tests first** — Create tests validating the expected behavior (semantic features)
+2. **Implement the code** — Write the minimal implementation matching the planned signature
+3. **Run tests** — Execute the test suite (`cargo test`, `pytest`, `jest`, etc.)
+4. **Report outcome** — Call `report_task_outcome` with the result
+5. **Follow routing** — The tool response tells you what to do next
+
+Optional: replace steps 3-4 with `run_task_test_loop` to execute tests in local/docker sandbox,
+auto-adapt common runner flags, classify failures, and report telemetry automatically.
+When using `sandbox_mode="docker"`, provide `docker_image` explicitly or configure
+`.rpg/config.toml` via `[generation.docker_images]` by language key.
+
+### Failure Routing Table
+
+| Outcome | Routing | Action | Counts as retry? |
+|---------|---------|--------|-------------------|
+| `pass` | PASS | Move to next task | No |
+| `test_failure` | FIX_CODE | Fix implementation, re-run tests, report again | Yes |
+| `code_error` | FIX_CODE | Fix compilation error, re-run tests, report again | Yes |
+| `test_error` | FIX_TEST | Fix test code, re-run tests, report again | Yes |
+| `env_error` | ENV_ERROR | Fix environment, retry | **No** |
+
+After 3 counted retries, the task is marked as **Failed** and you move on.
+
+### Classifying Outcomes
+
+When reporting a task outcome, classify it as:
+
+- **pass**: All tests pass, code compiles, behavior is correct
+- **test_failure**: Tests ran but some failed — the code is buggy, the tests are correct
+- **code_error**: Code won't compile or has syntax errors
+- **test_error**: The test code itself is broken (won't compile, bad imports, setup failures)
+- **env_error**: Nothing wrong with code or tests — missing tool, wrong permissions, etc.
+
+### Phase overview
+
+| Phase | Tools | Description |
+|-------|-------|-------------|
+| 1. Planning | `init_generation`, `submit_feature_tree` | Decompose spec into features |
+| 2. Design | `get_interfaces_for_design`, `submit_interface_design` | Design module interfaces |
+| 3. Execute | `get_tasks_for_generation`, `report_task_outcome` | TDD loop: test → implement → verify |
+| 4. Validate | `validate_generation`, `finalize_generation` | Signature validation + RPG build |
+| 5. Report | `generation_efficiency_report` | Cost/latency/failure analytics |
+
+### Key concepts
+
+- **Feature Tree**: Hierarchical decomposition of the specification into functional areas and features
+- **Interface Design**: Module contracts (public APIs, data types, dependencies) before implementation
+- **Task Graph**: Dependency-ordered tasks for code generation
+- **TDD Loop**: Test-first development with automated outcome routing
+- **Sandboxed Runtime**: `run_task_test_loop` supports local/docker execution with auto-adaptation
+- **Dependency Context**: Completed task source code included in subsequent task batches
+- **Signature Validation**: rpg-parser extracts actual signatures and compares to planned
+- **Pre-seeded Features**: `finalize_generation` injects planned semantic features onto RPG entities
+
+### Generation Strategy
+
+Choose your strategy based on project size:
+
+**Small scope (<20 tasks)**: Generate directly in the current conversation.
+Process all batches, run TDD loop, validate, and finalize.
+
+**Large scope (20+ tasks)**: Split into subagent conversations by functional area.
+Each subagent gets a fresh context window and handles one area's tasks.
+After all subagents complete, call `validate_generation` + `finalize_generation`.
+
+### Session management
+
+- `generation_status` — Dashboard showing phase, progress, and next step
+- `run_task_test_loop` — Execute tests in local/docker sandbox, auto-adapt runner args, auto-report outcome
+- `generation_efficiency_report` — Cost/latency/failure telemetry + quality-vs-cost curves
+- `reset_generation` — Clear session and start fresh
+- `retry_failed_tasks` — Reset failed tasks to pending for re-generation
+
 ## TOOLS
 - **lifting_status**: Dashboard — coverage, per-area progress, unlifted files, NEXT STEP
 - **build_rpg**: Index the codebase (run once, instant)
@@ -151,3 +252,24 @@ When using the RPG to understand or navigate a codebase (after lifting is comple
 - **rpg_info**: Get codebase overview, statistics, and inter-area connectivity
 - **update_rpg**: Incrementally update after code changes
 - **reload_rpg**: Reload graph from disk
+
+### Generation Tools
+- **init_generation**: Initialize a new code generation session from a specification
+- **get_feature_tree**: Get the current feature tree for review
+- **submit_feature_tree**: Submit the LLM-decomposed feature tree
+- **get_interfaces_for_design**: Get a batch of features for interface design
+- **submit_interface_design**: Submit designed interfaces
+- **get_tasks_for_generation**: Get tasks with dependency context and TDD instructions
+- **report_task_outcome**: Report TDD iteration result (pass/fail) with failure routing
+- **run_task_test_loop**: Run tests in sandbox, classify failure type, auto-route via report_task_outcome
+- **submit_generated_code**: Report completed tasks with file paths
+- **validate_generation**: Verify generated code with signature comparison
+- **finalize_generation**: Complete session, build RPG with pre-seeded features
+- **generation_status**: Dashboard showing phase, progress, next step
+- **generation_efficiency_report**: Export cost/efficiency telemetry and backbone curves
+- **reset_generation**: Clear session and start fresh
+- **retry_failed_tasks**: Reset failed tasks to pending
+- **seed_ontology_features**: Seed low-confidence entities with ontology hints
+- **assess_representation_quality**: Confidence + drift checks at graph scale
+- **run_representation_ablation**: Measure retrieval/localization ablations (Acc@k/MRR)
+- **export_external_validation_bundle**: Build blinded third-party reproduction pack

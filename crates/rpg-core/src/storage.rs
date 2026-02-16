@@ -118,7 +118,7 @@ pub fn save_with_config(
     if !inner_gitignore.exists() {
         let _ = fs::write(
             &inner_gitignore,
-            "config.toml\nmodels/\nembeddings.bin\nembeddings.meta.json\npending_routing.json\n",
+            "config.toml\nmodels/\nembeddings.bin\nembeddings.meta.json\npending_routing.json\ngeneration_plan.json\ngeneration_report.json\nquality_baseline.json\nablation_report.json\nexternal_validation/\n",
         );
     }
 
@@ -142,7 +142,7 @@ pub fn ensure_gitignore(project_root: &Path) -> Result<bool> {
     }
     fs::write(
         &inner_gitignore,
-        "config.toml\nmodels/\nembeddings.bin\nembeddings.meta.json\npending_routing.json\n",
+        "config.toml\nmodels/\nembeddings.bin\nembeddings.meta.json\npending_routing.json\ngeneration_plan.json\ngeneration_report.json\nquality_baseline.json\nablation_report.json\nexternal_validation/\n",
     )?;
     Ok(false)
 }
@@ -160,6 +160,77 @@ pub fn embeddings_file(project_root: &Path) -> PathBuf {
 /// Get the path to the embeddings metadata file.
 pub fn embeddings_meta_file(project_root: &Path) -> PathBuf {
     rpg_dir(project_root).join("embeddings.meta.json")
+}
+
+/// Get the path to the generation plan file.
+pub fn generation_plan_file(project_root: &Path) -> PathBuf {
+    rpg_dir(project_root).join("generation_plan.json")
+}
+
+/// Check if a generation plan exists for the given project root.
+pub fn generation_plan_exists(project_root: &Path) -> bool {
+    generation_plan_file(project_root).exists()
+}
+
+/// Load a generation plan from disk.
+///
+/// Returns `Ok(None)` if no plan exists, `Err` if the file exists but is invalid.
+pub fn load_generation_plan(project_root: &Path) -> Result<Option<String>> {
+    let path = generation_plan_file(project_root);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let json = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read generation plan from {}", path.display()))?;
+    Ok(Some(json))
+}
+
+/// Save a generation plan to disk.
+///
+/// The plan is passed as a JSON string to avoid coupling storage to rpg-gen types.
+pub fn save_generation_plan(project_root: &Path, plan_json: &str) -> Result<()> {
+    let dir = rpg_dir(project_root);
+    fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create RPG directory {}", dir.display()))?;
+
+    let path = generation_plan_file(project_root);
+    fs::write(&path, plan_json)
+        .with_context(|| format!("failed to write generation plan to {}", path.display()))?;
+
+    // Ensure gitignore includes generation_plan.json
+    ensure_gitignore(project_root)?;
+
+    Ok(())
+}
+
+/// Delete the generation plan file.
+pub fn clear_generation_plan(project_root: &Path) -> Result<()> {
+    let path = generation_plan_file(project_root);
+    if path.exists() {
+        fs::remove_file(&path)
+            .with_context(|| format!("failed to remove generation plan at {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Get the path to the persisted generation efficiency report.
+pub fn generation_report_file(project_root: &Path) -> PathBuf {
+    rpg_dir(project_root).join("generation_report.json")
+}
+
+/// Get the path to the representation quality baseline file.
+pub fn quality_baseline_file(project_root: &Path) -> PathBuf {
+    rpg_dir(project_root).join("quality_baseline.json")
+}
+
+/// Get the path to the latest ablation report file.
+pub fn ablation_report_file(project_root: &Path) -> PathBuf {
+    rpg_dir(project_root).join("ablation_report.json")
+}
+
+/// Get the directory where external validation bundles are stored.
+pub fn external_validation_dir(project_root: &Path) -> PathBuf {
+    rpg_dir(project_root).join("external_validation")
 }
 
 const RPG_README: &str = include_str!("templates/rpg_readme.md");
