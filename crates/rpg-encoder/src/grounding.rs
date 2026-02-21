@@ -247,7 +247,11 @@ pub fn resolve_dependencies(graph: &mut RPGraph) {
         .entities
         .iter()
         .map(|(id, entity)| {
-            let key = format!("{}:{}", entity.file.display(), entity.name);
+            let key = format!(
+                "{}:{}",
+                rpg_core::graph::normalize_path(&entity.file),
+                entity.name
+            );
             (key, id.clone())
         })
         .collect();
@@ -267,7 +271,13 @@ pub fn resolve_dependencies(graph: &mut RPGraph) {
     let entity_pairs: Vec<(String, rpg_core::graph::EntityDeps, String)> = graph
         .entities
         .iter()
-        .map(|(id, e)| (id.clone(), e.deps.clone(), e.file.display().to_string()))
+        .map(|(id, e)| {
+            (
+                id.clone(),
+                e.deps.clone(),
+                rpg_core::graph::normalize_path(&e.file),
+            )
+        })
         .collect();
 
     for (source_id, deps, source_file) in &entity_pairs {

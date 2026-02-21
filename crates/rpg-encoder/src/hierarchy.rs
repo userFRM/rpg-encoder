@@ -195,7 +195,7 @@ mod tests {
             line_start: 1,
             line_end: 1,
             parent_class: None,
-            semantic_features: features.iter().map(|s| s.to_string()).collect(),
+            semantic_features: features.iter().map(|s| (*s).to_string()).collect(),
             feature_source: None,
             hierarchy_path: String::new(),
             deps: EntityDeps::default(),

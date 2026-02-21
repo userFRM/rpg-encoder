@@ -119,7 +119,7 @@ pub fn critique(entity_id: &str, features: &[String]) -> Vec<QualityWarning> {
             warnings.push(QualityWarning {
                 entity_id: entity_id.to_string(),
                 feature: feat.clone(),
-                issue: QualityIssue::VagueVerb(verb.to_string()),
+                issue: QualityIssue::VagueVerb((*verb).to_string()),
                 suggestion: Some(format!(
                     "replace \"{}\" with a specific verb (validate, parse, compute, etc.)",
                     verb

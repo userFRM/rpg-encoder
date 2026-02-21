@@ -1,6 +1,11 @@
 //! Graph data model for the Repository Planning Graph (RPG).
 
 use chrono::{DateTime, Utc};
+
+/// Normalize a path to a forward-slash string for cross-platform entity IDs.
+pub fn normalize_path(path: &std::path::Path) -> String {
+    path.display().to_string().replace('\\', "/")
+}
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -789,7 +794,7 @@ impl RPGraph {
                 .and_then(|s| s.to_str())
                 .unwrap_or("module")
                 .to_string();
-            let module_id = format!("{}:{}", file.display(), module_name);
+            let module_id = format!("{}:{}", normalize_path(&file), module_name);
 
             // Skip if a Module entity already exists for this file
             if self.entities.contains_key(&module_id) {

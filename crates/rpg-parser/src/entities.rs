@@ -1,7 +1,7 @@
 //! Extract code entities (functions, classes, methods) from AST.
 
 use crate::languages::Language;
-use rpg_core::graph::{Entity, EntityDeps, EntityKind, Param, Signature};
+use rpg_core::graph::{Entity, EntityDeps, EntityKind, Param, Signature, normalize_path};
 use std::path::Path;
 
 /// A raw parameter extracted from AST.
@@ -35,8 +35,8 @@ impl RawEntity {
     /// Generate a unique entity ID.
     pub fn id(&self) -> String {
         match &self.parent_class {
-            Some(class) => format!("{}:{}::{}", self.file.display(), class, self.name),
-            None => format!("{}:{}", self.file.display(), self.name),
+            Some(class) => format!("{}:{}::{}", normalize_path(&self.file), class, self.name),
+            None => format!("{}:{}", normalize_path(&self.file), self.name),
         }
     }
 
