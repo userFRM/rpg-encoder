@@ -247,7 +247,11 @@ pub fn resolve_dependencies(graph: &mut RPGraph) {
         .entities
         .iter()
         .map(|(id, entity)| {
-            let key = format!("{}:{}", entity.file.display(), entity.name);
+            let key = format!(
+                "{}:{}",
+                entity.file.display().to_string().replace('\\', "/"),
+                entity.name
+            );
             (key, id.clone())
         })
         .collect();

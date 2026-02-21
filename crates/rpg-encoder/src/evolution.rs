@@ -623,11 +623,12 @@ pub fn apply_renames(graph: &mut RPGraph, renames: &[(PathBuf, PathBuf)]) -> (us
                 if let Some(mut entity) = graph.entities.remove(old_id) {
                     entity.file = to.clone();
                     // Recompute ID from updated file path
+                    let normalized_to = to.display().to_string().replace('\\', "/");
                     let new_id = match &entity.parent_class {
                         Some(class) => {
-                            format!("{}:{}::{}", to.display(), class, entity.name)
+                            format!("{}:{}::{}", normalized_to, class, entity.name)
                         }
-                        None => format!("{}:{}", to.display(), entity.name),
+                        None => format!("{}:{}", normalized_to, entity.name),
                     };
                     entity.id = new_id.clone();
                     graph.entities.insert(new_id.clone(), entity);

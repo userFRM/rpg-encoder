@@ -451,19 +451,22 @@ impl RpgServer {
             };
 
             let rel_path = path.strip_prefix(project_root).unwrap_or(path);
+            // Normalize to forward slashes for cross-platform consistency
+            let rel_path_normalized =
+                std::path::PathBuf::from(rel_path.display().to_string().replace('\\', "/"));
             let mut raw_entities =
-                rpg_parser::entities::extract_entities(rel_path, &source, file_lang);
+                rpg_parser::entities::extract_entities(&rel_path_normalized, &source, file_lang);
 
             // TOML-driven paradigm pipeline: classify + entity queries + builtin features
             rpg_parser::paradigms::classify::classify_entities(
                 &active_defs,
-                rel_path,
+                &rel_path_normalized,
                 &mut raw_entities,
             );
             let extra = rpg_parser::paradigms::query_engine::execute_entity_queries(
                 &qcache,
                 &active_defs,
-                rel_path,
+                &rel_path_normalized,
                 &source,
                 file_lang,
                 &raw_entities,
@@ -471,7 +474,7 @@ impl RpgServer {
             raw_entities.extend(extra);
             rpg_parser::paradigms::features::apply_builtin_entity_features(
                 &active_defs,
-                rel_path,
+                &rel_path_normalized,
                 &source,
                 file_lang,
                 &mut raw_entities,

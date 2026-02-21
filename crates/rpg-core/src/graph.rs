@@ -1,9 +1,18 @@
 //! Graph data model for the Repository Planning Graph (RPG).
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Serialize PathBuf as normalized forward-slash string for cross-platform consistency.
+fn serialize_path_normalized<S>(path: &Path, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let normalized = path.display().to_string().replace('\\', "/");
+    serializer.serialize_str(&normalized)
+}
 
 /// The complete Repository Planning Graph: G = (V, E) where V = V_H ∪ V_L.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +77,7 @@ pub struct Entity {
     pub id: String,
     pub kind: EntityKind,
     pub name: String,
+    #[serde(serialize_with = "serialize_path_normalized")]
     pub file: PathBuf,
     pub line_start: usize,
     pub line_end: usize,
@@ -789,7 +799,11 @@ impl RPGraph {
                 .and_then(|s| s.to_str())
                 .unwrap_or("module")
                 .to_string();
-            let module_id = format!("{}:{}", file.display(), module_name);
+            let module_id = format!(
+                "{}:{}",
+                file.display().to_string().replace('\\', "/"),
+                module_name
+            );
 
             // Skip if a Module entity already exists for this file
             if self.entities.contains_key(&module_id) {
