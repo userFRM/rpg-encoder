@@ -625,9 +625,14 @@ pub fn apply_renames(graph: &mut RPGraph, renames: &[(PathBuf, PathBuf)]) -> (us
                     // Recompute ID from updated file path
                     let new_id = match &entity.parent_class {
                         Some(class) => {
-                            format!("{}:{}::{}", to.display(), class, entity.name)
+                            format!(
+                                "{}:{}::{}",
+                                rpg_core::graph::normalize_path(to),
+                                class,
+                                entity.name
+                            )
                         }
-                        None => format!("{}:{}", to.display(), entity.name),
+                        None => format!("{}:{}", rpg_core::graph::normalize_path(to), entity.name),
                     };
                     entity.id = new_id.clone();
                     graph.entities.insert(new_id.clone(), entity);
