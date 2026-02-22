@@ -4,7 +4,7 @@
 //! `impl` block, so this file cannot be split further without upstream changes.
 
 use rmcp::{handler::server::wrapper::Parameters, tool, tool_router};
-use rpg_core::graph::RPGraph;
+use rpg_core::graph::{RPGraph, normalize_path};
 use rpg_core::storage;
 
 use crate::server::RpgServer;
@@ -1871,7 +1871,7 @@ impl RpgServer {
                 .collect();
 
             if !child_features.is_empty() {
-                file_data.push((file.display().to_string(), child_features));
+                file_data.push((normalize_path(file), child_features));
             }
         }
 
@@ -1972,7 +1972,7 @@ impl RpgServer {
 
             // Find the Module entity for this file
             let module_id = graph.file_index.iter().find_map(|(file, ids)| {
-                let file_str = file.display().to_string();
+                let file_str = normalize_path(file);
                 if file_str == *file_path
                     || file_str.ends_with(file_path)
                     || file_path.ends_with(&file_str)
@@ -2083,7 +2083,7 @@ impl RpgServer {
                 file_features.push_str(&format!(
                     "- {} ({}): {}\n",
                     entity.name,
-                    entity.file.display(),
+                    normalize_path(&entity.file),
                     entity.semantic_features.join(", ")
                 ));
                 module_count += 1;
@@ -2097,7 +2097,7 @@ impl RpgServer {
             for entity in graph.entities.values() {
                 if !entity.semantic_features.is_empty() {
                     file_map
-                        .entry(entity.file.display().to_string())
+                        .entry(normalize_path(&entity.file))
                         .or_default()
                         .extend(entity.semantic_features.clone());
                 }
@@ -2624,7 +2624,7 @@ impl RpgServer {
 
                     // Try matching by file path in entity file field
                     for (id, entity) in &graph.entities {
-                        let entity_file = entity.file.display().to_string();
+                        let entity_file = normalize_path(&entity.file);
                         if (entity_file == *file_path
                             || entity_file.ends_with(file_path)
                             || file_path.ends_with(&entity_file))
@@ -2641,7 +2641,7 @@ impl RpgServer {
                     if !found {
                         let mut file_entities = Vec::new();
                         for (id, entity) in &graph.entities {
-                            let entity_file = entity.file.display().to_string();
+                            let entity_file = normalize_path(&entity.file);
                             if entity_file == *file_path
                                 || entity_file.ends_with(file_path)
                                 || file_path.ends_with(&entity_file)
@@ -2769,7 +2769,7 @@ impl RpgServer {
 
             // Try matching by file path in entity file field
             for (id, entity) in &graph.entities {
-                let entity_file = entity.file.display().to_string();
+                let entity_file = normalize_path(&entity.file);
                 if (entity_file == *file_path
                     || entity_file.ends_with(file_path)
                     || file_path.ends_with(&entity_file))
@@ -2787,7 +2787,7 @@ impl RpgServer {
             if !found {
                 let mut file_entities = Vec::new();
                 for (id, entity) in &graph.entities {
-                    let entity_file = entity.file.display().to_string();
+                    let entity_file = normalize_path(&entity.file);
                     if entity_file == *file_path
                         || entity_file.ends_with(file_path)
                         || file_path.ends_with(&entity_file)

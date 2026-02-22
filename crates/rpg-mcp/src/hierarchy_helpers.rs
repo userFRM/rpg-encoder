@@ -1,7 +1,7 @@
 //! Helper functions for sharded hierarchy construction workflow.
 
 use crate::server::RpgServer;
-use rpg_core::graph::EntityKind;
+use rpg_core::graph::{EntityKind, normalize_path};
 
 impl RpgServer {
     /// Build batch 0: Domain discovery from representative files across all clusters
@@ -27,7 +27,7 @@ impl RpgServer {
                 // Find Module entity for this file
                 for entity in graph.entities.values() {
                     if entity.kind == EntityKind::Module
-                        && entity.file.display().to_string() == *file
+                        && normalize_path(&entity.file) == *file
                         && !entity.semantic_features.is_empty()
                     {
                         representative_features.push_str(&format!(
@@ -102,7 +102,7 @@ impl RpgServer {
             // Find Module entity for this file
             for entity in graph.entities.values() {
                 if entity.kind == EntityKind::Module
-                    && entity.file.display().to_string() == *file
+                    && normalize_path(&entity.file) == *file
                     && !entity.semantic_features.is_empty()
                 {
                     file_features.push_str(&format!(
