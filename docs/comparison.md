@@ -253,6 +253,6 @@ They work best together. RPG provides the understanding, Claude Code provides th
 
 ## Links
 
-- [RPG-Encoder](https://github.com/anthropics/rpg-encoder)
+- [RPG-Encoder](https://github.com/userFRM/rpg-encoder)
 - [Claude Code](https://github.com/anthropics/claude-code)
 - [Serena](https://github.com/oraios/serena)
