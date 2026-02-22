@@ -33,7 +33,7 @@ impl RpgServer {
                         representative_features.push_str(&format!(
                             "- {} ({}): {}\n",
                             entity.name,
-                            entity.file.display(),
+                            normalize_path(&entity.file),
                             entity.semantic_features.join(", ")
                         ));
                         break;
@@ -108,7 +108,7 @@ impl RpgServer {
                     file_features.push_str(&format!(
                         "- {} ({}): {}\n",
                         entity.name,
-                        entity.file.display(),
+                        normalize_path(&entity.file),
                         entity.semantic_features.join(", ")
                     ));
                     break;

@@ -1,6 +1,6 @@
 //! Structure Reorganization — apply hierarchy assignments to the RPG graph.
 
-use rpg_core::graph::{EntityKind, RPGraph};
+use rpg_core::graph::{EntityKind, RPGraph, normalize_path};
 use std::collections::HashMap;
 
 /// Apply hierarchy assignments to the RPG graph.
@@ -99,7 +99,7 @@ pub fn cluster_files_for_hierarchy(
         .entities
         .values()
         .filter(|e| e.kind == EntityKind::Module && !e.semantic_features.is_empty())
-        .map(|e| (e.file.display().to_string(), e.semantic_features.clone()))
+        .map(|e| (normalize_path(&e.file), e.semantic_features.clone()))
         .collect();
     modules.sort_by(|a, b| a.0.cmp(&b.0));
 
