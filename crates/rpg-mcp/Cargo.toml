@@ -11,9 +11,13 @@ description = "MCP server exposing RPG navigation tools"
 name = "rpg-mcp-server"
 path = "src/main.rs"
 
+[features]
+default = ["embeddings"]
+embeddings = ["rpg-nav/embeddings"]
+
 [dependencies]
 rpg-core.workspace = true
-rpg-nav = { workspace = true, features = ["embeddings"] }
+rpg-nav = { workspace = true }
 rpg-encoder.workspace = true
 rpg-parser.workspace = true
 rmcp.workspace = true
