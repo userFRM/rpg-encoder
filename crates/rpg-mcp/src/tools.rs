@@ -50,8 +50,10 @@ impl RpgServer {
             search_mode,
             rpg_nav::search::SearchMode::Features | rpg_nav::search::SearchMode::Auto
         );
+        #[allow(unused_mut)]
         let mut search_mode_label = "lexical";
 
+        #[cfg(feature = "embeddings")]
         let embedding_scores = if use_embeddings {
             self.try_init_embeddings(graph).await;
             let mut emb_guard = self.embedding_index.write().await;
@@ -67,6 +69,11 @@ impl RpgServer {
                 None
             }
         } else {
+            None
+        };
+        #[cfg(not(feature = "embeddings"))]
+        let embedding_scores: Option<std::collections::HashMap<String, f64>> = {
+            let _ = use_embeddings;
             None
         };
 
@@ -272,20 +279,26 @@ impl RpgServer {
         let notice = self.staleness_notice().await;
         let guard = self.graph.read().await;
         let graph = guard.as_ref().unwrap();
-        let emb_guard = self.embedding_index.read().await;
-        let emb_status = if let Some(ref idx) = *emb_guard {
-            format!(
-                "\nembedding_index: {} entities indexed (BGE-small-en-v1.5)",
-                idx.entity_count()
-            )
-        } else if self
-            .embedding_init_failed
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            "\nembedding_index: init failed (lexical-only search)".to_string()
-        } else {
-            "\nembedding_index: not initialized (will load on first semantic search)".to_string()
+        #[cfg(feature = "embeddings")]
+        let emb_status = {
+            let emb_guard = self.embedding_index.read().await;
+            if let Some(ref idx) = *emb_guard {
+                format!(
+                    "\nembedding_index: {} entities indexed (BGE-small-en-v1.5)",
+                    idx.entity_count()
+                )
+            } else if self
+                .embedding_init_failed
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                "\nembedding_index: init failed (lexical-only search)".to_string()
+            } else {
+                "\nembedding_index: not initialized (will load on first semantic search)"
+                    .to_string()
+            }
         };
+        #[cfg(not(feature = "embeddings"))]
+        let emb_status = "\nembedding_index: disabled (compiled without embeddings feature)";
         let area_invocations = rpg_nav::dataflow::compute_area_invocations(graph);
         let area_text = rpg_nav::dataflow::format_area_invocations(&area_invocations);
         let area_section = if area_text.is_empty() {
@@ -549,6 +562,7 @@ impl RpgServer {
         *self.hierarchy_session.write().await = None;
 
         // Sync embedding index incrementally (fingerprints detect what changed)
+        #[cfg(feature = "embeddings")]
         {
             let graph_guard = self.graph.read().await;
             if let Some(ref graph) = *graph_guard {
@@ -561,6 +575,7 @@ impl RpgServer {
                 }
             }
         }
+        #[cfg(feature = "embeddings")]
         self.embedding_init_failed
             .store(false, std::sync::atomic::Ordering::Relaxed);
         // Clear stale pending routing (graph was fully replaced)
@@ -1102,9 +1117,14 @@ impl RpgServer {
             .map_err(|e| format!("Failed to save RPG: {}", e))?;
 
         // Update embedding index for newly-lifted entities (non-blocking on failure)
-        let graph_ts = graph.updated_at.to_rfc3339();
-        drop(guard); // Release graph write lock before async embedding update
-        self.update_embeddings(&resolved_features, &graph_ts).await;
+        #[cfg(feature = "embeddings")]
+        {
+            let graph_ts = graph.updated_at.to_rfc3339();
+            drop(guard); // Release graph write lock before async embedding update
+            self.update_embeddings(&resolved_features, &graph_ts).await;
+        }
+        #[cfg(not(feature = "embeddings"))]
+        drop(guard);
 
         let guard = self.graph.read().await;
         let graph = guard.as_ref().unwrap();
@@ -1558,6 +1578,7 @@ impl RpgServer {
         *self.hierarchy_session.write().await = None;
 
         // Sync embedding index incrementally — entities changed
+        #[cfg(feature = "embeddings")]
         {
             let mut emb_guard = self.embedding_index.write().await;
             if let Some(ref mut idx) = *emb_guard
@@ -1567,6 +1588,7 @@ impl RpgServer {
                 *emb_guard = None;
             }
         }
+        #[cfg(feature = "embeddings")]
         self.embedding_init_failed
             .store(false, std::sync::atomic::Ordering::Relaxed);
         // Reconcile pending routing against the updated graph:
@@ -1670,6 +1692,7 @@ impl RpgServer {
                 let entities = g.metadata.total_entities;
                 *self.graph.write().await = Some(g);
                 // Sync embedding index incrementally
+                #[cfg(feature = "embeddings")]
                 {
                     let graph_guard = self.graph.read().await;
                     if let Some(ref graph) = *graph_guard {
@@ -1682,6 +1705,7 @@ impl RpgServer {
                         }
                     }
                 }
+                #[cfg(feature = "embeddings")]
                 self.embedding_init_failed
                     .store(false, std::sync::atomic::Ordering::Relaxed);
 
@@ -2251,8 +2275,9 @@ impl RpgServer {
         let graph = guard.as_ref().unwrap();
 
         // Attempt hybrid embedding search
-        self.try_init_embeddings(graph).await;
+        #[cfg(feature = "embeddings")]
         let embedding_scores = {
+            self.try_init_embeddings(graph).await;
             let mut emb_guard = self.embedding_index.write().await;
             if let Some(ref mut idx) = *emb_guard {
                 idx.score_all(&params.query).ok().filter(|s| !s.is_empty())
@@ -2260,6 +2285,8 @@ impl RpgServer {
                 None
             }
         };
+        #[cfg(not(feature = "embeddings"))]
+        let embedding_scores: Option<std::collections::HashMap<String, f64>> = None;
 
         let request = rpg_nav::context::ContextPackRequest {
             query: &params.query,
@@ -2483,8 +2510,9 @@ impl RpgServer {
         let graph = guard.as_ref().unwrap();
 
         // Attempt hybrid embedding search
-        self.try_init_embeddings(graph).await;
+        #[cfg(feature = "embeddings")]
         let embedding_scores = {
+            self.try_init_embeddings(graph).await;
             let mut emb_guard = self.embedding_index.write().await;
             if let Some(ref mut idx) = *emb_guard {
                 idx.score_all(&params.goal).ok().filter(|s| !s.is_empty())
@@ -2492,6 +2520,8 @@ impl RpgServer {
                 None
             }
         };
+        #[cfg(not(feature = "embeddings"))]
+        let embedding_scores: Option<std::collections::HashMap<String, f64>> = None;
 
         let request = rpg_nav::planner::PlanChangeRequest {
             goal: &params.goal,

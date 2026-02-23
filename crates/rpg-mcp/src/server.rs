@@ -43,8 +43,10 @@ pub(crate) struct RpgServer {
     pub(crate) lifting_session: Arc<RwLock<Option<LiftingSession>>>,
     pub(crate) hierarchy_session: Arc<RwLock<Option<HierarchySession>>>,
     pub(crate) pending_routing: Arc<RwLock<Vec<PendingRouting>>>,
+    #[cfg(feature = "embeddings")]
     pub(crate) embedding_index: Arc<RwLock<Option<rpg_nav::embeddings::EmbeddingIndex>>>,
     /// Set to true after first failed init to avoid retrying every search.
+    #[cfg(feature = "embeddings")]
     pub(crate) embedding_init_failed: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) tool_router: rmcp::handler::server::router::tool::ToolRouter<Self>,
     /// Protocol prompt versions for deduplication.
@@ -76,7 +78,9 @@ impl RpgServer {
             lifting_session: Arc::new(RwLock::new(None)),
             hierarchy_session: Arc::new(RwLock::new(None)),
             pending_routing: Arc::new(RwLock::new(pending)),
+            #[cfg(feature = "embeddings")]
             embedding_index: Arc::new(RwLock::new(None)),
+            #[cfg(feature = "embeddings")]
             embedding_init_failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             tool_router: Self::create_tool_router(),
             prompt_versions: PromptVersions::new(),
@@ -360,6 +364,7 @@ impl RpgServer {
 
     /// Lazy-initialize the embedding index on first semantic search.
     /// If init fails, logs a warning and sets a flag to avoid retrying.
+    #[cfg(feature = "embeddings")]
     pub(crate) async fn try_init_embeddings(&self, graph: &RPGraph) {
         // Skip if already initialized or previously failed
         if self.embedding_index.read().await.is_some() {
@@ -391,6 +396,7 @@ impl RpgServer {
 
     /// Update embeddings for entities that just received new features.
     /// Also updates fingerprints so that the next `sync()` won't re-embed these.
+    #[cfg(feature = "embeddings")]
     pub(crate) async fn update_embeddings(
         &self,
         entity_features: &std::collections::HashMap<String, Vec<String>>,
