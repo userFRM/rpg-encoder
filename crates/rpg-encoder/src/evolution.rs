@@ -351,6 +351,20 @@ pub fn find_newly_ignored_files(project_root: &Path, graph: &RPGraph) -> Vec<Fil
         .collect()
 }
 
+/// Find files in the graph's `file_index` that no longer exist on disk.
+///
+/// Detects deletions of untracked files that were captured during build
+/// (via filesystem walk) but were never committed to git, so `detect_changes`
+/// (which uses `git diff`) cannot see them.
+pub fn find_deleted_files(project_root: &Path, graph: &RPGraph) -> Vec<FileChange> {
+    graph
+        .file_index
+        .keys()
+        .filter(|file| !project_root.join(file).exists())
+        .map(|file| FileChange::Deleted(file.clone()))
+        .collect()
+}
+
 /// Apply deletions to the graph (Algorithm 2: recursive pruning).
 pub fn apply_deletions(graph: &mut RPGraph, deleted_files: &[PathBuf]) -> usize {
     let mut removed = 0;
@@ -936,6 +950,10 @@ pub fn run_update(
     // Prune files that are now covered by .rpgignore but still indexed
     let ignored_deletions = find_newly_ignored_files(project_root, graph);
     changes.extend(ignored_deletions);
+
+    // Prune files that no longer exist on disk (e.g. untracked files removed after build)
+    let fs_deletions = find_deleted_files(project_root, graph);
+    changes.extend(fs_deletions);
 
     if changes.is_empty() {
         return Ok(UpdateSummary::default());
