@@ -1,0 +1,20 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.userfrm/rpg-encoder",
+  "description": "Repository Planning Graph — semantic code understanding via MCP. Builds a dependency-aware semantic graph of your codebase using tree-sitter, then lets your coding agent (Claude Code, Cursor, etc.) search by what code does rather than what it's named. Supports lifting, hierarchy construction, impact analysis, change planning, and incremental updates.",
+  "repository": {
+    "url": "https://github.com/userFRM/rpg-encoder",
+    "source": "github"
+  },
+  "version": "0.6.5",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "rpg-encoder",
+      "version": "0.6.5",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
