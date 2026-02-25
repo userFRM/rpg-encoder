@@ -133,6 +133,39 @@ When using the RPG to understand or navigate a codebase (after lifting is comple
 - Use `context_pack` instead of search→fetch→explore chains (1 call vs 3-5, ~44% fewer tokens)
 - Use `impact_radius` for richer reachability analysis with edge paths (1 call vs multi-step explore)
 
+## HEALTH ANALYSIS
+
+Use `analyze_health` to assess architectural quality of the codebase. It computes
+instability, centrality, coupling metrics, and optionally detects code duplication.
+
+**When to use:** After lifting is complete, to identify refactoring targets, god objects,
+unstable modules, and duplicated code.
+
+**Parameters (all optional):**
+- `instability_threshold` (default 0.7) — flag entities with instability above this
+- `god_object_threshold` (default 10) — minimum degree to flag as god object
+- `include_duplication` (default false) — run Rabin-Karp token-based clone detection (reads source files, slower)
+- `include_semantic_duplication` (default false) — run Jaccard feature-based clone detection (in-memory, fast)
+- `semantic_similarity_threshold` (default 0.6) — Jaccard threshold for semantic clones
+
+**Output sections:**
+- Summary: entity count, edges, avg instability/centrality, god objects, hubs
+- God Object Candidates (degree ≥ threshold)
+- Top Unstable Entities (I > 0.7)
+- Hub Entities (high centrality)
+- Duplication Hotspots (when `include_duplication=true`) — token-level Type-1/Type-2 clones
+- Semantic Duplication (when `include_semantic_duplication=true`) — conceptual clones via lifted features
+- Recommendations for refactoring
+
+**Examples:**
+```json
+{}                                          // baseline health (no duplication)
+{"include_duplication": true}               // + token-based clones
+{"include_semantic_duplication": true}      // + conceptual clones
+{"include_duplication": true, "include_semantic_duplication": true}  // both
+{"god_object_threshold": 5, "instability_threshold": 0.5}           // stricter thresholds
+```
+
 ## TOOLS
 - **lifting_status**: Dashboard — coverage, per-area progress, unlifted files, NEXT STEP
 - **build_rpg**: Index the codebase (run once, instant)
@@ -148,6 +181,7 @@ When using the RPG to understand or navigate a codebase (after lifting is comple
 - **context_pack**: Single-call search+fetch+explore. Searches, fetches source, expands neighbors, trims to token budget
 - **impact_radius**: BFS reachability with edge paths. Answers "what depends on X?" in one call. Traverses DataFlow edges for data lineage analysis
 - **plan_change**: Change planning — find relevant entities, dependency-safe modification order, impact radius, and related tests
+- **analyze_health**: Architectural health analysis — instability, centrality, god objects, duplication detection (token + semantic)
 - **rpg_info**: Get codebase overview, statistics, and inter-area connectivity
 - **update_rpg**: Incrementally update after code changes
 - **reload_rpg**: Reload graph from disk
