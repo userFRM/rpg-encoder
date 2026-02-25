@@ -231,9 +231,8 @@ pub fn search_with_params(graph: &RPGraph, params: &SearchParams) -> Vec<SearchR
 
 /// Compute Jaccard similarity between two token sets.
 /// Kept as utility — IDF-weighted overlap is used for search scoring, but Jaccard
-/// is still the fallback for drift detection in evolution.rs.
-#[allow(dead_code)]
-fn jaccard_similarity(a: &HashSet<&str>, b: &HashSet<&str>) -> f64 {
+/// is used for semantic duplication detection in duplication.rs.
+pub(crate) fn jaccard_similarity(a: &HashSet<&str>, b: &HashSet<&str>) -> f64 {
     if a.is_empty() && b.is_empty() {
         return 0.0;
     }

@@ -210,3 +210,19 @@ pub(crate) struct SliceBetweenParams {
     /// Include entity metadata (name, file, features) in output
     pub(crate) include_metadata: Option<bool>,
 }
+
+/// Parameters for the `analyze_health` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct AnalyzeHealthParams {
+    /// Instability threshold above which entities are flagged as highly unstable (default: 0.7).
+    pub(crate) instability_threshold: Option<f64>,
+    /// Minimum total degree for god object detection (default: 10).
+    pub(crate) god_object_threshold: Option<usize>,
+    /// Run Rabin-Karp token-based clone detection (reads source files from disk, slower). Default: false.
+    pub(crate) include_duplication: Option<bool>,
+    /// Run Jaccard feature-based semantic clone detection (in-memory, fast).
+    /// Requires entities to have been lifted. Default: false.
+    pub(crate) include_semantic_duplication: Option<bool>,
+    /// Jaccard similarity threshold for semantic clone detection (default: 0.6).
+    pub(crate) semantic_similarity_threshold: Option<f64>,
+}

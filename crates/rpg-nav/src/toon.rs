@@ -705,6 +705,156 @@ fn clean_score(v: f64) -> f64 {
 }
 
 // ---------------------------------------------------------------------------
+// Health report output
+// ---------------------------------------------------------------------------
+
+use crate::health::HealthReport;
+
+/// Format a health report as TOON for LLM consumption.
+pub fn format_health_report(report: &HealthReport) -> String {
+    let mut output = String::new();
+
+    // Summary section
+    output.push_str("# Code Health Analysis\n\n");
+    output.push_str(&format!(
+        "entities: {} ({} analyzed)\n",
+        report.summary.total_entities, report.summary.analyzed_entities
+    ));
+    output.push_str(&format!(
+        "dependency_edges: {}\n",
+        report.summary.total_dependency_edges
+    ));
+    output.push_str(&format!(
+        "avg_instability: {:.3}\n",
+        report.summary.avg_instability
+    ));
+    output.push_str(&format!(
+        "avg_centrality: {:.4}\n",
+        report.summary.avg_centrality
+    ));
+    output.push_str(&format!(
+        "god_objects: {}\n",
+        report.summary.god_object_count
+    ));
+    output.push_str(&format!(
+        "highly_unstable: {}\n",
+        report.summary.highly_unstable_count
+    ));
+    output.push_str(&format!(
+        "highly_stable: {}\n",
+        report.summary.highly_stable_count
+    ));
+    output.push_str(&format!("hubs: {}\n", report.summary.hub_count));
+
+    // Top unstable entities
+    if !report.top_unstable.is_empty() {
+        output.push_str("\n## Top Unstable Entities (I > 0.7)\n\n");
+        for entity in &report.top_unstable {
+            output.push_str(&format!(
+                "- {} ({}) | instability={:.3} | in={} out={}\n",
+                entity.entity_id,
+                entity.kind,
+                entity.instability,
+                entity.in_degree,
+                entity.out_degree
+            ));
+        }
+    }
+
+    // Top god objects
+    if !report.top_god_objects.is_empty() {
+        output.push_str("\n## God Object Candidates\n\n");
+        for entity in &report.top_god_objects {
+            output.push_str(&format!(
+                "- {} ({}) | degree={} | instability={:.3}\n",
+                entity.entity_id,
+                entity.kind,
+                entity.in_degree + entity.out_degree,
+                entity.instability
+            ));
+        }
+    }
+
+    // Duplication info if present
+    if let Some(ref dupes) = report.duplicates {
+        output.push_str("\n## Duplication Hotspots\n\n");
+        if dupes.is_empty() {
+            output.push_str("No token-based clones detected.\n");
+        } else {
+            for group in dupes.iter().take(10) {
+                output.push_str(&format!(
+                    "- similarity={:.1}% | tokens={} | entities={}\n",
+                    group.similarity * 100.0,
+                    group.duplicated_tokens,
+                    group.entities.len()
+                ));
+            }
+        }
+    }
+
+    // Semantic duplication info if present
+    if let Some(ref sem_dupes) = report.semantic_duplicates
+        && !sem_dupes.is_empty()
+    {
+        output.push_str("\n## Semantic Duplication (Conceptual Clones)\n\n");
+        output.push_str(
+            "Entities sharing similar intent (lifted feature overlap). \
+             May indicate accidental duplication or a missing abstraction.\n\n",
+        );
+        for group in sem_dupes.iter().take(10) {
+            output.push_str(&format!(
+                "- similarity={:.1}% | shared: [{}]\n",
+                group.similarity * 100.0,
+                group.shared_features.join(", ")
+            ));
+            for (id, file) in group.entities.iter().zip(group.files.iter()) {
+                output.push_str(&format!("    {} ({})\n", id, file));
+            }
+        }
+    }
+
+    // Recommendations
+    output.push_str("\n## Recommendations\n\n");
+    if report.summary.god_object_count > 0 {
+        output.push_str(&format!(
+            "1. **Refactor god objects**: {} entities have high coupling. Consider extracting responsibilities.\n",
+            report.summary.god_object_count
+        ));
+    }
+    if report.summary.highly_unstable_count > report.summary.analyzed_entities / 3 {
+        output.push_str(&format!(
+            "2. **Reduce instability**: {} entities are highly unstable. Consider introducing stable abstractions.\n",
+            report.summary.highly_unstable_count
+        ));
+    }
+    if report.summary.hub_count > 0 {
+        output.push_str(&format!(
+            "3. **Review hub entities**: {} entities act as hubs. Ensure they have focused responsibilities.\n",
+            report.summary.hub_count
+        ));
+    }
+    if let Some(ref sem_dupes) = report.semantic_duplicates
+        && !sem_dupes.is_empty()
+    {
+        output.push_str(&format!(
+            "4. **Extract shared abstractions**: {} entity pairs share similar intent. \
+             Consider introducing a shared interface or helper.\n",
+            sem_dupes.len()
+        ));
+    }
+    if report.summary.god_object_count == 0
+        && report.summary.highly_unstable_count == 0
+        && report.summary.hub_count == 0
+    {
+        output.push_str(
+            "✅ No major architectural issues detected. The codebase shows good modularity.\n",
+        );
+    }
+
+    output
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
