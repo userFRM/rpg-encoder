@@ -2883,6 +2883,39 @@ impl RpgServer {
 
         Ok(result)
     }
+
+    #[tool(
+        description = "Analyze code health metrics including coupling, instability, centrality, and potential god objects. Returns entities with architectural issues and recommendations for refactoring. Set include_duplication=true to detect code clones via Rabin-Karp fingerprinting (reads source files, slower). Set include_semantic_duplication=true to detect conceptual duplicates via Jaccard similarity on lifted features (in-memory, fast; requires entities to be lifted)."
+    )]
+    async fn analyze_health(
+        &self,
+        Parameters(params): Parameters<AnalyzeHealthParams>,
+    ) -> Result<String, String> {
+        self.ensure_graph().await?;
+        let notice = self.staleness_notice().await;
+        let guard = self.graph.read().await;
+        let graph = guard.as_ref().unwrap();
+
+        let config = rpg_nav::health::HealthConfig {
+            instability_threshold: params.instability_threshold.unwrap_or(0.7),
+            god_object_degree_threshold: params.god_object_threshold.unwrap_or(10),
+            include_duplication: params.include_duplication.unwrap_or(false),
+            include_semantic_duplication: params.include_semantic_duplication.unwrap_or(false),
+            semantic_duplication_config: rpg_nav::duplication::SemanticDuplicationConfig {
+                similarity_threshold: params.semantic_similarity_threshold.unwrap_or(0.6),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let report = rpg_nav::health::compute_health_full(graph, &self.project_root, &config);
+
+        Ok(format!(
+            "{}{}",
+            notice,
+            rpg_nav::toon::format_health_report(&report)
+        ))
+    }
 }
 
 impl RpgServer {

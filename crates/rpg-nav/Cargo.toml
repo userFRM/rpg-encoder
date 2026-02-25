@@ -19,6 +19,7 @@ strsim.workspace = true
 toon-format.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+rayon.workspace = true
 fastembed = { workspace = true, optional = true }
 
 [dev-dependencies]
