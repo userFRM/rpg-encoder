@@ -793,22 +793,22 @@ pub fn format_health_report(report: &HealthReport) -> String {
     }
 
     // Semantic duplication info if present
-    if let Some(ref sem_dupes) = report.semantic_duplicates {
-        if !sem_dupes.is_empty() {
-            output.push_str("\n## Semantic Duplication (Conceptual Clones)\n\n");
-            output.push_str(
-                "Entities sharing similar intent (lifted feature overlap). \
-                 May indicate accidental duplication or a missing abstraction.\n\n",
-            );
-            for group in sem_dupes.iter().take(10) {
-                output.push_str(&format!(
-                    "- similarity={:.1}% | shared: [{}]\n",
-                    group.similarity * 100.0,
-                    group.shared_features.join(", ")
-                ));
-                for (id, file) in group.entities.iter().zip(group.files.iter()) {
-                    output.push_str(&format!("    {} ({})\n", id, file));
-                }
+    if let Some(ref sem_dupes) = report.semantic_duplicates
+        && !sem_dupes.is_empty()
+    {
+        output.push_str("\n## Semantic Duplication (Conceptual Clones)\n\n");
+        output.push_str(
+            "Entities sharing similar intent (lifted feature overlap). \
+             May indicate accidental duplication or a missing abstraction.\n\n",
+        );
+        for group in sem_dupes.iter().take(10) {
+            output.push_str(&format!(
+                "- similarity={:.1}% | shared: [{}]\n",
+                group.similarity * 100.0,
+                group.shared_features.join(", ")
+            ));
+            for (id, file) in group.entities.iter().zip(group.files.iter()) {
+                output.push_str(&format!("    {} ({})\n", id, file));
             }
         }
     }
@@ -833,14 +833,14 @@ pub fn format_health_report(report: &HealthReport) -> String {
             report.summary.hub_count
         ));
     }
-    if let Some(ref sem_dupes) = report.semantic_duplicates {
-        if !sem_dupes.is_empty() {
-            output.push_str(&format!(
-                "4. **Extract shared abstractions**: {} entity pairs share similar intent. \
-                 Consider introducing a shared interface or helper.\n",
-                sem_dupes.len()
-            ));
-        }
+    if let Some(ref sem_dupes) = report.semantic_duplicates
+        && !sem_dupes.is_empty()
+    {
+        output.push_str(&format!(
+            "4. **Extract shared abstractions**: {} entity pairs share similar intent. \
+             Consider introducing a shared interface or helper.\n",
+            sem_dupes.len()
+        ));
     }
     if report.summary.god_object_count == 0
         && report.summary.highly_unstable_count == 0

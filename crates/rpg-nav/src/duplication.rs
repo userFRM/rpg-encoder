@@ -338,11 +338,11 @@ fn tokenize(source: &str) -> Vec<Token> {
                 let mut op = String::new();
                 op.push(chars.next().unwrap());
                 // Check for two-char operators
-                if let Some(&c) = chars.peek() {
-                    if matches!(c, '=' | '&' | '|' | '<' | '>' | '+') {
-                        op.push(c);
-                        chars.next();
-                    }
+                if let Some(&c) = chars.peek()
+                    && matches!(c, '=' | '&' | '|' | '<' | '>' | '+')
+                {
+                    op.push(c);
+                    chars.next();
                 }
                 tokens.push(Token {
                     kind: TokenType::Operator,
@@ -507,7 +507,7 @@ pub fn detect_duplication(
             }
 
             Some(EntityFingerprints {
-                entity_id: (*id).to_string(),
+                entity_id: (*id).clone(),
                 file: entity.file.display().to_string(),
                 fps: fingerprints,
                 token_count: tokens.len(),
@@ -867,12 +867,7 @@ mod tests {
     // --- Per-entity token-based detection tests ---
 
     /// Helper: create an Entity with specific line range (for detect_duplication tests).
-    fn make_entity_at_lines(
-        id: &str,
-        file: &str,
-        line_start: usize,
-        line_end: usize,
-    ) -> Entity {
+    fn make_entity_at_lines(id: &str, file: &str, line_start: usize, line_end: usize) -> Entity {
         Entity {
             id: id.to_string(),
             kind: EntityKind::Function,
@@ -908,11 +903,7 @@ mod tests {
 
         // File B: preamble + same function at lines 3-8
         let file_b = dir.path().join("b.rs");
-        std::fs::write(
-            &file_b,
-            format!("// preamble\nuse std::io;\n{}", func_code),
-        )
-        .unwrap();
+        std::fs::write(&file_b, format!("// preamble\nuse std::io;\n{}", func_code)).unwrap();
 
         let mut graph = RPGraph::new("rust");
         graph.entities.insert(
