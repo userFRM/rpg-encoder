@@ -206,32 +206,32 @@ pub fn detect_cycles(graph: &RPGraph, config: &CycleConfig) -> CycleReport {
     let mut cycles = deduplicate_cycles(cycles);
 
     // Filter based on .rpgignore if not ignored
-    if !config.ignore_rpgignore {
-        if let Some(ref project_root) = config.project_root {
-            let rpgignore_path = project_root.join(".rpgignore");
-            if rpgignore_path.exists() {
-                if let Ok(patterns) = std::fs::read_to_string(&rpgignore_path) {
-                    let patterns: Vec<String> = patterns
-                        .lines()
-                        .filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#'))
-                        .map(|l| l.trim().to_string())
-                        .collect();
+    if !config.ignore_rpgignore
+        && let Some(ref project_root) = config.project_root
+    {
+        let rpgignore_path = project_root.join(".rpgignore");
+        if rpgignore_path.exists()
+            && let Ok(patterns) = std::fs::read_to_string(&rpgignore_path)
+        {
+            let patterns: Vec<String> = patterns
+                .lines()
+                .filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#'))
+                .map(|l| l.trim().to_string())
+                .collect();
 
-                    if !patterns.is_empty() {
-                        cycles.retain(|cycle| {
-                            cycle.cycle.iter().any(|entity_id| {
-                                if let Some(entity) = graph.entities.get(entity_id) {
-                                    let file_path = entity.file.display().to_string();
-                                    !patterns
-                                        .iter()
-                                        .any(|p| glob_match(p, &file_path) || file_path.contains(p))
-                                } else {
-                                    true
-                                }
-                            })
-                        });
-                    }
-                }
+            if !patterns.is_empty() {
+                cycles.retain(|cycle| {
+                    cycle.cycle.iter().any(|entity_id| {
+                        if let Some(entity) = graph.entities.get(entity_id) {
+                            let file_path = entity.file.display().to_string();
+                            !patterns
+                                .iter()
+                                .any(|p| glob_match(p, &file_path) || file_path.contains(p))
+                        } else {
+                            true
+                        }
+                    })
+                });
             }
         }
     }
