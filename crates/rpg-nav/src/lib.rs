@@ -5,6 +5,7 @@
 //! and TOON serialization for LLM-optimized output.
 
 pub mod context;
+pub mod cycles;
 pub mod dataflow;
 pub mod diff;
 pub mod duplication;

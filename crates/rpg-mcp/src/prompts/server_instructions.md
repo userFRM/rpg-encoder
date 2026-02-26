@@ -182,6 +182,31 @@ unstable modules, and duplicated code.
 - **impact_radius**: BFS reachability with edge paths. Answers "what depends on X?" in one call. Traverses DataFlow edges for data lineage analysis
 - **plan_change**: Change planning — find relevant entities, dependency-safe modification order, impact radius, and related tests
 - **analyze_health**: Architectural health analysis — instability, centrality, god objects, duplication detection (token + semantic)
+- **detect_cycles**: Find circular dependencies in the codebase. First call returns summary + area breakdown. Use filters to get cycle details.
 - **rpg_info**: Get codebase overview, statistics, and inter-area connectivity
 - **update_rpg**: Incrementally update after code changes
 - **reload_rpg**: Reload graph from disk
+
+## CYCLE DETECTION
+
+Use `detect_cycles` to find circular dependencies — architectural smells where A→B→C→A.
+
+**First call (no params):** Returns summary statistics, length distribution, area breakdown. Shows `next_step` prompting to call with filters.
+
+**Parameters (all optional, JSON object):**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `area` | string | Filter to area(s), comma-separated. Example: `"Navigation"` or `"Parser,Core"` |
+| `max_cycles` | number | Limit cycles returned. Example: `10` |
+| `min_cycle_length` | number | Skip trivial cycles. Example: `3` (skips 2-cycles) |
+| `max_cycle_length` | number | Max cycle length. Default: `20` |
+| `cross_file_only` | boolean | Only cross-file cycles. Example: `true` |
+| `cross_area_only` | boolean | Only cross-area cycles. Example: `true` |
+| `sort_by` | string | Sort key: `"length"`, `"file_count"`, or `"entity_count"` |
+| `include_files` | boolean | Include file paths. Default: `true` |
+| `ignore_rpgignore` | boolean | Include ignored files. Default: `false` |
+
+**Usage flow:**
+1. Call `detect_cycles` with no params → get summary + area breakdown
+2. Use `next_step` as guide → call again with filters
+3. Example: `{"area": "Navigation", "max_cycles": 10}`

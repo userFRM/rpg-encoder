@@ -2620,7 +2620,7 @@ dependencies = [
 
 [[package]]
 name = "rpg-cli"
-version = "0.6.5"
+version = "0.6.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2640,7 +2640,7 @@ dependencies = [
 
 [[package]]
 name = "rpg-core"
-version = "0.6.5"
+version = "0.6.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2656,7 +2656,7 @@ dependencies = [
 
 [[package]]
 name = "rpg-encoder"
-version = "0.6.5"
+version = "0.6.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2677,7 +2677,7 @@ dependencies = [
 
 [[package]]
 name = "rpg-mcp"
-version = "0.6.5"
+version = "0.6.7"
 dependencies = [
  "anyhow",
  "globset",
@@ -2697,12 +2697,13 @@ dependencies = [
 
 [[package]]
 name = "rpg-nav"
-version = "0.6.5"
+version = "0.6.7"
 dependencies = [
  "anyhow",
  "criterion",
  "fastembed",
  "globset",
+ "rayon",
  "rpg-core",
  "rpg-parser",
  "serde",
@@ -2714,7 +2715,7 @@ dependencies = [
 
 [[package]]
 name = "rpg-parser"
-version = "0.6.5"
+version = "0.6.7"
 dependencies = [
  "anyhow",
  "criterion",
