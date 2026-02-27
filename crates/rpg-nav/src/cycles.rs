@@ -9,26 +9,6 @@ use rpg_core::graph::{EdgeKind, RPGraph};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
-fn glob_match(pattern: &str, path: &str) -> bool {
-    if pattern.contains('*') {
-        let parts: Vec<&str> = pattern.split('*').collect();
-        let mut pos = 0;
-        for part in parts {
-            if part.is_empty() {
-                continue;
-            }
-            if let Some(i) = path[pos..].find(part) {
-                pos += i + part.len();
-            } else {
-                return false;
-            }
-        }
-        true
-    } else {
-        path.contains(pattern)
-    }
-}
-
 /// Edge kinds that represent dependency relationships (not structural containment).
 const DEPENDENCY_EDGE_KINDS: &[EdgeKind] = &[
     EdgeKind::Imports,
@@ -76,10 +56,9 @@ pub struct CycleConfig {
     pub cross_file_only: bool,
     /// Only show cycles that span multiple hierarchy areas.
     pub cross_area_only: bool,
-    /// Ignore .rpgignore rules.
-    pub ignore_rpgignore: bool,
-    /// Project root path for .rpgignore lookup.
-    pub project_root: Option<std::path::PathBuf>,
+    /// Paths to exclude (loaded from .rpgignore or other source by the caller).
+    /// Cycles where ALL entities match an excluded path are removed.
+    pub excluded_paths: Option<ignore::gitignore::Gitignore>,
 }
 
 impl Default for CycleConfig {
@@ -93,8 +72,7 @@ impl Default for CycleConfig {
             include_files: true,
             cross_file_only: false,
             cross_area_only: false,
-            ignore_rpgignore: false,
-            project_root: None,
+            excluded_paths: None,
         }
     }
 }
@@ -205,35 +183,19 @@ pub fn detect_cycles(graph: &RPGraph, config: &CycleConfig) -> CycleReport {
     // Deduplicate cycles (same cycle can be found starting from different nodes)
     let mut cycles = deduplicate_cycles(cycles);
 
-    // Filter based on .rpgignore if not ignored
-    if !config.ignore_rpgignore
-        && let Some(ref project_root) = config.project_root
-    {
-        let rpgignore_path = project_root.join(".rpgignore");
-        if rpgignore_path.exists()
-            && let Ok(patterns) = std::fs::read_to_string(&rpgignore_path)
-        {
-            let patterns: Vec<String> = patterns
-                .lines()
-                .filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#'))
-                .map(|l| l.trim().to_string())
-                .collect();
-
-            if !patterns.is_empty() {
-                cycles.retain(|cycle| {
-                    cycle.cycle.iter().any(|entity_id| {
-                        if let Some(entity) = graph.entities.get(entity_id) {
-                            let file_path = entity.file.display().to_string();
-                            !patterns
-                                .iter()
-                                .any(|p| glob_match(p, &file_path) || file_path.contains(p))
-                        } else {
-                            true
-                        }
-                    })
-                });
-            }
-        }
+    // Filter out cycles where ALL entities are in excluded paths
+    if let Some(ref gitignore) = config.excluded_paths {
+        cycles.retain(|cycle| {
+            cycle.cycle.iter().any(|entity_id| {
+                if let Some(entity) = graph.entities.get(entity_id) {
+                    !gitignore
+                        .matched_path_or_any_parents(&entity.file, false)
+                        .is_ignore()
+                } else {
+                    true // keep cycles with unknown entities
+                }
+            })
+        });
     }
 
     // Filter by hierarchy area if specified (supports comma-separated multiple areas)

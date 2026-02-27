@@ -15,6 +15,7 @@ embeddings = ["dep:fastembed"]
 rpg-core.workspace = true
 anyhow.workspace = true
 globset.workspace = true
+ignore.workspace = true
 strsim.workspace = true
 toon-format.workspace = true
 serde.workspace = true

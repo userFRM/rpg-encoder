@@ -2703,6 +2703,7 @@ dependencies = [
  "criterion",
  "fastembed",
  "globset",
+ "ignore",
  "rayon",
  "rpg-core",
  "rpg-parser",
