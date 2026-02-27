@@ -7,6 +7,7 @@ members = [
     "crates/rpg-nav",
     "crates/rpg-cli",
     "crates/rpg-mcp",
+    "crates/rpg-lift",
 ]
 
 [workspace.package]
@@ -138,6 +139,9 @@ rayon = "1.11.0"
 # Compression
 zstd = "0.13.3"
 
+# HTTP client
+ureq = "3"
+
 # Embeddings
 fastembed = "5.8.1"
 
@@ -156,3 +160,4 @@ rpg-core = { path = "crates/rpg-core" }
 rpg-parser = { path = "crates/rpg-parser" }
 rpg-encoder = { path = "crates/rpg-encoder" }
 rpg-nav = { path = "crates/rpg-nav" }
+rpg-lift = { path = "crates/rpg-lift" }
