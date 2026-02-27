@@ -2938,6 +2938,18 @@ impl RpgServer {
             .clone()
             .unwrap_or_else(|| "length".to_string());
 
+        let excluded_paths = if !params.ignore_rpgignore.unwrap_or(false) {
+            let ignore_path = self.project_root.join(".rpgignore");
+            let (gitignore, err) = ignore::gitignore::Gitignore::new(&ignore_path);
+            if err.is_none() || ignore_path.exists() {
+                Some(gitignore)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let config = rpg_nav::cycles::CycleConfig {
             max_cycles,
             max_cycle_length: params.max_cycle_length.unwrap_or(20),
@@ -2947,62 +2959,11 @@ impl RpgServer {
             include_files: params.include_files.unwrap_or(true),
             cross_file_only,
             cross_area_only,
-            ignore_rpgignore: params.ignore_rpgignore.unwrap_or(false),
-            project_root: Some(self.project_root.clone()),
+            excluded_paths,
         };
 
         let report = rpg_nav::cycles::detect_cycles(graph, &config);
 
-        // TOON-optimized output: https://github.com/toon-format/toon
-
-        let mut output = format!("{}# Circular Dependencies\n\n", notice);
-
-        // Summary: inline object (compact TOON)
-        // Format: cycles: {total: N, entities: N, files: N, areas: N, cross_file: N, cross_area: N}
-        output.push_str(&format!(
-            "cycles: {{total: {}, entities: {}, files: {}, areas: {}, cross_file: {}, cross_area: {}}}\n\n",
-            report.cycle_count,
-            report.entities_in_cycles,
-            report.files_in_cycles,
-            report.areas_in_cycles,
-            report.cross_file_count,
-            report.cross_area_count
-        ));
-
-        if report.cycle_count > 0 {
-            // Length distribution: compact key=value pairs
-            output.push_str(&format!(
-                "length_dist: len2={} len3={} len4={} len5+={}\n\n",
-                report.length_distribution.length_2,
-                report.length_distribution.length_3,
-                report.length_distribution.length_4,
-                report.length_distribution.length_5_plus
-            ));
-
-            // Area breakdown: TOON tabular format
-            // Format: area_breakdown[N]{area,cycles,len2,len3,len4+,files}:
-            //          AreaName,cycles,len2,len3,len4+,files
-            if !report.area_breakdown.is_empty() {
-                output.push_str(&format!(
-                    "area_breakdown[{}]{{area,cycles,len2,len3,len4+,files}}:\n",
-                    report.area_breakdown.len()
-                ));
-                for area in &report.area_breakdown {
-                    output.push_str(&format!(
-                        "  {},{},{},{},{},{}\n",
-                        area.area,
-                        area.cycle_count,
-                        area.length_2,
-                        area.length_3,
-                        area.length_4_plus,
-                        area.file_count
-                    ));
-                }
-                output.push('\n');
-            }
-        }
-
-        // If no filters applied, show available areas and next step
         let has_filters = params.max_cycles.is_some()
             || params.min_cycle_length.unwrap_or(2) > 2
             || params.area.is_some()
@@ -3010,104 +2971,32 @@ impl RpgServer {
             || params.cross_area_only.unwrap_or(false)
             || params.sort_by.is_some();
 
-        // Option 1: TOON-ify available_areas with count
-        if !has_filters {
-            // Only show areas that have cycles (from area_breakdown, sorted by cycle count).
-            // Showing all hierarchy areas including cycle-free ones is misleading noise.
-            let areas: Vec<String> = report
-                .area_breakdown
-                .iter()
-                .map(|ab| ab.area.clone())
-                .collect();
-            if !areas.is_empty() {
-                output.push_str(&format!("available_areas[{}]: ", areas.len()));
-                output.push_str(&format!("{}\n\n", areas.join(",")));
-            }
-            output.push_str(
-                "---\nnext_step: Use area/max_cycles/cross_file_only/cross_area_only to filter\n",
-            );
-            return Ok(output);
-        }
-
-        // Option 2: Show active filters when filters are applied
-        output.push_str(&format!(
-            "filters: {{area: {}, max_cycles: {}, cross_file: {}, cross_area: {}}}\n\n",
-            params.area.as_deref().unwrap_or("-"),
-            params
-                .max_cycles
-                .map(|n| n.to_string())
-                .unwrap_or_else(|| "-".to_string()),
-            cross_file_only,
-            params.cross_area_only.unwrap_or(false)
-        ));
-
-        // Cycles: TOON tabular with file:entity format
-        // Format: cycles[N]{chain,len,files}:
-        //          file:entity->file:entity->file:entity,len=N,files=file1,file2
-        let display_cycles: Vec<_> = report.cycles.iter().take(max_cycles).collect();
-
-        // Handle edge case: max_cycles = 0
-        if max_cycles == 0 {
-            output.push_str("cycles[0]: (none requested)\n");
+        let filter_summary = if has_filters {
+            Some(format!(
+                "area: {}, max_cycles: {}, cross_file: {}, cross_area: {}",
+                params.area.as_deref().unwrap_or("-"),
+                params
+                    .max_cycles
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                cross_file_only,
+                params.cross_area_only.unwrap_or(false)
+            ))
         } else {
-            output.push_str(&format!(
-                "cycles[{}]{{chain,len,files}}:\n",
-                display_cycles.len()
-            ));
+            None
+        };
 
-            for cycle in &display_cycles {
-                // Convert chain to file:entity format for clarity
-                let chain: Vec<String> = cycle
-                    .cycle
-                    .iter()
-                    .map(|id| {
-                        if let Some(entity) = graph.entities.get(id) {
-                            let filename = entity
-                                .file
-                                .file_name()
-                                .map(|n| n.to_string_lossy().to_string())
-                                .unwrap_or_else(|| "unknown".to_string());
-                            format!("{}:{}", filename, entity.name)
-                        } else {
-                            id.clone()
-                        }
-                    })
-                    .collect();
-                let chain_str = chain.join("->");
+        let opts = rpg_nav::toon::CycleReportOptions {
+            has_filters,
+            max_cycles,
+            filter_summary,
+        };
 
-                // Extract just filenames from full paths
-                let files_str: Vec<String> = cycle
-                    .files
-                    .iter()
-                    .map(|f| {
-                        std::path::Path::new(f)
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_else(|| f.clone())
-                    })
-                    .collect();
-                let files_display = files_str.join(",");
-
-                output.push_str(&format!(
-                    "  {},len={},{}\n",
-                    chain_str, cycle.length, files_display
-                ));
-            }
-        }
-
-        // Only show "...and N more" if max_cycles > 0 and there are actually more cycles
-        if max_cycles > 0 && report.cycle_count > max_cycles {
-            output.push_str(&format!(
-                "\n... and {} more. Use max_cycles to limit.\n",
-                report.cycle_count - max_cycles
-            ));
-        }
-
-        output.push_str(
-            "\n---\nnext_step: Use area/max_cycles/cross_file_only/cross_area_only to filter\n",
-        );
-
-        Ok(output)
+        Ok(format!(
+            "{}{}",
+            notice,
+            rpg_nav::toon::format_cycle_report(&report, graph, &opts)
+        ))
     }
 }
 

@@ -855,6 +855,160 @@ pub fn format_health_report(report: &HealthReport) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Cycle report output
+// ---------------------------------------------------------------------------
+
+use crate::cycles::CycleReport;
+
+/// Options controlling how the cycle report is rendered.
+pub struct CycleReportOptions {
+    /// Whether any filters were applied (area, max_cycles, cross_file, etc.).
+    pub has_filters: bool,
+    /// Maximum cycles to display when filters are active.
+    pub max_cycles: usize,
+    /// Active filter description (e.g., "area: Navigation, max_cycles: 10, ...").
+    pub filter_summary: Option<String>,
+}
+
+/// Format a cycle report as TOON for LLM consumption.
+///
+/// When `has_filters` is false, shows a summary with available areas and a
+/// next-step hint. When filters are active, shows the matching cycles in
+/// TOON tabular format with entity chain details.
+pub fn format_cycle_report(
+    report: &CycleReport,
+    graph: &RPGraph,
+    opts: &CycleReportOptions,
+) -> String {
+    let mut output = String::from("# Circular Dependencies\n\n");
+
+    // Summary: inline object (compact TOON)
+    output.push_str(&format!(
+        "cycles: {{total: {}, entities: {}, files: {}, areas: {}, cross_file: {}, cross_area: {}}}\n\n",
+        report.cycle_count,
+        report.entities_in_cycles,
+        report.files_in_cycles,
+        report.areas_in_cycles,
+        report.cross_file_count,
+        report.cross_area_count
+    ));
+
+    if report.cycle_count > 0 {
+        // Length distribution
+        output.push_str(&format!(
+            "length_dist: len2={} len3={} len4={} len5+={}\n\n",
+            report.length_distribution.length_2,
+            report.length_distribution.length_3,
+            report.length_distribution.length_4,
+            report.length_distribution.length_5_plus
+        ));
+
+        // Area breakdown
+        if !report.area_breakdown.is_empty() {
+            output.push_str(&format!(
+                "area_breakdown[{}]{{area,cycles,len2,len3,len4+,files}}:\n",
+                report.area_breakdown.len()
+            ));
+            for area in &report.area_breakdown {
+                output.push_str(&format!(
+                    "  {},{},{},{},{},{}\n",
+                    area.area,
+                    area.cycle_count,
+                    area.length_2,
+                    area.length_3,
+                    area.length_4_plus,
+                    area.file_count
+                ));
+            }
+            output.push('\n');
+        }
+    }
+
+    // Unfiltered: show available areas and next-step hint
+    if !opts.has_filters {
+        let areas: Vec<String> = report
+            .area_breakdown
+            .iter()
+            .map(|ab| ab.area.clone())
+            .collect();
+        if !areas.is_empty() {
+            output.push_str(&format!("available_areas[{}]: ", areas.len()));
+            output.push_str(&format!("{}\n\n", areas.join(",")));
+        }
+        output.push_str(
+            "---\nnext_step: Use area/max_cycles/cross_file_only/cross_area_only to filter\n",
+        );
+        return output;
+    }
+
+    // Filtered: show active filters and cycle details
+    if let Some(ref summary) = opts.filter_summary {
+        output.push_str(&format!("filters: {{{}}}\n\n", summary));
+    }
+
+    let display_cycles: Vec<_> = report.cycles.iter().take(opts.max_cycles).collect();
+
+    if opts.max_cycles == 0 {
+        output.push_str("cycles[0]: (none requested)\n");
+    } else {
+        output.push_str(&format!(
+            "cycles[{}]{{chain,len,files}}:\n",
+            display_cycles.len()
+        ));
+
+        for cycle in &display_cycles {
+            let chain: Vec<String> = cycle
+                .cycle
+                .iter()
+                .map(|id| {
+                    if let Some(entity) = graph.entities.get(id) {
+                        let filename = entity
+                            .file
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "unknown".to_string());
+                        format!("{}:{}", filename, entity.name)
+                    } else {
+                        id.clone()
+                    }
+                })
+                .collect();
+            let chain_str = chain.join("->");
+
+            let files_str: Vec<String> = cycle
+                .files
+                .iter()
+                .map(|f| {
+                    std::path::Path::new(f)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| f.clone())
+                })
+                .collect();
+            let files_display = files_str.join(",");
+
+            output.push_str(&format!(
+                "  {},len={},{}\n",
+                chain_str, cycle.length, files_display
+            ));
+        }
+    }
+
+    if opts.max_cycles > 0 && report.cycle_count > opts.max_cycles {
+        output.push_str(&format!(
+            "\n... and {} more. Use max_cycles to limit.\n",
+            report.cycle_count - opts.max_cycles
+        ));
+    }
+
+    output.push_str(
+        "\n---\nnext_step: Use area/max_cycles/cross_file_only/cross_area_only to filter\n",
+    );
+
+    output
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
