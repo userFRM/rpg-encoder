@@ -1,0 +1,22 @@
+[command]
+description = "Run autonomous LLM-driven semantic lifting on the codebase"
+
+[command.prompt]
+text = """
+Perform autonomous semantic lifting on this codebase using cheap LLM APIs.
+
+First, estimate the cost: `rpg-encoder lift --dry-run`
+
+Show the estimate to the user. If they approve, run the full lift:
+`rpg-encoder lift --provider anthropic`
+
+The lift pipeline:
+1. Auto-lifts trivial entities (getters, setters, constructors) without LLM calls
+2. Sends remaining entities to the LLM in batches for semantic feature extraction
+3. Synthesizes file-level features
+4. Discovers functional domains and assigns 3-level hierarchy
+
+Progress is saved after each batch. If interrupted, re-running continues from where it stopped.
+
+After completion, run `rpg-encoder info` to show the updated graph statistics.
+"""
