@@ -131,6 +131,34 @@ enum Commands {
         action: String,
     },
 
+    /// Autonomous LLM-driven semantic lifting (fire-and-forget)
+    #[cfg(feature = "lift")]
+    Lift {
+        /// LLM provider: "anthropic" or "openai"
+        #[arg(long, default_value = "anthropic")]
+        provider: String,
+
+        /// Model override (default: haiku for anthropic, gpt-4o-mini for openai)
+        #[arg(long)]
+        model: Option<String>,
+
+        /// API key (or set ANTHROPIC_API_KEY / OPENAI_API_KEY env var)
+        #[arg(long)]
+        api_key: Option<String>,
+
+        /// Base URL for OpenAI-compatible endpoints
+        #[arg(long)]
+        base_url: Option<String>,
+
+        /// Estimate cost without calling the LLM
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Scope: file glob, hierarchy path, or "*" for all unlifted
+        #[arg(long, default_value = "*")]
+        scope: String,
+    },
+
     /// Start MCP server (use rpg-mcp-server binary instead)
     #[command(hide = true)]
     Serve,
@@ -193,6 +221,23 @@ fn main() -> Result<()> {
         } => cmd_reconstruct_plan(&project_root, max_batch_size, &format, include_modules),
         Commands::Validate => cmd_validate(&project_root),
         Commands::Hook { action } => cmd_hook(&project_root, &action),
+        #[cfg(feature = "lift")]
+        Commands::Lift {
+            provider,
+            model,
+            api_key,
+            base_url,
+            dry_run,
+            scope,
+        } => cmd_lift(
+            &project_root,
+            &provider,
+            model.as_deref(),
+            api_key.as_deref(),
+            base_url.as_deref(),
+            dry_run,
+            &scope,
+        ),
         Commands::Serve => {
             eprintln!("MCP server not yet implemented. Use rpg-mcp binary instead.");
             Ok(())
@@ -1046,6 +1091,103 @@ fn check_hierarchy_orphans(
         let child_path = format!("{}/{}", path, child_name);
         check_hierarchy_orphans(child, &child_path, graph, issues);
     }
+}
+
+#[cfg(feature = "lift")]
+fn cmd_lift(
+    project_root: &Path,
+    provider_name: &str,
+    model: Option<&str>,
+    api_key: Option<&str>,
+    base_url: Option<&str>,
+    dry_run: bool,
+    scope: &str,
+) -> Result<()> {
+    if !rpg_core::storage::rpg_exists(project_root) {
+        anyhow::bail!("No RPG found. Run `rpg-encoder build` first.");
+    }
+
+    // Resolve API key from arg or environment
+    let api_key = api_key
+        .map(String::from)
+        .or_else(|| match provider_name {
+            "anthropic" => std::env::var("ANTHROPIC_API_KEY").ok(),
+            "openai" => std::env::var("OPENAI_API_KEY").ok(),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            let env_var = match provider_name {
+                "anthropic" => "ANTHROPIC_API_KEY",
+                "openai" => "OPENAI_API_KEY",
+                _ => "API_KEY",
+            };
+            anyhow::anyhow!(
+                "No API key provided. Use --api-key or set {} env var.",
+                env_var
+            )
+        })?;
+
+    let provider = rpg_lift::create_provider(provider_name, &api_key, model, base_url)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let mut graph = rpg_core::storage::load(project_root)?;
+
+    // Dry run: estimate cost and exit
+    if dry_run {
+        let estimate = rpg_lift::estimate_cost(&graph, provider.as_ref(), project_root);
+        eprintln!("\n{}", estimate);
+        return Ok(());
+    }
+
+    eprintln!(
+        "Starting autonomous lift with {} ({})",
+        provider_name,
+        provider.model_name()
+    );
+
+    let config = rpg_lift::LiftConfig {
+        provider: provider.as_ref(),
+        project_root,
+        scope,
+        max_retries: 2,
+        batch_size: 25,
+        batch_tokens: 8000,
+    };
+
+    let report =
+        rpg_lift::run_pipeline(&mut graph, &config).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    // Print report
+    eprintln!("\nLifting complete!");
+    eprintln!("  Auto-lifted: {}", report.entities_auto_lifted);
+    eprintln!("  LLM-lifted: {}", report.entities_llm_lifted);
+    if report.entities_failed > 0 {
+        eprintln!("  Failed: {}", report.entities_failed);
+    }
+    eprintln!("  Batches processed: {}", report.batches_processed);
+    eprintln!("  Files synthesized: {}", report.files_synthesized);
+    eprintln!(
+        "  Hierarchy: {}",
+        if report.hierarchy_assigned {
+            "assigned"
+        } else {
+            "not assigned"
+        }
+    );
+    eprintln!(
+        "  Tokens: {} input, {} output",
+        report.total_input_tokens, report.total_output_tokens
+    );
+    eprintln!("  Cost: ${:.4}", report.total_cost_usd);
+
+    if !report.errors.is_empty() {
+        eprintln!("\n  Warnings ({}):", report.errors.len());
+        for err in &report.errors {
+            eprintln!("    - {}", err);
+        }
+    }
+
+    Ok(())
 }
 
 fn cmd_info(project_root: &Path) -> Result<()> {

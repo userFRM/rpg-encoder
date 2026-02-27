@@ -1,0 +1,31 @@
+[package]
+name = "rpg-lift"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Autonomous LLM-driven semantic lifting for RPG"
+
+[features]
+default = ["anthropic", "openai"]
+anthropic = []
+openai = []
+
+[dependencies]
+rpg-core = { workspace = true }
+rpg-encoder = { workspace = true }
+rpg-parser = { workspace = true }
+ureq = { workspace = true, features = ["json"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+indicatif = { workspace = true }
+globset = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
