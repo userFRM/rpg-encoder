@@ -1,0 +1,15 @@
+[command]
+description = "Search for code entities by intent or keywords"
+
+[command.prompt]
+text = """
+Search the codebase semantic graph for entities matching the user's query.
+
+Run: `rpg-encoder search "$PROMPT" --mode auto`
+
+Use `--mode features` for intent-based search (e.g., "validate user input", "handle HTTP errors").
+Use `--mode snippets` for name/path matching (e.g., "auth", "parse_config").
+Use `--scope AREA` to restrict to a functional area.
+
+Show the results and explain what each entity does based on its features and location.
+"""

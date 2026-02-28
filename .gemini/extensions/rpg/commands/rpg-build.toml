@@ -1,0 +1,13 @@
+[command]
+description = "Build a semantic code graph (RPG) from the codebase"
+
+[command.prompt]
+text = """
+Build a Repository Planning Graph for this codebase using the rpg-encoder CLI.
+
+Run: `rpg-encoder build`
+
+This indexes all source files, detects languages, extracts entities, builds the dependency graph and structural hierarchy. The graph is saved to `.rpg/graph.json`.
+
+If the graph already exists, use `--force` to rebuild. After building, run `rpg-encoder info` to show the result.
+"""

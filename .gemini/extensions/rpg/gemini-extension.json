@@ -1,0 +1,12 @@
+{
+  "name": "rpg-encoder",
+  "version": "0.7.0",
+  "description": "Build and query semantic code graphs (Repository Planning Graphs) for AI-assisted code understanding. Provides entity search, dependency exploration, and autonomous LLM-driven semantic lifting.",
+  "mcpServers": {
+    "rpg-encoder": {
+      "command": "npx",
+      "args": ["-y", "rpg-encoder@latest", "mcp"]
+    }
+  },
+  "contextFileName": "CONTEXT.md"
+}
