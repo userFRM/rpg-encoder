@@ -5,16 +5,10 @@
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
 
 > [!NOTE]
-> This is an **independent, community-driven implementation** inspired by the
-> [RPG-Encoder paper](https://arxiv.org/abs/2602.02084) from Microsoft Research. It is **not**
-> affiliated with, endorsed by, or connected to Microsoft in any way. For the official
-> implementation, see [microsoft/RPG-ZeroRepo](https://github.com/microsoft/RPG-ZeroRepo).
->
-> Microsoft announced *"We are in the process of preparing a full public release of the codebase,
-> and all code will be released within the next two weeks."* — that was too long to wait.
-> This project was built with Claude by reading the publicly available research papers and
-> implementing the described algorithms from scratch in Rust. All code is original work.
-> The papers are cited for attribution.
+> **Independent implementation.** Built from scratch in Rust by reading the
+> [RPG-Encoder paper](https://arxiv.org/abs/2602.02084) (Luo et al., 2026, Microsoft Research).
+> No shared code with any other implementation. Not affiliated with or endorsed by Microsoft.
+> All code is original work; the paper is cited for attribution.
 
 ---
 
