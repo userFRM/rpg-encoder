@@ -411,6 +411,39 @@ mod tests {
     }
 
     #[test]
+    fn test_plan_root_scope_matches_unscoped_search() {
+        let graph = build_test_graph();
+        let unscoped = plan_change(
+            &graph,
+            &PlanChangeRequest {
+                goal: "server",
+                scope: None,
+                max_entities: 10,
+            },
+            None,
+        );
+        let root_scoped = plan_change(
+            &graph,
+            &PlanChangeRequest {
+                goal: "server",
+                scope: Some("."),
+                max_entities: 10,
+            },
+            None,
+        );
+
+        assert_eq!(
+            root_scoped.relevant_entities.len(),
+            unscoped.relevant_entities.len(),
+            "root scope should search the full graph"
+        );
+        assert_eq!(
+            root_scoped.modification_order, unscoped.modification_order,
+            "root scope should preserve planning results"
+        );
+    }
+
+    #[test]
     fn test_plan_dependency_ordering() {
         let graph = build_test_graph();
         let mut targets = HashSet::new();
