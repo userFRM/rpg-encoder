@@ -5,6 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-04-13
+
+### Added
+
+- **`semantic_snapshot` MCP tool** — Whole-repo semantic understanding in one call (~25K tokens
+  for 1000 entities). Includes hot spots: top-10 most-connected entities as architectural backbone.
+- **`auto_lift` MCP tool** — Autonomous lifting via external LLM API (Anthropic Haiku, OpenAI
+  GPT-4o-mini, OpenRouter, Google Gemini). Supports `api_key_env` parameter to resolve keys
+  from environment variables (safer than raw keys in tool calls).
+- **`analyze_health` MCP tool** — Code health metrics: coupling, instability, god objects,
+  clone detection.
+- **`detect_cycles` MCP tool** — Circular dependency detection.
+- **Auto-staleness resolution** — Server auto-syncs graph when git HEAD moves. Navigation tools
+  no longer show passive stale warnings, they auto-update.
+- **MCP tool annotations** — `read_only_hint`, `destructive_hint`, `open_world_hint` on all
+  tools per MCP 2025-03-26 spec.
+- **`tool_list_changed` capability** enabled for future progressive tool loading.
+- **Claude Code hooks** — `PreToolUse` on Write/Edit (auto-context injection), `PostToolUse`
+  on Bash (auto-update after git commits).
+- MCP tool count: 23 → 27
+
+### Fixed
+
+- **Deadlock in `auto_sync_if_stale()` error path** — write lock held while calling read-lock
+  method (#75)
+- **`auto_lift` graph loss on pipeline error** — graph now stays in write lock via
+  `block_in_place` (#75, #77)
+- **API key exposure in Debug derive** — manual `Debug` impl redacts `api_key` (#75)
+- **Concurrent `auto_lift` guard** — `lift_in_progress` AtomicBool rejects parallel calls (#76)
+- **Cost estimate overcounting** — Review-confidence entities no longer counted as LLM-needed
+  (#76)
+- **Pre-commit hook supply-chain risk** — removed unpinned `npx -y` fallback (#77)
+- **Autonomous lift name collision** — tries qualified `Class::method` names when bare name
+  misses (#77)
+- **Snapshot dep skeleton ambiguity** — uses qualified names instead of bare names (#77)
+- **Shell hook portability** — replaced GNU `grep -P` with POSIX `sed` (#77)
+- **Root scope handling in shared search** — `scope="."` and `scope=""` now behave as
+  unscoped (#70)
+
+### Removed
+
+- Unused `kodama` dependency
+
+### Changed
+
+- `server.json` version updated to 0.7.0 (was stuck at 0.6.7)
+- CONTRIBUTING.md corrected: tools are in `tools.rs` not `main.rs`
+- README rewritten: leads with value proposition, credits inspirations (RPG paper, GitNexus,
+  Serena)
+- Dead code removed from rpg-lift `progress.rs`
+
+## [0.7.0] - 2026-04-08
+
+### Added
+
+- **Claude Code skill** (`.claude/skills/rpg/SKILL.md`) and Gemini CLI extension (#68)
+- README updated to cite arXiv paper directly
+
+### Changed
+
+- Entity Signatures carried over from v0.6.0
+- MCP tool count: 23 (unchanged)
+
 ## [0.6.2] - 2026-02-21
 
 ### Fixed
