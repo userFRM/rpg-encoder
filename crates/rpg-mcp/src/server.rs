@@ -54,7 +54,6 @@ pub(crate) struct RpgServer {
     /// Last git HEAD SHA at which auto-sync ran. Prevents redundant updates.
     pub(crate) last_auto_sync_head: Arc<RwLock<Option<String>>>,
     /// Guard: true while auto_lift is running. Rejects concurrent lift calls.
-    #[cfg(feature = "auto-lift")]
     pub(crate) lift_in_progress: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -91,7 +90,6 @@ impl RpgServer {
             tool_router: Self::create_tool_router(),
             prompt_versions: PromptVersions::new(),
             last_auto_sync_head: Arc::new(RwLock::new(initial_head)),
-            #[cfg(feature = "auto-lift")]
             lift_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }

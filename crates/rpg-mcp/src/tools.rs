@@ -708,7 +708,6 @@ impl RpgServer {
         Ok(result)
     }
 
-    #[cfg(feature = "auto-lift")]
     #[tool(
         description = "Autonomous lifting via LLM API — lifts all unlifted entities, synthesizes file features, and builds semantic hierarchy in one call. Uses a cheap external LLM (Haiku, GPT-4o-mini) instead of consuming your coding agent's subscription tokens. Providers: 'anthropic' (default model: claude-haiku-4-5), 'openai' (default: gpt-4o-mini). For OpenRouter or Gemini, use provider='openai' with a custom base_url. Set dry_run=true to estimate cost first. Requires an API key.",
         annotations(
@@ -719,113 +718,121 @@ impl RpgServer {
     )]
     async fn auto_lift(
         &self,
-        Parameters(params): Parameters<AutoLiftParams>,
+        #[allow(unused_variables)] Parameters(params): Parameters<AutoLiftParams>,
     ) -> Result<String, String> {
-        /// Drop guard that clears the `lift_in_progress` flag on scope exit.
-        struct LiftGuard(std::sync::Arc<std::sync::atomic::AtomicBool>);
-        impl Drop for LiftGuard {
-            fn drop(&mut self) {
-                self.0.store(false, std::sync::atomic::Ordering::SeqCst);
-            }
-        }
-
-        self.ensure_graph().await?;
-
-        // Reject concurrent lift calls
-        if self
-            .lift_in_progress
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        #[cfg(not(feature = "auto-lift"))]
         {
-            return Err("A lift is already in progress. Wait for it to complete.".into());
+            return Err("auto_lift is not available: this binary was compiled without the auto-lift feature.".into());
         }
-        let _guard = LiftGuard(std::sync::Arc::clone(&self.lift_in_progress));
 
-        // Resolve API key: prefer api_key_env (safe), fall back to api_key (raw)
-        let api_key = if let Some(ref env_var) = params.api_key_env {
-            std::env::var(env_var).map_err(|_| {
-                format!(
-                    "Environment variable '{}' not set. Set it or use api_key instead.",
-                    env_var
-                )
-            })?
-        } else if let Some(ref key) = params.api_key {
-            key.clone()
-        } else {
-            // Auto-detect from standard env vars based on provider
-            let env_var = match params.provider.as_str() {
-                "anthropic" => "ANTHROPIC_API_KEY",
-                "openai" => "OPENAI_API_KEY",
-                _ => "OPENAI_API_KEY",
-            };
-            std::env::var(env_var).map_err(|_| {
+        #[cfg(feature = "auto-lift")]
+        {
+            /// Drop guard that clears the `lift_in_progress` flag on scope exit.
+            struct LiftGuard(std::sync::Arc<std::sync::atomic::AtomicBool>);
+            impl Drop for LiftGuard {
+                fn drop(&mut self) {
+                    self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+
+            self.ensure_graph().await?;
+
+            // Reject concurrent lift calls
+            if self
+                .lift_in_progress
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err("A lift is already in progress. Wait for it to complete.".into());
+            }
+            let _guard = LiftGuard(std::sync::Arc::clone(&self.lift_in_progress));
+
+            // Resolve API key: prefer api_key_env (safe), fall back to api_key (raw)
+            let api_key = if let Some(ref env_var) = params.api_key_env {
+                std::env::var(env_var).map_err(|_| {
+                    format!(
+                        "Environment variable '{}' not set. Set it or use api_key instead.",
+                        env_var
+                    )
+                })?
+            } else if let Some(ref key) = params.api_key {
+                key.clone()
+            } else {
+                // Auto-detect from standard env vars based on provider
+                let env_var = match params.provider.as_str() {
+                    "anthropic" => "ANTHROPIC_API_KEY",
+                    "openai" => "OPENAI_API_KEY",
+                    _ => "OPENAI_API_KEY",
+                };
+                std::env::var(env_var).map_err(|_| {
                 format!(
                     "No API key provided. Use api_key_env=\"{}\" or api_key, or set {} env var.",
                     env_var, env_var
                 )
             })?
-        };
-
-        let provider = rpg_lift::create_provider(
-            &params.provider,
-            &api_key,
-            params.model.as_deref(),
-            params.base_url.as_deref(),
-        )
-        .map_err(|e| format!("Failed to create LLM provider: {}", e))?;
-
-        let scope = params.scope.as_deref().unwrap_or("*");
-        let dry_run = params.dry_run.unwrap_or(false);
-
-        // Dry run: estimate cost without lifting
-        if dry_run {
-            let guard = self.graph.read().await;
-            let graph = guard.as_ref().unwrap();
-            let estimate = rpg_lift::estimate_cost(graph, provider.as_ref(), &self.project_root);
-            return Ok(format!(
-                "Cost estimate for lifting with {} ({}):\n\n{}",
-                params.provider,
-                provider.model_name(),
-                estimate,
-            ));
-        }
-
-        // Hold the write lock for the entire pipeline. The graph never leaves
-        // shared state, so cancellation or concurrent tools can't corrupt it.
-        let mut guard = self.graph.write().await;
-        let graph = guard.as_mut().ok_or("No RPG loaded")?;
-
-        let project_root = self.project_root.clone();
-        let scope_owned = scope.to_string();
-
-        // Run the blocking pipeline on the current thread (tells tokio we're blocking).
-        // This is safe because MCP stdio is serial — no concurrent requests.
-        let report = tokio::task::block_in_place(|| {
-            let config = rpg_lift::LiftConfig {
-                provider: provider.as_ref(),
-                project_root: &project_root,
-                scope: &scope_owned,
-                max_retries: 2,
-                batch_size: 25,
-                batch_tokens: 8000,
             };
-            let result = rpg_lift::run_pipeline(graph, &config);
-            let _ = rpg_core::storage::save(&project_root, graph);
-            result
-        })
-        .map_err(|e| format!("Lift failed: {}", e))?;
 
-        drop(guard);
+            let provider = rpg_lift::create_provider(
+                &params.provider,
+                &api_key,
+                params.model.as_deref(),
+                params.base_url.as_deref(),
+            )
+            .map_err(|e| format!("Failed to create LLM provider: {}", e))?;
 
-        // Clear sessions — entity list changed
-        *self.lifting_session.write().await = None;
-        *self.hierarchy_session.write().await = None;
+            let scope = params.scope.as_deref().unwrap_or("*");
+            let dry_run = params.dry_run.unwrap_or(false);
 
-        // Update auto-sync HEAD
-        *self.last_auto_sync_head.write().await =
-            rpg_encoder::evolution::get_head_sha(&self.project_root).ok();
+            // Dry run: estimate cost without lifting
+            if dry_run {
+                let guard = self.graph.read().await;
+                let graph = guard.as_ref().unwrap();
+                let estimate =
+                    rpg_lift::estimate_cost(graph, provider.as_ref(), &self.project_root);
+                return Ok(format!(
+                    "Cost estimate for lifting with {} ({}):\n\n{}",
+                    params.provider,
+                    provider.model_name(),
+                    estimate,
+                ));
+            }
 
-        let mut out = format!(
-            "Lifting complete ({}, {}).\n\
+            // Hold the write lock for the entire pipeline. The graph never leaves
+            // shared state, so cancellation or concurrent tools can't corrupt it.
+            let mut guard = self.graph.write().await;
+            let graph = guard.as_mut().ok_or("No RPG loaded")?;
+
+            let project_root = self.project_root.clone();
+            let scope_owned = scope.to_string();
+
+            // Run the blocking pipeline on the current thread (tells tokio we're blocking).
+            // This is safe because MCP stdio is serial — no concurrent requests.
+            let report = tokio::task::block_in_place(|| {
+                let config = rpg_lift::LiftConfig {
+                    provider: provider.as_ref(),
+                    project_root: &project_root,
+                    scope: &scope_owned,
+                    max_retries: 2,
+                    batch_size: 25,
+                    batch_tokens: 8000,
+                };
+                let result = rpg_lift::run_pipeline(graph, &config);
+                let _ = rpg_core::storage::save(&project_root, graph);
+                result
+            })
+            .map_err(|e| format!("Lift failed: {}", e))?;
+
+            drop(guard);
+
+            // Clear sessions — entity list changed
+            *self.lifting_session.write().await = None;
+            *self.hierarchy_session.write().await = None;
+
+            // Update auto-sync HEAD
+            *self.last_auto_sync_head.write().await =
+                rpg_encoder::evolution::get_head_sha(&self.project_root).ok();
+
+            let mut out = format!(
+                "Lifting complete ({}, {}).\n\
              auto_lifted: {}\n\
              llm_lifted: {}\n\
              failed: {}\n\
@@ -834,29 +841,32 @@ impl RpgServer {
              hierarchy: {}\n\
              tokens: {} in / {} out\n\
              cost: ${:.4}",
-            params.provider,
-            report.total_input_tokens + report.total_output_tokens,
-            report.entities_auto_lifted,
-            report.entities_llm_lifted,
-            report.entities_failed,
-            report.batches_processed,
-            report.files_synthesized,
-            if report.hierarchy_assigned {
-                "assigned"
-            } else {
-                "not assigned"
-            },
-            report.total_input_tokens,
-            report.total_output_tokens,
-            report.total_cost_usd,
-        );
+                params.provider,
+                report.total_input_tokens + report.total_output_tokens,
+                report.entities_auto_lifted,
+                report.entities_llm_lifted,
+                report.entities_failed,
+                report.batches_processed,
+                report.files_synthesized,
+                if report.hierarchy_assigned {
+                    "assigned"
+                } else {
+                    "not assigned"
+                },
+                report.total_input_tokens,
+                report.total_output_tokens,
+                report.total_cost_usd,
+            );
 
-        if !report.errors.is_empty() {
-            out.push_str(&format!("\nerrors: {}", report.errors.join("; ")));
-        }
+            if !report.errors.is_empty() {
+                out.push_str(&format!("\nerrors: {}", report.errors.join("; ")));
+            }
 
-        out.push_str("\n\nNEXT STEP: Call semantic_snapshot to see the full repo understanding.");
-        Ok(out)
+            out.push_str(
+                "\n\nNEXT STEP: Call semantic_snapshot to see the full repo understanding.",
+            );
+            Ok(out)
+        } // #[cfg(feature = "auto-lift")]
     }
 
     #[tool(
