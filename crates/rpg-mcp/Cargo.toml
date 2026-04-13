@@ -12,14 +12,16 @@ name = "rpg-mcp-server"
 path = "src/main.rs"
 
 [features]
-default = ["embeddings"]
+default = ["embeddings", "auto-lift"]
 embeddings = ["rpg-nav/embeddings"]
+auto-lift = ["rpg-lift"]
 
 [dependencies]
 rpg-core.workspace = true
 rpg-nav = { workspace = true }
 rpg-encoder.workspace = true
 rpg-parser.workspace = true
+rpg-lift = { workspace = true, optional = true }
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
