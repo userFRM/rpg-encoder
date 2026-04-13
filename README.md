@@ -12,6 +12,30 @@ intent-level features, then searches by meaning, not naming conventions.
 
 The result: an LLM that starts every session already knowing your entire repo.
 
+## The Problem: Your LLM Is Flying Blind
+
+Without rpg-encoder, coding agents spend **70%+ of their tool calls** just figuring out what
+your codebase does:
+
+```
+Typical 48K-call session without RPG:
+
+  Bash   24,189  (50%)   grep, cat, find, ls — fumbling through files
+  Read    7,866  (16%)   reading files without knowing which ones matter
+  Grep    2,061   (4%)   text search when semantic search finds it in one call
+  Glob      280   (1%)   finding files by name pattern
+  ─────────────────────
+  Total  34,396  (71%)   wasted on "where is the code and what does it do?"
+```
+
+Every `grep` is an admission the LLM doesn't know where things are. Every `cat` is an
+admission it doesn't know what's in the file. Every `find` is an admission it doesn't
+know the structure.
+
+**With rpg-encoder:** The LLM calls `semantic_snapshot` once, reads ~25K tokens, and
+knows every function's purpose, every dependency chain, every area of the codebase.
+Those 34,000 exploration calls collapse into *one*.
+
 ## What Makes This Different
 
 **Semantic understanding, not structural graphs.** Tools like GitNexus, CodeGraphContext, and
@@ -27,6 +51,10 @@ needed for understanding, only for fetching source code when editing.
 
 **Self-maintaining graph.** The server auto-syncs when code changes. No manual `update` calls,
 no stale warnings the agent ignores. The graph owns its own consistency.
+
+**Claude Code hooks.** PreToolUse hooks auto-inject semantic context before every file edit.
+PostToolUse hooks auto-update the graph after every git commit. The LLM never has to
+remember to use RPG — it's wired into the workflow.
 
 ## Install
 
