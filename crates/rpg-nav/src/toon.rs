@@ -9,6 +9,7 @@ use crate::context::ContextPackResult;
 use crate::fetch::{FetchOutput, FetchResult, HierarchyFetchResult};
 use crate::impact::ImpactResult;
 use crate::search::SearchResult;
+use crate::snapshot::SnapshotResult;
 use rpg_core::graph::RPGraph;
 use serde::Serialize;
 use toon_format::{EncodeOptions, encode};
@@ -1006,6 +1007,139 @@ pub fn format_cycle_report(
     );
 
     output
+}
+
+// ---------------------------------------------------------------------------
+// Semantic Snapshot output
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct SnapshotStatsRow {
+    entities: String,
+    coverage: String,
+    files: usize,
+    edges: usize,
+    languages: String,
+    hierarchy: String,
+}
+
+#[derive(Serialize)]
+struct SnapshotAreaRow {
+    area: String,
+    entities: usize,
+    features: String,
+    categories: String,
+}
+
+#[derive(Serialize)]
+struct SnapshotEntityRow {
+    name: String,
+    kind: String,
+    file: String,
+    features: String,
+}
+
+#[derive(Serialize)]
+struct SnapshotDepRow {
+    entity: String,
+    calls: String,
+    called_by: String,
+    inherits: String,
+}
+
+#[derive(Serialize)]
+struct SnapshotOutput {
+    stats: SnapshotStatsRow,
+    hierarchy: Vec<SnapshotAreaRow>,
+    entities: Vec<SnapshotEntityGroupRow>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    dep_skeleton: Vec<SnapshotDepRow>,
+    token_estimate: usize,
+}
+
+#[derive(Serialize)]
+struct SnapshotEntityGroupRow {
+    area: String,
+    members: Vec<SnapshotEntityRow>,
+}
+
+/// Format a semantic snapshot result as TOON.
+pub fn format_semantic_snapshot(result: &SnapshotResult) -> String {
+    let stats = SnapshotStatsRow {
+        entities: format!(
+            "{}/{} lifted ({:.0}%)",
+            result.stats.lifted_entities, result.stats.total_entities, result.stats.coverage_pct,
+        ),
+        coverage: format!("{:.0}%", result.stats.coverage_pct),
+        files: result.stats.total_files,
+        edges: result.stats.total_edges,
+        languages: result.stats.languages.clone(),
+        hierarchy: result.stats.hierarchy_type.clone(),
+    };
+
+    let hierarchy: Vec<SnapshotAreaRow> = result
+        .hierarchy_tree
+        .iter()
+        .map(|area| {
+            let cat_names: Vec<String> = area
+                .categories
+                .iter()
+                .map(|c| {
+                    let subs: Vec<&str> = c.subcategories.iter().map(|s| s.name.as_str()).collect();
+                    if subs.is_empty() {
+                        c.name.clone()
+                    } else {
+                        format!("{}({})", c.name, subs.join(", "))
+                    }
+                })
+                .collect();
+            SnapshotAreaRow {
+                area: area.name.clone(),
+                entities: area.entity_count,
+                features: area.aggregate_features.join("; "),
+                categories: cat_names.join(", "),
+            }
+        })
+        .collect();
+
+    let entities: Vec<SnapshotEntityGroupRow> = result
+        .entity_groups
+        .iter()
+        .map(|group| SnapshotEntityGroupRow {
+            area: group.area_path.clone(),
+            members: group
+                .entities
+                .iter()
+                .map(|e| SnapshotEntityRow {
+                    name: e.name.clone(),
+                    kind: e.kind.clone(),
+                    file: e.file.clone(),
+                    features: e.features.join("; "),
+                })
+                .collect(),
+        })
+        .collect();
+
+    let dep_skeleton: Vec<SnapshotDepRow> = result
+        .dep_skeleton
+        .iter()
+        .map(|d| SnapshotDepRow {
+            entity: d.name.clone(),
+            calls: d.calls.join(", "),
+            called_by: d.called_by.join(", "),
+            inherits: d.inherits.join(", "),
+        })
+        .collect();
+
+    let output = SnapshotOutput {
+        stats,
+        hierarchy,
+        entities,
+        dep_skeleton,
+        token_estimate: result.token_estimate,
+    };
+
+    encode(&output, &encode_opts()).unwrap_or_else(|_| "Failed to encode snapshot".into())
 }
 
 // ---------------------------------------------------------------------------

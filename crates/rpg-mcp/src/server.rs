@@ -51,6 +51,8 @@ pub(crate) struct RpgServer {
     pub(crate) tool_router: rmcp::handler::server::router::tool::ToolRouter<Self>,
     /// Protocol prompt versions for deduplication.
     pub(crate) prompt_versions: PromptVersions,
+    /// Last git HEAD SHA at which auto-sync ran. Prevents redundant updates.
+    pub(crate) last_auto_sync_head: Arc<RwLock<Option<String>>>,
 }
 
 impl std::fmt::Debug for RpgServer {
@@ -66,6 +68,7 @@ impl RpgServer {
     /// Create a new server, loading graph and config from `project_root` if present.
     pub(crate) fn new(project_root: PathBuf) -> Self {
         let graph = storage::load(&project_root).ok();
+        let initial_head = graph.as_ref().and_then(|g| g.base_commit.clone());
         let config = RpgConfig::load(&project_root).unwrap_or_default();
         // Restore pending routing from disk if present
         let pending = load_pending_routing(&project_root)
@@ -84,6 +87,7 @@ impl RpgServer {
             embedding_init_failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             tool_router: Self::create_tool_router(),
             prompt_versions: PromptVersions::new(),
+            last_auto_sync_head: Arc::new(RwLock::new(initial_head)),
         }
     }
 
@@ -110,6 +114,114 @@ impl RpgServer {
         }
         format!(
             "[stale: {} source file(s) changed since graph was built — call update_rpg to sync]\n\n",
+            source_changes.len(),
+        )
+    }
+
+    /// Auto-sync the graph if stale, returning a notice string.
+    ///
+    /// Runs a structural-only update (no re-lifting) when git HEAD has moved
+    /// since the last sync. Uses `last_auto_sync_head` to avoid redundant work.
+    /// Falls back to a passive staleness notice on error.
+    pub(crate) async fn auto_sync_if_stale(&self) -> String {
+        // Fast path: compare HEAD SHA to last known sync point
+        let Ok(current_head) = rpg_encoder::evolution::get_head_sha(&self.project_root) else {
+            return self.staleness_notice().await;
+        };
+
+        {
+            let last = self.last_auto_sync_head.read().await;
+            if last.as_deref() == Some(current_head.as_str()) {
+                // HEAD unchanged since last sync — check for unstaged changes only
+                return self.staleness_notice_unstaged().await;
+            }
+        }
+
+        // HEAD moved — try structural auto-update
+        let mut guard = self.graph.write().await;
+        let Some(graph) = guard.as_mut() else {
+            return String::new();
+        };
+
+        // Detect paradigms for framework-aware classification
+        let detected_langs = Self::resolve_languages(&graph.metadata);
+        let paradigm_defs = rpg_parser::paradigms::defs::load_builtin_defs().unwrap_or_default();
+        let qcache_result =
+            rpg_parser::paradigms::query_engine::QueryCache::compile_all(&paradigm_defs);
+        let active_defs = rpg_parser::paradigms::detect_paradigms_toml(
+            &self.project_root,
+            &detected_langs,
+            &paradigm_defs,
+        );
+        let paradigm_names: Vec<String> = active_defs.iter().map(|d| d.name.clone()).collect();
+        let pipeline_and_result = qcache_result.ok().map(|qcache| (qcache, active_defs));
+        let pipeline = pipeline_and_result.as_ref().map(|(qcache, active_defs)| {
+            rpg_encoder::evolution::ParadigmPipeline {
+                active_defs: active_defs.clone(),
+                qcache,
+            }
+        });
+
+        match rpg_encoder::evolution::run_update(graph, &self.project_root, None, pipeline.as_ref())
+        {
+            Ok(summary) => {
+                graph.metadata.paradigms = paradigm_names;
+                let _ = storage::save(&self.project_root, graph);
+                *self.last_auto_sync_head.write().await = Some(current_head);
+
+                if summary.entities_added == 0
+                    && summary.entities_modified == 0
+                    && summary.entities_removed == 0
+                {
+                    return String::new();
+                }
+
+                let (lifted, total) = graph.lifting_coverage();
+                let needs_lifting = total - lifted;
+                let needs_relift = summary.modified_entity_ids.len();
+
+                let mut notice = format!(
+                    "[auto-synced: +{} -{} ~{} entities",
+                    summary.entities_added, summary.entities_removed, summary.entities_modified,
+                );
+                if needs_lifting > 0 || needs_relift > 0 {
+                    notice.push_str(&format!("; {} need lifting", needs_lifting + needs_relift,));
+                }
+                notice.push_str("]\n\n");
+                notice
+            }
+            Err(e) => {
+                eprintln!("rpg: auto-sync failed (non-fatal): {e}");
+                // Update HEAD anyway to avoid retrying a failing update every call
+                *self.last_auto_sync_head.write().await = Some(current_head);
+                self.staleness_notice().await
+            }
+        }
+    }
+
+    /// Lightweight staleness check for unstaged/uncommitted changes only.
+    /// Used when HEAD hasn't moved (auto-sync already ran for this HEAD).
+    async fn staleness_notice_unstaged(&self) -> String {
+        let guard = self.graph.read().await;
+        let Some(graph) = guard.as_ref() else {
+            return String::new();
+        };
+        let Ok(changes) = rpg_encoder::evolution::detect_workdir_changes(&self.project_root, graph)
+        else {
+            return String::new();
+        };
+        let changes = rpg_encoder::evolution::filter_rpgignore_changes(&self.project_root, changes);
+        let languages = Self::resolve_languages(&graph.metadata);
+        let source_changes = if languages.is_empty() {
+            changes
+        } else {
+            rpg_encoder::evolution::filter_source_changes(changes, &languages)
+        };
+        if source_changes.is_empty() {
+            return String::new();
+        }
+        format!(
+            "[stale: {} uncommitted source file(s) changed — call update_rpg to sync]\n\n",
             source_changes.len(),
         )
     }
@@ -425,6 +537,7 @@ impl ServerHandler for RpgServer {
             instructions: Some(include_str!("prompts/server_instructions.md").into()),
             capabilities: rmcp::model::ServerCapabilities::builder()
                 .enable_tools()
+                .enable_tool_list_changed()
                 .build(),
             ..Default::default()
         }

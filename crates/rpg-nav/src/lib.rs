@@ -20,4 +20,5 @@ pub mod paths;
 pub mod planner;
 pub mod search;
 pub mod slice;
+pub mod snapshot;
 pub mod toon;
