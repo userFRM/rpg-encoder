@@ -391,9 +391,12 @@ fn trim_to_budget(result: &mut SnapshotResult, budget: usize) {
         return;
     }
 
-    // Step 3: Drop dependency skeleton
+    // Step 3: Drop dependency skeleton and hot spots
     result.dep_skeleton.clear();
+    result.hot_spots.clear();
     result.token_estimate = estimate_tokens(result);
+    // Note: if still over budget after all trimming, the token_estimate field
+    // will exceed the budget. Callers can check this to detect the condition.
 }
 
 #[cfg(test)]
