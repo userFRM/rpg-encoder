@@ -1048,8 +1048,19 @@ struct SnapshotDepRow {
 }
 
 #[derive(Serialize)]
+struct SnapshotHotSpotRow {
+    name: String,
+    file: String,
+    kind: String,
+    connections: usize,
+    features: String,
+}
+
+#[derive(Serialize)]
 struct SnapshotOutput {
     stats: SnapshotStatsRow,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    hot_spots: Vec<SnapshotHotSpotRow>,
     hierarchy: Vec<SnapshotAreaRow>,
     entities: Vec<SnapshotEntityGroupRow>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -1131,8 +1142,21 @@ pub fn format_semantic_snapshot(result: &SnapshotResult) -> String {
         })
         .collect();
 
+    let hot_spots: Vec<SnapshotHotSpotRow> = result
+        .hot_spots
+        .iter()
+        .map(|h| SnapshotHotSpotRow {
+            name: h.name.clone(),
+            file: h.file.clone(),
+            kind: h.kind.clone(),
+            connections: h.total_connections,
+            features: h.features.join("; "),
+        })
+        .collect();
+
     let output = SnapshotOutput {
         stats,
+        hot_spots,
         hierarchy,
         entities,
         dep_skeleton,

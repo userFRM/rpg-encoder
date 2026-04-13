@@ -39,6 +39,8 @@ pub struct SnapshotResult {
     pub hierarchy_tree: Vec<SnapshotArea>,
     pub entity_groups: Vec<AreaEntityGroup>,
     pub dep_skeleton: Vec<DepEntry>,
+    /// Top entities by connectivity — the architectural backbone.
+    pub hot_spots: Vec<HotSpot>,
     pub token_estimate: usize,
 }
 
@@ -87,6 +89,15 @@ pub struct SnapshotEntity {
     pub features: Vec<String>,
     pub file: String,
     pub lifted: bool,
+}
+
+/// A high-connectivity entity — architectural backbone.
+pub struct HotSpot {
+    pub name: String,
+    pub file: String,
+    pub kind: String,
+    pub total_connections: usize,
+    pub features: Vec<String>,
 }
 
 /// Condensed dependency entry for one entity.
@@ -172,12 +183,16 @@ pub fn build_semantic_snapshot(graph: &RPGraph, request: &SnapshotRequest) -> Sn
         Vec::new()
     };
 
+    // Compute hot spots — top 10 entities by total connectivity
+    let hot_spots = build_hot_spots(graph, 10);
+
     // Estimate tokens
     let mut result = SnapshotResult {
         stats,
         hierarchy_tree,
         entity_groups,
         dep_skeleton,
+        hot_spots,
         token_estimate: 0,
     };
     result.token_estimate = estimate_tokens(&result);
@@ -261,6 +276,38 @@ fn build_dep_skeleton(graph: &RPGraph, max_per_dir: usize) -> Vec<DepEntry> {
     entries
 }
 
+fn build_hot_spots(graph: &RPGraph, top_n: usize) -> Vec<HotSpot> {
+    let mut scored: Vec<(&str, usize)> = graph
+        .entities
+        .iter()
+        .map(|(id, e)| {
+            let connections = e.deps.invokes.len()
+                + e.deps.invoked_by.len()
+                + e.deps.imports.len()
+                + e.deps.imported_by.len()
+                + e.deps.inherits.len()
+                + e.deps.inherited_by.len();
+            (id.as_str(), connections)
+        })
+        .collect();
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+
+    scored
+        .into_iter()
+        .take(top_n)
+        .filter(|(_, c)| *c > 0)
+        .filter_map(|(id, connections)| {
+            graph.entities.get(id).map(|e| HotSpot {
+                name: e.name.clone(),
+                file: e.file.display().to_string(),
+                kind: format!("{:?}", e.kind).to_lowercase(),
+                total_connections: connections,
+                features: e.semantic_features.iter().take(2).cloned().collect(),
+            })
+        })
+        .collect()
+}
+
 fn estimate_tokens(result: &SnapshotResult) -> usize {
     let mut chars = 0usize;
 
@@ -303,6 +350,14 @@ fn estimate_tokens(result: &SnapshotResult) -> usize {
         }
         for i in &d.inherits {
             chars += i.len() + 4;
+        }
+    }
+
+    // Hot spots
+    for h in &result.hot_spots {
+        chars += h.name.len() + h.file.len() + h.kind.len() + 30;
+        for f in &h.features {
+            chars += f.len() + 4;
         }
     }
 
