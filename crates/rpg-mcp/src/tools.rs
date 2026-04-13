@@ -748,8 +748,9 @@ impl RpgServer {
         let project_root = self.project_root.clone();
         let scope_owned = scope.to_string();
 
-        // Run the blocking pipeline on a dedicated thread
-        let result = tokio::task::spawn_blocking(move || {
+        // Run the blocking pipeline on a dedicated thread.
+        // Always return the graph so we can put it back even on error.
+        let (graph, report_result) = tokio::task::spawn_blocking(move || {
             let config = rpg_lift::LiftConfig {
                 provider: provider.as_ref(),
                 project_root: &project_root,
@@ -758,18 +759,17 @@ impl RpgServer {
                 batch_size: 25,
                 batch_tokens: 8000,
             };
-            let report = rpg_lift::run_pipeline(&mut graph, &config)?;
+            let report = rpg_lift::run_pipeline(&mut graph, &config);
             let _ = rpg_core::storage::save(&project_root, &graph);
-            Ok::<(RPGraph, rpg_lift::LiftReport), rpg_lift::PipelineError>((graph, report))
+            (graph, report)
         })
         .await
-        .map_err(|e| format!("Lift task panicked: {}", e))?
-        .map_err(|e| format!("Lift failed: {}", e))?;
+        .map_err(|e| format!("Lift task panicked: {}", e))?;
 
-        let (graph, report) = result;
-
-        // Put the graph back
+        // Put the graph back FIRST — before handling errors
         *self.graph.write().await = Some(graph);
+
+        let report = report_result.map_err(|e| format!("Lift failed: {}", e))?;
 
         // Clear sessions — entity list changed
         *self.lifting_session.write().await = None;
