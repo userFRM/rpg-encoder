@@ -17,7 +17,7 @@ and where the two diverge. Extensions beyond the paper's scope are listed separa
 | Core data model | Graph structure, edge taxonomy | 95% |
 | Three-phase pipeline | Lifting, hierarchy, grounding | 90% |
 | Incremental algorithms | Algorithms 1–4 | 95% |
-| Navigation tools | SearchNode, FetchNode, ExploreRPG | 95% |
+| Navigation tools | SearchNode, FetchNode, ExploreRPG (27 MCP tools total) | 95% |
 | Incremental evolution | Git-diff event processing | 90% |
 | Formal evaluation | SWE-bench, RepoCraft | Not implemented |
 
@@ -357,6 +357,13 @@ additions:
 | Embedding corruption recovery | Corrupt index files are detected, removed, and rebuilt automatically on next access |
 | TOON serialization | Token-efficient output format for LLM consumption in MCP tool responses |
 | Pre-commit hooks | `rpg-encoder hook install` for automatic graph maintenance on every commit |
+| Semantic snapshot | Whole-repo semantic understanding compressed to ~25K tokens for context injection |
+| Auto-staleness resolution | Server auto-syncs graph on HEAD changes without agent action |
+| Autonomous LLM lifting | auto_lift tool calls cheap external LLMs (Haiku, GPT-4o-mini) via API |
+| Code health analysis | Coupling, instability, centrality, god object detection, clone detection |
+| Cycle detection | Circular dependency detection with cross-file and cross-area filtering |
+| MCP tool annotations | read_only_hint, destructive_hint per MCP 2025-03-26 spec |
+| Hot spots | Top-N most-connected entities surfaced as architectural backbone |
 
 ---
 
@@ -393,5 +400,5 @@ additions:
 
 ---
 
-*Based on rpg-encoder v0.2.0 and arXiv:2602.02084 (Luo et al., 2026).
-Last updated: February 2026.*
+*Based on rpg-encoder v0.8.0 and arXiv:2602.02084 (Luo et al., 2026).
+Last updated: April 2026.*

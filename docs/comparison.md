@@ -189,9 +189,12 @@ Traditional search finds code by **name**. RPG finds code by **intent**.
 "Find code that validates user input"  →  checkCredentials, sanitizeForm, verifyToken, ...
 ```
 
-### 2. No API Keys Required
+### 2. Flexible Lifting — No API Keys Required
 
-RPG uses the connected coding agent (Claude Code, Cursor, etc.) to analyze code directly via standard MCP tools. No external API calls, no token costs, no rate limits.
+RPG supports two lifting modes: agent lifting (your connected coding agent does the analysis —
+no API keys) and autonomous lifting (`auto_lift` calls a cheap external LLM like Haiku or
+GPT-4o-mini for ~$0.02 per 100 entities). You can also pass `api_key_env` to resolve keys
+from environment variables, keeping secrets out of tool call transcripts.
 
 ### 3. Persistent, Shareable Index
 
@@ -216,14 +219,31 @@ This hierarchy emerges from the code's semantics, not its file structure.
 
 ---
 
+## The Broader Landscape
+
+Other tools worth knowing about:
+
+| Tool | Stars | What It Does | RPG's Advantage | Their Advantage |
+|:---|:---:|:---|:---|:---|
+| **GitNexus** | 27K | Structural graph + precomputed queries | Intent-based search, semantic features | Web UI, multi-repo, rename tool, larger community |
+| **codebase-memory-mcp** | 1.3K | Hybrid structural + 11-signal scoring | Semantic lifting, context injection | 66 languages, Linux kernel scale |
+| **CodeGraphContext** | 2.9K | Structural graph with Cypher queries | Semantic features, auto-staleness | Raw Cypher, multiple DB backends |
+| **Repomix** | 22K | Full-repo packing into context | Token-efficient (~25K vs ~200K+) | Zero setup, stateless |
+
+RPG is early-stage (23 stars) compared to these established tools. What it has that they
+don't: LLM-lifted semantic features that capture *intent*, not just structure. What they have
+that it doesn't: battle-testing at scale, larger communities, and features like multi-repo
+support and web UIs.
+
 ## Limitations
 
 ### RPG-Encoder
 
 - **Read-only**: Cannot edit code directly
-- **Requires lifting**: Initial semantic analysis takes time (minutes for large repos)
-- **Limited languages**: 15 languages vs Serena's 40+
-- **Context limits**: Large repos require subagent dispatch for lifting
+- **Requires lifting**: Initial semantic analysis takes time (minutes for large repos, ~$0.02 with auto_lift)
+- **15 languages**: Fewer than Serena (40+) or codebase-memory-mcp (66)
+- **Young project**: Not yet battle-tested at scale by a large user base
+- **Auto-sync is commit-scoped**: Uncommitted edits surface a stale notice, not auto-updated
 
 ### Claude Code
 
@@ -256,3 +276,7 @@ They work best together. RPG provides the understanding, Claude Code provides th
 - [RPG-Encoder](https://github.com/userFRM/rpg-encoder)
 - [Claude Code](https://github.com/anthropics/claude-code)
 - [Serena](https://github.com/oraios/serena)
+- [GitNexus](https://github.com/abhigyanpatwari/GitNexus)
+- [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp)
+- [CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext)
+- [Repomix](https://github.com/yamadashy/repomix)

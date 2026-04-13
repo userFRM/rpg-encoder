@@ -14,27 +14,13 @@ The result: an LLM that starts every session already knowing your entire repo.
 
 ## The Problem: Your LLM Is Flying Blind
 
-Without rpg-encoder, coding agents spend **70%+ of their tool calls** just figuring out what
-your codebase does:
-
-```
-Typical 48K-call session without RPG:
-
-  Bash   24,189  (50%)   grep, cat, find, ls — fumbling through files
-  Read    7,866  (16%)   reading files without knowing which ones matter
-  Grep    2,061   (4%)   text search when semantic search finds it in one call
-  Glob      280   (1%)   finding files by name pattern
-  ─────────────────────
-  Total  34,396  (71%)   wasted on "where is the code and what does it do?"
-```
-
-Every `grep` is an admission the LLM doesn't know where things are. Every `cat` is an
-admission it doesn't know what's in the file. Every `find` is an admission it doesn't
-know the structure.
+Without rpg-encoder, coding agents spend most of their tool calls just figuring out what
+your codebase does. In a typical session, grep, cat, find, and file reads dominate —
+the LLM is fumbling through files because it doesn't know the structure or intent.
 
 **With rpg-encoder:** The LLM calls `semantic_snapshot` once, reads ~25K tokens, and
 knows every function's purpose, every dependency chain, every area of the codebase.
-Those 34,000 exploration calls collapse into *one*.
+Exploration tool calls drop dramatically because the LLM already has the map.
 
 ## What Makes This Different
 
@@ -289,7 +275,7 @@ rpg-encoder/
 ├── rpg-parser      Tree-sitter entity + dependency extraction (15 languages)
 ├── rpg-encoder     Encoding pipeline, semantic lifting utilities, incremental evolution
 ├── rpg-nav         Search, fetch, explore, snapshot, TOON serialization
-├── rpg-lift        Lifting scope resolution
+├── rpg-lift        Autonomous LLM-driven lifting (Anthropic, OpenAI, OpenRouter, Gemini)
 ├── rpg-cli         CLI binary (rpg-encoder)
 └── rpg-mcp         MCP server binary (rpg-mcp-server)
 ```
@@ -332,6 +318,12 @@ Yes. Committing `.rpg/graph.json` means collaborators and CI agents get instant 
 search without re-lifting.
 
 </details>
+
+## Documentation
+
+- [How RPG Compares](docs/comparison.md) — honest comparison with GitNexus, Serena, Repomix, and others
+- [Paper Fidelity](docs/paper_fidelity.md) — algorithm-by-algorithm comparison with the research paper
+- [Use Cases](use_cases.md) — practical examples of what RPG enables
 
 ## Inspirations & References
 
