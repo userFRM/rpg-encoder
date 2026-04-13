@@ -227,6 +227,15 @@ pub(crate) struct AnalyzeHealthParams {
     pub(crate) semantic_similarity_threshold: Option<f64>,
 }
 
+/// Parameters for the `semantic_snapshot` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct SemanticSnapshotParams {
+    /// Target token budget (default: 30000). Controls how much detail is included.
+    pub(crate) token_budget: Option<usize>,
+    /// Include dependency skeleton (default: true). Set to false to save tokens.
+    pub(crate) include_deps: Option<bool>,
+}
+
 /// Parameters for the `detect_cycles` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct DetectCyclesParams {

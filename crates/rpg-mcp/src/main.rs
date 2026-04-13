@@ -83,6 +83,9 @@ async fn main() -> Result<()> {
             } else {
                 eprintln!("  Graph is up to date.");
             }
+            // Seed auto-sync HEAD so the first query doesn't redundantly re-sync
+            *server.last_auto_sync_head.write().await =
+                rpg_encoder::evolution::get_head_sha(&server.project_root).ok();
         }
     }
 

@@ -13,14 +13,15 @@ use crate::types::*;
 #[tool_router]
 impl RpgServer {
     #[tool(
-        description = "Search for code entities by intent or keywords. Returns entities with file paths, line numbers, and relevance scores. Use mode='features' for semantic intent search (use behavioral/functional phrases as query), 'snippets' for name/path matching (use file paths, qualified entities, or keywords as query), 'auto' (default) tries both."
+        description = "Search for code entities by intent or keywords. Returns entities with file paths, line numbers, and relevance scores. Use mode='features' for semantic intent search (use behavioral/functional phrases as query), 'snippets' for name/path matching (use file paths, qualified entities, or keywords as query), 'auto' (default) tries both.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn search_node(
         &self,
         Parameters(params): Parameters<SearchNodeParams>,
     ) -> Result<String, String> {
         self.ensure_graph().await?;
-        let notice = self.staleness_notice().await;
+        let notice = self.auto_sync_if_stale().await;
         let guard = self.graph.read().await;
         let graph = guard.as_ref().unwrap();
         let config = self.config.read().await;
@@ -151,14 +152,15 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Fetch detailed metadata and source code for a known entity. Returns the entity's semantic features, dependencies (what it calls, what calls it), hierarchy position, and full source code."
+        description = "Fetch detailed metadata and source code for a known entity. Returns the entity's semantic features, dependencies (what it calls, what calls it), hierarchy position, and full source code.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn fetch_node(
         &self,
         Parameters(params): Parameters<FetchNodeParams>,
     ) -> Result<String, String> {
         self.ensure_graph().await?;
-        let notice = self.staleness_notice().await;
+        let notice = self.auto_sync_if_stale().await;
         let guard = self.graph.read().await;
         let graph = guard.as_ref().unwrap();
 
@@ -188,14 +190,15 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Explore the dependency graph starting from an entity. Traverses import, invocation, inheritance, composition, render, state-read/state-write, and dispatch edges. Use direction='downstream' to see what the entity calls, 'upstream' to see what calls it, 'both' for full picture."
+        description = "Explore the dependency graph starting from an entity. Traverses import, invocation, inheritance, composition, render, state-read/state-write, and dispatch edges. Use direction='downstream' to see what the entity calls, 'upstream' to see what calls it, 'both' for full picture.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn explore_rpg(
         &self,
         Parameters(params): Parameters<ExploreRpgParams>,
     ) -> Result<String, String> {
         self.ensure_graph().await?;
-        let notice = self.staleness_notice().await;
+        let notice = self.auto_sync_if_stale().await;
         let guard = self.graph.read().await;
         let graph = guard.as_ref().unwrap();
 
@@ -272,11 +275,12 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Get RPG statistics: entity count, file count, functional areas, dependency edges, containment edges, and hierarchy overview. Use this first to understand the codebase structure before searching."
+        description = "Get RPG statistics: entity count, file count, functional areas, dependency edges, containment edges, and hierarchy overview. Use this first to understand the codebase structure before searching.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn rpg_info(&self) -> Result<String, String> {
         self.ensure_graph().await?;
-        let notice = self.staleness_notice().await;
+        let notice = self.auto_sync_if_stale().await;
         let guard = self.graph.read().await;
         let graph = guard.as_ref().unwrap();
         #[cfg(feature = "embeddings")]
@@ -316,6 +320,44 @@ impl RpgServer {
     }
 
     #[tool(
+        description = "Generate a compact, token-efficient snapshot of the entire repository's semantic understanding. Designed for context window injection at session start. Includes: full hierarchy with aggregate features, all entities grouped by functional area with semantic features, condensed dependency skeleton, and coverage stats. Target: ~25-30K tokens for a 1000-entity codebase. Call this FIRST in any session to gain whole-repo awareness before using other tools.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn semantic_snapshot(
+        &self,
+        Parameters(params): Parameters<SemanticSnapshotParams>,
+    ) -> Result<String, String> {
+        self.ensure_graph().await?;
+        let notice = self.auto_sync_if_stale().await;
+        let guard = self.graph.read().await;
+        let graph = guard.as_ref().unwrap();
+
+        let request = rpg_nav::snapshot::SnapshotRequest {
+            token_budget: params.token_budget.unwrap_or(30_000),
+            include_deps: params.include_deps.unwrap_or(true),
+            ..Default::default()
+        };
+
+        let result = rpg_nav::snapshot::build_semantic_snapshot(graph, &request);
+
+        let (lifted, total) = graph.lifting_coverage();
+        let mut output = format!(
+            "{}{}",
+            notice,
+            rpg_nav::toon::format_semantic_snapshot(&result),
+        );
+
+        if lifted < total {
+            output.push_str(&format!(
+                "\n({}/{} entities lifted. Call get_entities_for_lifting to add semantic features to the remaining {} entities.)",
+                lifted, total, total - lifted,
+            ));
+        }
+
+        Ok(output)
+    }
+
+    #[tool(
         description = "Build a dependency-safe reconstruction execution plan. Returns a topological ordering of entities with area-coherent batching, suitable for guided code reconstruction workflows. Requires a built RPG with a semantic hierarchy."
     )]
     async fn reconstruct_plan(
@@ -351,7 +393,12 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Build an RPG (Repository Planning Graph) from the codebase. Indexes all code entities, builds a file-path hierarchy, and resolves dependencies. Completes in seconds without requiring an LLM. To add semantic features (LLM-extracted intent descriptions), use get_entities_for_lifting afterwards. Run this once when first connecting to a repository. Respects .rpgignore files (gitignore syntax) for excluding files from the graph."
+        description = "Build an RPG (Repository Planning Graph) from the codebase. Indexes all code entities, builds a file-path hierarchy, and resolves dependencies. Completes in seconds without requiring an LLM. To add semantic features (LLM-extracted intent descriptions), use get_entities_for_lifting afterwards. Run this once when first connecting to a repository. Respects .rpgignore files (gitignore syntax) for excluding files from the graph.",
+        annotations(
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn build_rpg(
         &self,
@@ -1534,7 +1581,8 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Incrementally update the RPG from git changes since the last build. Detects added, modified, deleted, and renamed files, re-extracts entities, and updates structural metadata. Modified entities with stale features are tracked for interactive re-lifting. Much faster than a full rebuild."
+        description = "Incrementally update the RPG from git changes since the last build. Detects added, modified, deleted, and renamed files, re-extracts entities, and updates structural metadata. Modified entities with stale features are tracked for interactive re-lifting. Much faster than a full rebuild.",
+        annotations(destructive_hint = false, open_world_hint = false)
     )]
     async fn update_rpg(
         &self,
@@ -1572,6 +1620,10 @@ impl RpgServer {
         .map_err(|e| format!("Update failed: {}", e))?;
 
         storage::save(&self.project_root, g).map_err(|e| format!("Failed to save RPG: {}", e))?;
+
+        // Update auto-sync HEAD so next query doesn't redundantly re-sync
+        *self.last_auto_sync_head.write().await =
+            rpg_encoder::evolution::get_head_sha(&self.project_root).ok();
 
         // Clear sessions — entity list changed
         *self.lifting_session.write().await = None;
@@ -2263,14 +2315,15 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Build a focused context pack in a single call. Searches for entities matching your query, fetches their details and source code, expands neighbors to the specified depth (default 1), and trims to a token budget. Replaces the typical search→fetch→explore multi-step workflow. Returns primary entities with source + features + deps, plus neighborhood entities for broader context."
+        description = "Build a focused context pack in a single call. Searches for entities matching your query, fetches their details and source code, expands neighbors to the specified depth (default 1), and trims to a token budget. Replaces the typical search→fetch→explore multi-step workflow. Returns primary entities with source + features + deps, plus neighborhood entities for broader context.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn context_pack(
         &self,
         Parameters(params): Parameters<ContextPackParams>,
     ) -> Result<String, String> {
         self.ensure_graph().await?;
-        let notice = self.staleness_notice().await;
+        let notice = self.auto_sync_if_stale().await;
         let guard = self.graph.read().await;
         let graph = guard.as_ref().unwrap();
 
@@ -2322,7 +2375,7 @@ impl RpgServer {
         Parameters(params): Parameters<ImpactRadiusParams>,
     ) -> Result<String, String> {
         self.ensure_graph().await?;
-        let notice = self.staleness_notice().await;
+        let notice = self.auto_sync_if_stale().await;
         let guard = self.graph.read().await;
         let graph = guard.as_ref().unwrap();
 
@@ -2367,7 +2420,7 @@ impl RpgServer {
         Parameters(params): Parameters<FindPathsParams>,
     ) -> Result<String, String> {
         self.ensure_graph().await?;
-        let notice = self.staleness_notice().await;
+        let notice = self.auto_sync_if_stale().await;
         let guard = self.graph.read().await;
         let graph = guard.as_ref().unwrap();
 
@@ -2446,7 +2499,7 @@ impl RpgServer {
         Parameters(params): Parameters<SliceBetweenParams>,
     ) -> Result<String, String> {
         self.ensure_graph().await?;
-        let notice = self.staleness_notice().await;
+        let notice = self.auto_sync_if_stale().await;
         let guard = self.graph.read().await;
         let graph = guard.as_ref().unwrap();
 
@@ -2498,14 +2551,15 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Plan code changes: find relevant entities, compute modification order, assess impact radius. Returns dependency-ordered entity list with blast radius analysis."
+        description = "Plan code changes: find relevant entities, compute modification order, assess impact radius. Returns dependency-ordered entity list with blast radius analysis.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn plan_change(
         &self,
         Parameters(params): Parameters<PlanChangeParams>,
     ) -> Result<String, String> {
         self.ensure_graph().await?;
-        let notice = self.staleness_notice().await;
+        let notice = self.auto_sync_if_stale().await;
         let guard = self.graph.read().await;
         let graph = guard.as_ref().unwrap();
 
@@ -2885,14 +2939,15 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Analyze code health metrics including coupling, instability, centrality, and potential god objects. Returns entities with architectural issues and recommendations for refactoring. Set include_duplication=true to detect code clones via Rabin-Karp fingerprinting (reads source files, slower). Set include_semantic_duplication=true to detect conceptual duplicates via Jaccard similarity on lifted features (in-memory, fast; requires entities to be lifted)."
+        description = "Analyze code health metrics including coupling, instability, centrality, and potential god objects. Returns entities with architectural issues and recommendations for refactoring. Set include_duplication=true to detect code clones via Rabin-Karp fingerprinting (reads source files, slower). Set include_semantic_duplication=true to detect conceptual duplicates via Jaccard similarity on lifted features (in-memory, fast; requires entities to be lifted).",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn analyze_health(
         &self,
         Parameters(params): Parameters<AnalyzeHealthParams>,
     ) -> Result<String, String> {
         self.ensure_graph().await?;
-        let notice = self.staleness_notice().await;
+        let notice = self.auto_sync_if_stale().await;
         let guard = self.graph.read().await;
         let graph = guard.as_ref().unwrap();
 
@@ -2918,14 +2973,15 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Detect circular dependencies (cycles) in the codebase. Cycles are architectural smells where A depends on B, B on C, and C back on A. Returns all detected cycles with their entity chains. First call returns summary + recommendations. Use parameters to filter results."
+        description = "Detect circular dependencies (cycles) in the codebase. Cycles are architectural smells where A depends on B, B on C, and C back on A. Returns all detected cycles with their entity chains. First call returns summary + recommendations. Use parameters to filter results.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn detect_cycles(
         &self,
         Parameters(params): Parameters<DetectCyclesParams>,
     ) -> Result<String, String> {
         self.ensure_graph().await?;
-        let notice = self.staleness_notice().await;
+        let notice = self.auto_sync_if_stale().await;
         let guard = self.graph.read().await;
         let graph = guard.as_ref().unwrap();
 
