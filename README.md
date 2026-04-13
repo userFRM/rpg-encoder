@@ -133,13 +133,14 @@ Once lifted:
 - *"Show me everything that depends on the database connection"*
 - *"Plan a change to add rate limiting to API endpoints"*
 
-## MCP Tools (26)
+## MCP Tools (27)
 
 **Build & Maintain**
 
 | Tool | Description |
 |------|-------------|
 | `build_rpg` | Index the codebase (run once, instant) |
+| `auto_lift` | One-call autonomous lifting via cheap LLM API (Haiku, GPT-4o-mini, OpenRouter, Gemini) |
 | `update_rpg` | Incremental update from git changes |
 | `reload_rpg` | Reload graph from disk after external changes |
 | `rpg_info` | Graph statistics, hierarchy overview, per-area lifting coverage |
@@ -183,12 +184,29 @@ Once lifted:
 
 ### Lifting: What It Is
 
-Lifting is the process where your coding agent reads each function, class, and method in your
-codebase and describes what it does in plain English — verb-object features like "validate user
-credentials" or "serialize config to disk". These features power semantic search: find code by
-what it *does*, not what it's named.
+Lifting is the process where an LLM reads each function, class, and method in your codebase
+and describes what it does — verb-object features like "validate user credentials" or
+"serialize config to disk". These features power semantic search: find code by what it *does*,
+not what it's named.
 
-- **No API keys needed** — your connected coding agent (Claude Code, Cursor, etc.) *is* the LLM
+**Two ways to lift:**
+
+| Mode | How | Cost | Speed |
+|------|-----|------|-------|
+| **Agent lifting** | Your coding agent (Claude Code, Cursor) does the analysis via MCP | Free (uses subscription) | ~2 min per 100 entities |
+| **API lifting** | `auto_lift` calls a cheap external LLM directly | ~$0.02 per 100 entities (Haiku) | ~1 min per 100 entities |
+
+API lifting supports any OpenAI-compatible endpoint:
+
+```
+auto_lift(provider="anthropic", api_key="sk-ant-...", scope="*")
+auto_lift(provider="openai", api_key="sk-...", model="gpt-4o-mini")
+auto_lift(provider="openai", api_key="sk-or-...", base_url="https://openrouter.ai/api/v1", model="anthropic/claude-haiku")
+auto_lift(provider="openai", api_key="...", base_url="https://generativelanguage.googleapis.com/v1beta/openai", model="gemini-2.0-flash")
+```
+
+Use `dry_run=true` to estimate cost before lifting.
+
 - **One-time cost** — lift once, commit `.rpg/`, and every future session starts instantly
 - **Resumable** — if interrupted, `lifting_status` picks up exactly where you left off
 - **Incremental** — after code changes, the server auto-syncs and tracks what needs re-lifting

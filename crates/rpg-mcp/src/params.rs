@@ -262,3 +262,21 @@ pub(crate) struct DetectCyclesParams {
     /// Ignore .rpgignore rules and include all files (default: false)
     pub(crate) ignore_rpgignore: Option<bool>,
 }
+
+/// Parameters for the `auto_lift` tool.
+#[cfg(feature = "auto-lift")]
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct AutoLiftParams {
+    /// LLM provider: "anthropic", "openai", or any OpenAI-compatible endpoint.
+    pub(crate) provider: String,
+    /// API key for the provider. Required.
+    pub(crate) api_key: String,
+    /// Model override (default: claude-haiku-4-5-20251001 for anthropic, gpt-4o-mini for openai).
+    pub(crate) model: Option<String>,
+    /// Base URL for OpenAI-compatible endpoints (e.g., "https://openrouter.ai/api/v1" for OpenRouter, "https://generativelanguage.googleapis.com/v1beta/openai" for Gemini).
+    pub(crate) base_url: Option<String>,
+    /// Scope: file glob ("src/auth/**"), hierarchy path, or "*" for all unlifted. Default: "*".
+    pub(crate) scope: Option<String>,
+    /// Dry run: estimate cost without lifting. Default: false.
+    pub(crate) dry_run: Option<bool>,
+}

@@ -2761,6 +2761,7 @@ dependencies = [
  "rmcp",
  "rpg-core",
  "rpg-encoder",
+ "rpg-lift",
  "rpg-nav",
  "rpg-parser",
  "schemars",

@@ -700,6 +700,120 @@ impl RpgServer {
         Ok(result)
     }
 
+    #[cfg(feature = "auto-lift")]
+    #[tool(
+        description = "Autonomous lifting via LLM API — lifts all unlifted entities, synthesizes file features, and builds semantic hierarchy in one call. Uses a cheap external LLM (Haiku, GPT-4o-mini) instead of consuming your coding agent's subscription tokens. Providers: 'anthropic' (default model: claude-haiku-4-5), 'openai' (default: gpt-4o-mini). For OpenRouter or Gemini, use provider='openai' with a custom base_url. Set dry_run=true to estimate cost first. Requires an API key.",
+        annotations(
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn auto_lift(
+        &self,
+        Parameters(params): Parameters<AutoLiftParams>,
+    ) -> Result<String, String> {
+        self.ensure_graph().await?;
+
+        let provider = rpg_lift::create_provider(
+            &params.provider,
+            &params.api_key,
+            params.model.as_deref(),
+            params.base_url.as_deref(),
+        )
+        .map_err(|e| format!("Failed to create LLM provider: {}", e))?;
+
+        let scope = params.scope.as_deref().unwrap_or("*");
+        let dry_run = params.dry_run.unwrap_or(false);
+
+        // Dry run: estimate cost without lifting
+        if dry_run {
+            let guard = self.graph.read().await;
+            let graph = guard.as_ref().unwrap();
+            let estimate = rpg_lift::estimate_cost(graph, provider.as_ref(), &self.project_root);
+            return Ok(format!(
+                "Cost estimate for lifting with {} ({}):\n\n{}",
+                params.provider,
+                provider.model_name(),
+                estimate,
+            ));
+        }
+
+        // Take the graph out for blocking pipeline (rpg-lift uses blocking ureq)
+        let mut graph = {
+            let mut guard = self.graph.write().await;
+            guard.take().ok_or("No RPG loaded")?
+        };
+
+        let project_root = self.project_root.clone();
+        let scope_owned = scope.to_string();
+
+        // Run the blocking pipeline on a dedicated thread
+        let result = tokio::task::spawn_blocking(move || {
+            let config = rpg_lift::LiftConfig {
+                provider: provider.as_ref(),
+                project_root: &project_root,
+                scope: &scope_owned,
+                max_retries: 2,
+                batch_size: 25,
+                batch_tokens: 8000,
+            };
+            let report = rpg_lift::run_pipeline(&mut graph, &config)?;
+            let _ = rpg_core::storage::save(&project_root, &graph);
+            Ok::<(RPGraph, rpg_lift::LiftReport), rpg_lift::PipelineError>((graph, report))
+        })
+        .await
+        .map_err(|e| format!("Lift task panicked: {}", e))?
+        .map_err(|e| format!("Lift failed: {}", e))?;
+
+        let (graph, report) = result;
+
+        // Put the graph back
+        *self.graph.write().await = Some(graph);
+
+        // Clear sessions — entity list changed
+        *self.lifting_session.write().await = None;
+        *self.hierarchy_session.write().await = None;
+
+        // Update auto-sync HEAD
+        *self.last_auto_sync_head.write().await =
+            rpg_encoder::evolution::get_head_sha(&self.project_root).ok();
+
+        let mut out = format!(
+            "Lifting complete ({}, {}).\n\
+             auto_lifted: {}\n\
+             llm_lifted: {}\n\
+             failed: {}\n\
+             batches: {}\n\
+             files_synthesized: {}\n\
+             hierarchy: {}\n\
+             tokens: {} in / {} out\n\
+             cost: ${:.4}",
+            params.provider,
+            report.total_input_tokens + report.total_output_tokens,
+            report.entities_auto_lifted,
+            report.entities_llm_lifted,
+            report.entities_failed,
+            report.batches_processed,
+            report.files_synthesized,
+            if report.hierarchy_assigned {
+                "assigned"
+            } else {
+                "not assigned"
+            },
+            report.total_input_tokens,
+            report.total_output_tokens,
+            report.total_cost_usd,
+        );
+
+        if !report.errors.is_empty() {
+            out.push_str(&format!("\nerrors: {}", report.errors.join("; ")));
+        }
+
+        out.push_str("\n\nNEXT STEP: Call semantic_snapshot to see the full repo understanding.");
+        Ok(out)
+    }
+
     #[tool(
         description = "Check lifting progress: coverage per area, unlifted files, active session, and NEXT STEP. Call this at any point to see where you are in the lifting flow. Reads state from the persisted graph — works across sessions."
     )]
