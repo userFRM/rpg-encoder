@@ -171,13 +171,19 @@ pub fn run_pipeline(
 
                     let features = parse_line_features(&response.text);
 
-                    // Apply features to graph entities
+                    // Apply features to graph entities.
+                    // Try multiple key forms: bare name, Class::method, file:name
                     let mut batch_applied = 0;
                     for raw in batch {
                         let entity_id = raw.id();
-                        // Match by entity name (parse_line_features returns name → features)
-                        let name_key = &raw.name;
-                        if let Some(feats) = features.get(name_key)
+                        let qualified = raw
+                            .parent_class
+                            .as_ref()
+                            .map(|c| format!("{}::{}", c, raw.name));
+                        let matched_feats = features
+                            .get(&raw.name)
+                            .or_else(|| qualified.as_ref().and_then(|q| features.get(q)));
+                        if let Some(feats) = matched_feats
                             && let Some(entity) = graph.entities.get_mut(&entity_id)
                         {
                             entity.semantic_features = feats.clone();

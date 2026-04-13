@@ -49,8 +49,9 @@ repo's understanding into ~25K tokens — hierarchy, features, dependencies — 
 into the LLM's context window. The LLM reads it once and *knows the repo*. No tool calls
 needed for understanding, only for fetching source code when editing.
 
-**Self-maintaining graph.** The server auto-syncs when code changes. No manual `update` calls,
-no stale warnings the agent ignores. The graph owns its own consistency.
+**Self-maintaining graph.** The server auto-syncs when git HEAD moves (commits, merges,
+rebases). Uncommitted changes are detected and surfaced but not auto-applied — call
+`update_rpg` to sync those.
 
 **Claude Code hooks.** PreToolUse hooks auto-inject semantic context before every file edit.
 PostToolUse hooks auto-update the graph after every git commit. The LLM never has to
@@ -235,7 +236,7 @@ Use `dry_run=true` to estimate cost before lifting.
 <details>
 <summary><strong>CLI</strong></summary>
 
-The CLI provides structural operations (no semantic lifting — use the MCP server for that).
+The CLI provides structural operations and autonomous lifting via LLM API.
 
 ```bash
 # Install

@@ -238,36 +238,45 @@ fn build_hierarchy_tree(hierarchy: &BTreeMap<String, HierarchyNode>) -> Vec<Snap
         .collect()
 }
 
+/// Produce a short qualified name: "Class::method" if parent exists, else bare name.
+fn qualified_name(e: &rpg_core::graph::Entity) -> String {
+    match &e.parent_class {
+        Some(cls) => format!("{}::{}", cls, e.name),
+        None => e.name.clone(),
+    }
+}
+
 fn build_dep_skeleton(graph: &RPGraph, max_per_dir: usize) -> Vec<DepEntry> {
     let mut entries = Vec::new();
+
     for entity in graph.entities.values() {
         let calls: Vec<String> = entity
             .deps
             .invokes
             .iter()
             .take(max_per_dir)
-            .filter_map(|id| graph.entities.get(id.as_str()).map(|e| e.name.clone()))
+            .filter_map(|id| graph.entities.get(id.as_str()).map(qualified_name))
             .collect();
         let called_by: Vec<String> = entity
             .deps
             .invoked_by
             .iter()
             .take(max_per_dir)
-            .filter_map(|id| graph.entities.get(id.as_str()).map(|e| e.name.clone()))
+            .filter_map(|id| graph.entities.get(id.as_str()).map(qualified_name))
             .collect();
         let inherits: Vec<String> = entity
             .deps
             .inherits
             .iter()
             .take(max_per_dir)
-            .filter_map(|id| graph.entities.get(id.as_str()).map(|e| e.name.clone()))
+            .filter_map(|id| graph.entities.get(id.as_str()).map(qualified_name))
             .collect();
 
         if calls.is_empty() && called_by.is_empty() && inherits.is_empty() {
             continue;
         }
         entries.push(DepEntry {
-            name: entity.name.clone(),
+            name: qualified_name(entity),
             calls,
             called_by,
             inherits,

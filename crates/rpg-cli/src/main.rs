@@ -799,9 +799,6 @@ if [ -f ".rpg/graph.json" ]; then
     if command -v rpg-encoder >/dev/null 2>&1; then
         rpg-encoder update 2>&1 | while IFS= read -r line; do echo "  [rpg] $line"; done
         git add .rpg/graph.json 2>/dev/null
-    elif command -v npx >/dev/null 2>&1; then
-        npx -y rpg-encoder update 2>&1 | while IFS= read -r line; do echo "  [rpg] $line"; done
-        git add .rpg/graph.json 2>/dev/null
     fi
 fi
 "#;
