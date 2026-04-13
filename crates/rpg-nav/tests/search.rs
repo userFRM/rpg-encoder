@@ -361,6 +361,54 @@ fn test_multi_scope_with_invalid_segment() {
 }
 
 #[test]
+fn test_root_scope_matches_unscoped_search() {
+    let graph = make_graph();
+    let unscoped = search(&graph, "authentication", SearchMode::Features, None, 10);
+    let root_scoped = search(
+        &graph,
+        "authentication",
+        SearchMode::Features,
+        Some("."),
+        10,
+    );
+
+    let unscoped_ids: Vec<&str> = unscoped.iter().map(|r| r.entity_id.as_str()).collect();
+    let root_ids: Vec<&str> = root_scoped.iter().map(|r| r.entity_id.as_str()).collect();
+
+    assert_eq!(
+        root_ids, unscoped_ids,
+        "root scope should match unscoped search"
+    );
+}
+
+#[test]
+fn test_multi_scope_with_empty_segment_does_not_widen() {
+    let graph = make_graph();
+    let scoped = search(
+        &graph,
+        "authentication",
+        SearchMode::Features,
+        Some("Security/auth/token,"),
+        10,
+    );
+    let expected = search(
+        &graph,
+        "authentication",
+        SearchMode::Features,
+        Some("Security/auth/token"),
+        10,
+    );
+
+    let scoped_ids: Vec<&str> = scoped.iter().map(|r| r.entity_id.as_str()).collect();
+    let expected_ids: Vec<&str> = expected.iter().map(|r| r.entity_id.as_str()).collect();
+
+    assert_eq!(
+        scoped_ids, expected_ids,
+        "empty scope segments should be ignored, not widen to the full graph"
+    );
+}
+
+#[test]
 fn test_multi_scope_dedup_overlapping() {
     let graph = make_graph();
     // "Security" and "Security/auth" overlap — Security contains all of Security/auth

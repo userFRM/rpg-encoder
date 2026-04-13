@@ -562,11 +562,21 @@ fn maybe_hybrid_rerank(
 /// Collect entities from one or more hierarchy scopes.
 /// Supports comma-separated scopes per paper's `search_scopes` (list of paths).
 fn collect_scoped_entities(graph: &RPGraph, scope: &str) -> Vec<String> {
+    if matches!(scope.trim(), "" | ".") {
+        return graph.entities.keys().cloned().collect();
+    }
+
     let scopes: Vec<&str> = scope.split(',').map(|s| s.trim()).collect();
     let mut all_ids: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
     for single_scope in scopes {
+        if single_scope == "." {
+            return graph.entities.keys().cloned().collect();
+        }
+        if single_scope.is_empty() {
+            continue;
+        }
         for id in collect_single_scope(graph, single_scope) {
             if seen.insert(id.clone()) {
                 all_ids.push(id);
