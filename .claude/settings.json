@@ -1,5 +1,27 @@
 {
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f .rpg/graph.json ] && command -v rpg-encoder >/dev/null 2>&1; then FILE=$(echo \"$TOOL_INPUT\" | grep -oP '\"file_path\"\\s*:\\s*\"\\K[^\"]+' 2>/dev/null || true); if [ -n \"$FILE\" ]; then rpg-encoder search \"$(basename \"$FILE\" | sed 's/\\.[^.]*$//')\" --limit 3 2>/dev/null | head -20 || true; fi; fi"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f .rpg/graph.json ] && echo \"$TOOL_INPUT\" | grep -qE 'git commit|git merge' 2>/dev/null; then if command -v rpg-encoder >/dev/null 2>&1; then rpg-encoder update 2>&1 | head -5 || true; fi; fi"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

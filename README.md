@@ -4,31 +4,33 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
 
-> [!NOTE]
-> **Independent implementation.** Built from scratch in Rust by reading the
-> [RPG-Encoder paper](https://arxiv.org/abs/2602.02084) (Luo et al., 2026, Microsoft Research).
-> No shared code with any other implementation. Not affiliated with or endorsed by Microsoft.
-> All code is original work; the paper is cited for attribution.
+**Give your AI agent a brain for your codebase.**
 
----
+rpg-encoder builds a semantic graph of your codebase — not just what calls what, but what
+every function *does* and *why it exists*. Your coding agent lifts each entity into
+intent-level features, then searches by meaning, not naming conventions.
 
-**Coding agent toolkit for semantic code understanding.**
+The result: an LLM that starts every session already knowing your entire repo.
 
-rpg-encoder builds a semantic graph of your codebase. Your coding agent (Claude Code, Cursor,
-etc.) analyzes the code and adds intent-level features via the MCP interactive protocol.
-Search by what code *does*, not what it's named.
+## What Makes This Different
 
-> [!TIP]
-> **New to RPG?** See [How RPG Compares](docs/comparison.md) to understand where it fits
-> alongside Claude Code, Serena, and other tools.
-> For a detailed algorithm-by-algorithm comparison with the research paper, see
-> [Paper Fidelity](docs/paper_fidelity.md).
+**Semantic understanding, not structural graphs.** Tools like GitNexus, CodeGraphContext, and
+Serena build call graphs and import maps. rpg-encoder builds an *intent graph* — LLM-lifted
+verb-object features that capture what code does ("validate JWT tokens", "serialize config to
+disk"), not just what it's named. Search by what you mean, find code that isn't named for what
+it does.
+
+**Context injection, not tool queries.** The `semantic_snapshot` tool compresses your entire
+repo's understanding into ~25K tokens — hierarchy, features, dependencies — and injects it
+into the LLM's context window. The LLM reads it once and *knows the repo*. No tool calls
+needed for understanding, only for fetching source code when editing.
+
+**Self-maintaining graph.** The server auto-syncs when code changes. No manual `update` calls,
+no stale warnings the agent ignores. The graph owns its own consistency.
 
 ## Install
 
-The MCP server automatically detects the project root — no path argument needed.
-
-Add to your MCP config (Claude Code `~/.claude.json`, Cursor settings, opencode, etc.):
+Add to your MCP config (Claude Code `~/.claude.json`, Cursor, opencode, etc.):
 
 ```json
 {
@@ -40,11 +42,6 @@ Add to your MCP config (Claude Code `~/.claude.json`, Cursor settings, opencode,
   }
 }
 ```
-
-> [!TIP]
-> The path argument is optional. When omitted, the server falls back to the current working directory.
-> MCP clients (like opencode, Claude Code, Cursor) launch the server from the workspace directory,
-> so `current_dir()` automatically points to your project. If you pass a path explicitly, it will use that instead.
 
 <details>
 <summary>Alternative: build from source</summary>
@@ -66,63 +63,28 @@ Then use the binary path directly:
 }
 ```
 
-> [!TIP]
-> The binary also accepts an optional path argument. Omit it to use the current working directory.
-
 </details>
 
 <details>
 <summary><strong>Multi-repo setup</strong></summary>
 
-The path argument is optional — the server defaults to the current working directory. This works
-automatically because MCP clients launch the server from the workspace directory.
+The server defaults to the current working directory. MCP clients launch the server from the
+workspace directory, so no path argument is needed.
 
-**Global config (all repos use cwd)**
-
-No path needed — each session uses the directory where the MCP client was started:
+For an explicit path override:
 
 ```json
 {
   "mcpServers": {
     "rpg": {
       "command": "npx",
-      "args": ["-y", "-p", "rpg-encoder", "rpg-mcp-server"]
+      "args": ["-y", "-p", "rpg-encoder", "rpg-mcp-server", "/path/to/repo"]
     }
   }
 }
 ```
-
-**Per-project override (explicit path)**
-
-If you need a specific repo, pass the path:
-
-```json
-{
-  "mcpServers": {
-    "rpg": {
-      "command": "npx",
-      "args": ["-y", "-p", "rpg-encoder", "rpg-mcp-server", "/path/to/this/repo"]
-    }
-  }
-}
-```
-
-The project-level config overrides the global one. Restart Claude Code after creating/modifying configs.
 
 </details>
-
-## Lifecycle
-
-```mermaid
-graph LR
-    A[Install] --> B[Build]
-    B --> C[Lift]
-    C --> D[Use]
-    D --> E[Update]
-    E --> C
-```
-
-You install it. Your agent does the rest.
 
 ## Getting Started
 
@@ -130,41 +92,20 @@ Tell your coding agent:
 
 > "Build and lift the RPG for this repo"
 
-That's it. The agent handles everything. Here's what happens:
+That's it. The agent handles everything:
 
 1. **Build** — Indexes all code entities and dependencies (~5 seconds)
 2. **Lift** — Agent analyzes each function/class and adds semantic features (~2 min per 100 entities)
 3. **Organize** — Agent discovers functional domains and builds a semantic hierarchy (~30 seconds)
 4. **Save** — Graph is written to `.rpg/graph.json` — commit it so everyone benefits
 
-Once lifted, try queries like:
+Once lifted:
 
-- *"What handles authentication?"*
+- *"What handles authentication?"* — finds code even if nothing is named "auth"
 - *"Show me everything that depends on the database connection"*
 - *"Plan a change to add rate limiting to API endpoints"*
 
-<details>
-<summary><strong>How it works under the hood</strong></summary>
-
-The RPG (Repository Planning Graph) is a hierarchical, dual-view representation from the
-research papers cited below:
-
-1. **Parse** — Extract entities (functions, classes, methods) and dependency edges (imports,
-   invocations, inheritance) using tree-sitter. Build a file-path hierarchy.
-2. **Lift** — Your coding agent analyzes entity source code and adds verb-object semantic
-   features (e.g., "validate user credentials", "serialize config to disk") via the MCP
-   interactive protocol (`get_entities_for_lifting` → `submit_lift_results`).
-3. **Hierarchy** — Your agent discovers functional domains and assigns entities to a 3-level
-   semantic hierarchy (`build_semantic_hierarchy` → `submit_hierarchy`).
-4. **Ground** — Anchor hierarchy nodes to directories via LCA algorithm, resolve cross-file
-   dependency edges.
-
-The graph is saved to `.rpg/graph.json` and **should be committed to your repo** — this way
-all collaborators and AI tools get instant semantic search without rebuilding.
-
-</details>
-
-## MCP Tools
+## MCP Tools (26)
 
 **Build & Maintain**
 
@@ -175,7 +116,29 @@ all collaborators and AI tools get instant semantic search without rebuilding.
 | `reload_rpg` | Reload graph from disk after external changes |
 | `rpg_info` | Graph statistics, hierarchy overview, per-area lifting coverage |
 
-**Semantic Lifting**
+**Navigate & Search**
+
+| Tool | Description |
+|------|-------------|
+| `semantic_snapshot` | Whole-repo semantic understanding in one call (~25K tokens for 1000 entities) |
+| `search_node` | Search entities by intent or keywords (hybrid embedding + lexical scoring) |
+| `fetch_node` | Get entity metadata, source code, dependencies, and hierarchy context |
+| `explore_rpg` | Traverse dependency graph (upstream, downstream, or both) |
+| `context_pack` | Single-call search+fetch+explore with token budget |
+
+**Plan & Analyze**
+
+| Tool | Description |
+|------|-------------|
+| `impact_radius` | BFS reachability analysis — "what depends on X?" |
+| `plan_change` | Change planning — find relevant entities, modification order, blast radius |
+| `find_paths` | K-shortest dependency paths between two entities |
+| `slice_between` | Extract minimal connecting subgraph between entities |
+| `analyze_health` | Code health: coupling, instability, god objects, clone detection |
+| `detect_cycles` | Find circular dependencies and architectural cycles |
+| `reconstruct_plan` | Dependency-safe reconstruction execution plan |
+
+**Semantic Lifting** (10 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -190,25 +153,6 @@ all collaborators and AI tools get instant semantic search without rebuilding.
 | `get_routing_candidates` | Get entities needing semantic routing (drifted or newly lifted) |
 | `submit_routing_decisions` | Submit routing decisions (hierarchy path or "keep") |
 
-**Navigate & Search**
-
-| Tool | Description |
-|------|-------------|
-| `search_node` | Search entities by intent or keywords (hybrid embedding + lexical scoring) |
-| `fetch_node` | Get entity metadata, source code, dependencies, and hierarchy context |
-| `explore_rpg` | Traverse dependency graph (upstream, downstream, or both) |
-| `context_pack` | Single-call search+fetch+explore with token budget |
-
-**Plan & Analyze**
-
-| Tool | Description |
-|------|-------------|
-| `impact_radius` | BFS reachability analysis — "what depends on X?" |
-| `plan_change` | Change planning — find relevant entities, modification order, blast radius |
-| `find_paths` | K-shortest dependency paths between two entities |
-| `slice_between` | Extract minimal connecting subgraph between entities |
-| `reconstruct_plan` | Dependency-safe reconstruction execution plan |
-
 ### Lifting: What It Is
 
 Lifting is the process where your coding agent reads each function, class, and method in your
@@ -219,19 +163,8 @@ what it *does*, not what it's named.
 - **No API keys needed** — your connected coding agent (Claude Code, Cursor, etc.) *is* the LLM
 - **One-time cost** — lift once, commit `.rpg/`, and every future session starts instantly
 - **Resumable** — if interrupted, `lifting_status` picks up exactly where you left off
-- **Incremental** — after code changes, `update_rpg` detects what moved and only re-lifts those entities
+- **Incremental** — after code changes, the server auto-syncs and tracks what needs re-lifting
 - **Scoped** — lift the whole repo or just a subdirectory (`"src/auth/**"`)
-
-<details>
-<summary><strong>Lifting protocol details (for tool builders)</strong></summary>
-
-1. Ask your agent to "lift the code" (or call `get_entities_for_lifting` with a scope)
-2. The tool returns entity source code with analysis instructions
-3. Your agent analyzes the code and calls `submit_lift_results` with semantic features
-4. The agent continues through all batches automatically, dispatching subagents for large repos
-5. After lifting, `finalize_lifting` → `build_semantic_hierarchy` → `submit_hierarchy`
-
-</details>
 
 ## Supported Languages
 
@@ -274,11 +207,6 @@ rpg-encoder info
 
 # Incremental update
 rpg-encoder update
-rpg-encoder update --since abc1234
-
-# Paper-style reconstruction schedule (topological + coherent batches)
-rpg-encoder reconstruct-plan --max-batch-size 8 --format text
-rpg-encoder reconstruct-plan --format json
 
 # Pre-commit hook (auto-updates graph on every commit)
 rpg-encoder hook install
@@ -313,27 +241,11 @@ rpg-encoder/
 ├── rpg-core        Core graph types (RPGraph, Entity, HierarchyNode), storage, LCA
 ├── rpg-parser      Tree-sitter entity + dependency extraction (15 languages)
 ├── rpg-encoder     Encoding pipeline, semantic lifting utilities, incremental evolution
-│   └── prompts/        Prompt templates (embedded via include_str!)
-├── rpg-nav         Search, fetch, explore, TOON serialization
+├── rpg-nav         Search, fetch, explore, snapshot, TOON serialization
+├── rpg-lift        Lifting scope resolution
 ├── rpg-cli         CLI binary (rpg-encoder)
 └── rpg-mcp         MCP server binary (rpg-mcp-server)
 ```
-
-</details>
-
-<details>
-<summary><strong>How It Compares</strong></summary>
-
-| Aspect | Paper (Microsoft) | This Repo |
-|--------|-------------------|-----------|
-| Implementation | Python (unreleased) | Rust (available now) |
-| Lifting strategy | Full upfront via API | Progressive — your coding agent lifts via MCP |
-| Semantic routing | LLM-based | LLM-based (via MCP routing protocol) |
-| Feature search | Embedding-based | Hybrid embedding + lexical (BGE-small-en-v1.5) |
-| MCP server | Described, not shipped | Working, with 23 tools |
-| SWE-bench evaluation | 93.7% Acc@5 | Self-eval: MRR 0.59, Acc@10 85% ([benchmark](benchmarks/README.md)) |
-| Languages | Python-focused | 15 languages |
-| TOON format | Not described | Implemented for token efficiency |
 
 </details>
 
@@ -352,69 +264,51 @@ Roughly 2 minutes per 100 entities. A small project (50 files, ~200 entities) ta
 5 minutes. A large project (500+ files) should use parallel subagents — your agent handles
 this automatically. Build and hierarchy steps are near-instant.
 
-**What happens when I delete or rename files?**
+**What happens when I change code?**
 
-Run `update_rpg` (or use the pre-commit hook). It diffs against the last indexed commit,
-removes deleted entities, re-extracts renamed/modified files, and marks changed entities
-for re-lifting. The graph stays consistent without a full rebuild.
+The server auto-syncs the graph when git HEAD moves. Modified entities are tracked for
+re-lifting. No manual intervention needed.
 
 **Can I lift only part of the codebase?**
 
 Yes. Pass a file glob to `get_entities_for_lifting`: `"src/auth/**"`, `"crates/rpg-core/**"`,
-etc. You can also use `.rpgignore` (gitignore syntax) to permanently exclude files like
-vendored dependencies or generated code.
+etc. You can also use `.rpgignore` (gitignore syntax) to permanently exclude files.
 
 **What if lifting gets interrupted?**
 
 The graph is saved to disk after every `submit_lift_results` call. Start a new session,
-call `lifting_status`, and it picks up exactly where you left off — only unlifted entities
-are returned.
-
-**How does semantic search work?**
-
-`search_node` uses hybrid scoring: BGE-small-en-v1.5 embeddings for semantic similarity
-plus lexical matching for exact names and paths. Query with intent ("handle authentication")
-or exact identifiers ("AuthService::validate") — both work.
+call `lifting_status`, and it picks up exactly where you left off.
 
 **Should I commit `.rpg/` to the repo?**
 
-Yes. The `.rpg/graph.json` file contains the full semantic graph. Committing it means
-collaborators and CI agents get instant semantic search without re-lifting. The graph
-is deterministic (sorted maps, stable serialization), so diffs are meaningful.
-
-**What about monorepos or very large codebases?**
-
-Use scoped lifting to process one area at a time (`"packages/api/**"`, `"services/auth/**"`).
-Your coding agent will automatically dispatch parallel subagents for large scopes. The
-incremental update system (`update_rpg`) keeps the graph current without full rebuilds.
-For very large repos, use `.rpgignore` to exclude vendored code, generated files, and
-test fixtures.
+Yes. Committing `.rpg/graph.json` means collaborators and CI agents get instant semantic
+search without re-lifting.
 
 </details>
 
-## References
+## Inspirations & References
 
-This project is based on the following research papers. All credit for the theoretical
-framework, algorithms, and evaluation methodology belongs to the original authors.
+rpg-encoder is built on the theoretical framework from the RPG-Encoder research paper, with
+original extensions inspired by tools across the code intelligence landscape:
 
-- **RPG-Encoder**: Luo, J., Yin, C., Zhang, X., et al. "Closing the Loop: Universal
-  Repository Representation with RPG-Encoder." arXiv:2602.02084, 2026.
+- **RPG-Encoder paper** (Luo et al., 2026, Microsoft Research): The semantic lifting model,
+  3-level hierarchy construction, incremental evolution algorithms, and formal graph model
+  `G = (V_H ∪ V_L, E_dep ∪ E_feature)`.
   [[Paper]](https://arxiv.org/abs/2602.02084)
   [[Project Page]](https://ayanami2003.github.io/RPG-Encoder/)
-  [[Official Code]](https://github.com/microsoft/RPG-ZeroRepo)
 
-- **RPG (ZeroRepo)**: Luo, J., Yin, C., et al. "RepoGraph: Enhancing AI Software Engineering
-  with Repository-level Code Graph." arXiv:2509.16198, 2025.
-  [[Paper]](https://arxiv.org/abs/2509.16198)
+- **GitNexus**: Precomputed relational intelligence, blast radius analysis, Claude Code hooks
+  for seamless integration. Showed that a code graph tool must be invisible to be essential.
 
-- **TOON**: Token-Oriented Object Notation — an LLM-optimized data format used for MCP
-  tool output and LLM response parsing.
+- **Serena**: Symbol-level precision via LSP. Demonstrated that real-time code awareness
+  matters more than batch analysis.
+
+- **TOON**: Token-Oriented Object Notation for LLM-optimized output.
   [[Spec]](https://github.com/toon-format/toon)
+
+This is an independent implementation. All code is original work under the MIT license.
+Not affiliated with or endorsed by Microsoft.
 
 ## License
 
 Licensed under the [MIT License](LICENSE).
-
-This is an independent implementation. The RPG-Encoder paper and its associated intellectual
-property belong to Microsoft Research and the paper's authors. This project implements the
-publicly described algorithms and does not contain any code from Microsoft.
