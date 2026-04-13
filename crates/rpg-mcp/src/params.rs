@@ -265,7 +265,7 @@ pub(crate) struct DetectCyclesParams {
 
 /// Parameters for the `auto_lift` tool.
 #[cfg(feature = "auto-lift")]
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema)]
 pub(crate) struct AutoLiftParams {
     /// LLM provider: "anthropic", "openai", or any OpenAI-compatible endpoint.
     pub(crate) provider: String,
@@ -279,4 +279,18 @@ pub(crate) struct AutoLiftParams {
     pub(crate) scope: Option<String>,
     /// Dry run: estimate cost without lifting. Default: false.
     pub(crate) dry_run: Option<bool>,
+}
+
+#[cfg(feature = "auto-lift")]
+impl std::fmt::Debug for AutoLiftParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AutoLiftParams")
+            .field("provider", &self.provider)
+            .field("api_key", &"[REDACTED]")
+            .field("model", &self.model)
+            .field("base_url", &self.base_url)
+            .field("scope", &self.scope)
+            .field("dry_run", &self.dry_run)
+            .finish()
+    }
 }

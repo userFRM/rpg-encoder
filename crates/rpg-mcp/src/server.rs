@@ -194,6 +194,8 @@ impl RpgServer {
                 eprintln!("rpg: auto-sync failed (non-fatal): {e}");
                 // Update HEAD anyway to avoid retrying a failing update every call
                 *self.last_auto_sync_head.write().await = Some(current_head);
+                // MUST drop the write lock before calling staleness_notice (which reads)
+                drop(guard);
                 self.staleness_notice().await
             }
         }
@@ -201,29 +203,9 @@ impl RpgServer {
 
     /// Lightweight staleness check for unstaged/uncommitted changes only.
     /// Used when HEAD hasn't moved (auto-sync already ran for this HEAD).
+    /// Delegates to `staleness_notice` which handles the full detection.
     async fn staleness_notice_unstaged(&self) -> String {
-        let guard = self.graph.read().await;
-        let Some(graph) = guard.as_ref() else {
-            return String::new();
-        };
-        let Ok(changes) = rpg_encoder::evolution::detect_workdir_changes(&self.project_root, graph)
-        else {
-            return String::new();
-        };
-        let changes = rpg_encoder::evolution::filter_rpgignore_changes(&self.project_root, changes);
-        let languages = Self::resolve_languages(&graph.metadata);
-        let source_changes = if languages.is_empty() {
-            changes
-        } else {
-            rpg_encoder::evolution::filter_source_changes(changes, &languages)
-        };
-        if source_changes.is_empty() {
-            return String::new();
-        }
-        format!(
-            "[stale: {} uncommitted source file(s) changed — call update_rpg to sync]\n\n",
-            source_changes.len(),
-        )
+        self.staleness_notice().await
     }
 
     /// Resolve all indexed languages from graph metadata (multi-language support).
