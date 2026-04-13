@@ -55,16 +55,6 @@ impl LiftProgress {
         self.phase_bar.inc(1);
     }
 
-    /// Increment the phase progress by `n`.
-    pub fn tick_phase_by(&self, n: u64) {
-        self.phase_bar.inc(n);
-    }
-
-    /// Set a message on the phase bar.
-    pub fn set_phase_message(&self, msg: &str) {
-        self.phase_bar.set_message(msg.to_string());
-    }
-
     /// Update the cost display.
     pub fn update_cost(&self, spent: f64, estimated_total: f64) {
         self.cost_bar.set_message(format!(

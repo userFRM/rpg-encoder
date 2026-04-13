@@ -338,6 +338,7 @@ impl RpgServer {
             ..Default::default()
         };
 
+        let token_budget = params.token_budget.unwrap_or(30_000);
         let result = rpg_nav::snapshot::build_semantic_snapshot(graph, &request);
 
         let (lifted, total) = graph.lifting_coverage();
@@ -347,9 +348,16 @@ impl RpgServer {
             rpg_nav::toon::format_semantic_snapshot(&result),
         );
 
+        if result.token_estimate > token_budget {
+            output.push_str(&format!(
+                "\n[WARNING: snapshot is ~{} tokens, exceeds budget of {}. Features and deps were trimmed. Use a larger token_budget for full detail.]",
+                result.token_estimate, token_budget,
+            ));
+        }
+
         if lifted < total {
             output.push_str(&format!(
-                "\n({}/{} entities lifted. Call get_entities_for_lifting to add semantic features to the remaining {} entities.)",
+                "\n({}/{} entities lifted. Call get_entities_for_lifting or auto_lift to add semantic features to the remaining {} entities.)",
                 lifted, total, total - lifted,
             ));
         }
@@ -713,7 +721,24 @@ impl RpgServer {
         &self,
         Parameters(params): Parameters<AutoLiftParams>,
     ) -> Result<String, String> {
+        /// Drop guard that clears the `lift_in_progress` flag on scope exit.
+        struct LiftGuard(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for LiftGuard {
+            fn drop(&mut self) {
+                self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
         self.ensure_graph().await?;
+
+        // Reject concurrent lift calls
+        if self
+            .lift_in_progress
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err("A lift is already in progress. Wait for it to complete.".into());
+        }
+        let _guard = LiftGuard(std::sync::Arc::clone(&self.lift_in_progress));
 
         let provider = rpg_lift::create_provider(
             &params.provider,

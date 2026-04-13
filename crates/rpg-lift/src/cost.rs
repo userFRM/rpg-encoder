@@ -105,7 +105,11 @@ pub fn estimate_cost(
 
     for raw in &raw_entities {
         match engine.try_lift_with_confidence(raw) {
-            Some((_, rpg_encoder::lift::LiftConfidence::Accept)) => {
+            Some((
+                _,
+                rpg_encoder::lift::LiftConfidence::Accept
+                | rpg_encoder::lift::LiftConfidence::Review,
+            )) => {
                 auto_lifted += 1;
             }
             _ => {
