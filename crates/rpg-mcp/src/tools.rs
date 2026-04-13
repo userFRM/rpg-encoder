@@ -740,9 +740,34 @@ impl RpgServer {
         }
         let _guard = LiftGuard(std::sync::Arc::clone(&self.lift_in_progress));
 
+        // Resolve API key: prefer api_key_env (safe), fall back to api_key (raw)
+        let api_key = if let Some(ref env_var) = params.api_key_env {
+            std::env::var(env_var).map_err(|_| {
+                format!(
+                    "Environment variable '{}' not set. Set it or use api_key instead.",
+                    env_var
+                )
+            })?
+        } else if let Some(ref key) = params.api_key {
+            key.clone()
+        } else {
+            // Auto-detect from standard env vars based on provider
+            let env_var = match params.provider.as_str() {
+                "anthropic" => "ANTHROPIC_API_KEY",
+                "openai" => "OPENAI_API_KEY",
+                _ => "OPENAI_API_KEY",
+            };
+            std::env::var(env_var).map_err(|_| {
+                format!(
+                    "No API key provided. Use api_key_env=\"{}\" or api_key, or set {} env var.",
+                    env_var, env_var
+                )
+            })?
+        };
+
         let provider = rpg_lift::create_provider(
             &params.provider,
-            &params.api_key,
+            &api_key,
             params.model.as_deref(),
             params.base_url.as_deref(),
         )
@@ -764,18 +789,17 @@ impl RpgServer {
             ));
         }
 
-        // Take the graph out for blocking pipeline (rpg-lift uses blocking ureq)
-        let mut graph = {
-            let mut guard = self.graph.write().await;
-            guard.take().ok_or("No RPG loaded")?
-        };
+        // Hold the write lock for the entire pipeline. The graph never leaves
+        // shared state, so cancellation or concurrent tools can't corrupt it.
+        let mut guard = self.graph.write().await;
+        let graph = guard.as_mut().ok_or("No RPG loaded")?;
 
         let project_root = self.project_root.clone();
         let scope_owned = scope.to_string();
 
-        // Run the blocking pipeline on a dedicated thread.
-        // Always return the graph so we can put it back even on error.
-        let (graph, report_result) = tokio::task::spawn_blocking(move || {
+        // Run the blocking pipeline on the current thread (tells tokio we're blocking).
+        // This is safe because MCP stdio is serial — no concurrent requests.
+        let report = tokio::task::block_in_place(|| {
             let config = rpg_lift::LiftConfig {
                 provider: provider.as_ref(),
                 project_root: &project_root,
@@ -784,17 +808,13 @@ impl RpgServer {
                 batch_size: 25,
                 batch_tokens: 8000,
             };
-            let report = rpg_lift::run_pipeline(&mut graph, &config);
-            let _ = rpg_core::storage::save(&project_root, &graph);
-            (graph, report)
+            let result = rpg_lift::run_pipeline(graph, &config);
+            let _ = rpg_core::storage::save(&project_root, graph);
+            result
         })
-        .await
-        .map_err(|e| format!("Lift task panicked: {}", e))?;
+        .map_err(|e| format!("Lift failed: {}", e))?;
 
-        // Put the graph back FIRST — before handling errors
-        *self.graph.write().await = Some(graph);
-
-        let report = report_result.map_err(|e| format!("Lift failed: {}", e))?;
+        drop(guard);
 
         // Clear sessions — entity list changed
         *self.lifting_session.write().await = None;

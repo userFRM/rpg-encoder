@@ -269,8 +269,10 @@ pub(crate) struct DetectCyclesParams {
 pub(crate) struct AutoLiftParams {
     /// LLM provider: "anthropic", "openai", or any OpenAI-compatible endpoint.
     pub(crate) provider: String,
-    /// API key for the provider. Required.
-    pub(crate) api_key: String,
+    /// API key for the provider. Use this OR api_key_env (not both). Prefer api_key_env to avoid exposing keys in tool call transcripts.
+    pub(crate) api_key: Option<String>,
+    /// Environment variable name containing the API key (e.g., "ANTHROPIC_API_KEY"). Safer than passing the key directly — the key never appears in tool call logs.
+    pub(crate) api_key_env: Option<String>,
     /// Model override (default: claude-haiku-4-5-20251001 for anthropic, gpt-4o-mini for openai).
     pub(crate) model: Option<String>,
     /// Base URL for OpenAI-compatible endpoints (e.g., "https://openrouter.ai/api/v1" for OpenRouter, "https://generativelanguage.googleapis.com/v1beta/openai" for Gemini).
