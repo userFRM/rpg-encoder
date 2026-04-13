@@ -70,7 +70,7 @@ See existing language implementations (e.g., `python_entities.rs`, `rust_deps.rs
 
 ### Adding an MCP Tool
 
-1. Add the handler method in `crates/rpg-mcp/src/main.rs` with `#[tool(...)]` attribute
+1. Add the handler method in `crates/rpg-mcp/src/tools.rs` with `#[tool(...)]` attribute
 2. Define a params struct with `JsonSchema` + `Deserialize`
 3. Add a test in `crates/rpg-mcp/tests/tool_handlers.rs`
 
