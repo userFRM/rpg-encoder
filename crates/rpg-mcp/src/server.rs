@@ -589,9 +589,18 @@ impl RpgServer {
             // Large repo — recommend delegating the mechanical loop so the
             // caller doesn't exhaust its own context. Keep NEXT STEP on one
             // line; follow-up detail is in labeled blocks below.
+            //
+            // Note: `remaining` is the raw unlifted count *before* auto-lift
+            // runs (which happens inside get_entities_for_lifting). Auto-lift
+            // shrinks the LLM-needed set considerably for repos with many
+            // trivial entities (getters, setters, constructors). The dispatch
+            // hint here is therefore conditional — get_entities_for_lifting
+            // batch 0 emits a confirming NOTE only when ≥10 LLM batches
+            // actually queue up. If the agent calls it and sees no NOTE,
+            // the work is small enough to lift directly.
             let batch_tokens = self.config.read().await.encoding.max_batch_tokens;
             out.push_str(&format!(
-                "NEXT STEP: Delegate lifting to a sub-agent or cheaper model — {} entities remain, each batch returns ~{}K tokens of source.\n",
+                "NEXT STEP: Likely-large lifting workload — {} entities remain (auto-lift may reduce this). Call get_entities_for_lifting(scope=\"*\") next; if its batch-0 response includes a delegation NOTE, follow the dispatch pattern below. Each remaining batch is ~{}K tokens of source.\n",
                 remaining, batch_tokens.div_ceil(1000),
             ));
             out.push_str(
@@ -602,7 +611,7 @@ impl RpgServer {
                  \nFALLBACK (no sub-agent mechanism, no API key):\n  \
                  Scope the lift to one subtree at a time — e.g. get_entities_for_lifting(scope=\"src/auth/**\") — and call finalize_lifting after each. Each scoped batch fits in foreground context.\n\
                  \nFALLBACK (no sub-agent mechanism, API key available):\n  \
-                 Run `rpg-encoder lift --provider anthropic` (or `openai`) from the terminal — the CLI drives an external LLM directly with no agent involvement.\n",
+                 Run `rpg-encoder lift --provider anthropic` (or `openai`) from the terminal — the CLI drives an external LLM directly with no agent involvement. After the CLI finishes, call `reload_rpg` in this session so the server picks up the updated graph from disk.\n",
             );
         } else if lifted == 0 {
             out.push_str(

@@ -443,6 +443,12 @@ impl RpgServer {
         // Swap the root
         *self.project_root_cell.write().await = canonical.clone();
 
+        // Reload the config from the new project — encoding.max_batch_tokens
+        // and other project-scoped settings must follow the root or tools
+        // will operate with the previous project's configuration.
+        *self.config.write().await =
+            rpg_core::config::RpgConfig::load(&canonical).unwrap_or_default();
+
         // Reset all session + sync state — everything is project-scoped
         *self.lifting_session.write().await = None;
         *self.hierarchy_session.write().await = None;

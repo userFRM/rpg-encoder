@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.8.3] - 2026-04-14
 
+### Fixed (Codex round 2 review)
+
+- **CLI fallback (`rpg-encoder lift --provider ...`) leaves the MCP server
+  on a stale in-memory graph.** All four surfaces that mention the CLI
+  fallback (server.rs lifting_status block, server_instructions.md,
+  README, .gemini commands) now explicitly say "after the CLI finishes,
+  call `reload_rpg` in this session" so the server picks up the new
+  `.rpg/graph.json` from disk.
+- **`set_project_root` failed to refresh `self.config`.** When switching
+  to a project with a different `.rpg/config.toml`, the server kept
+  serving the previous project's `encoding.max_batch_tokens` and other
+  settings. Now reloads `RpgConfig` from the new root atomically with the
+  root swap.
+- **`lifting_status` large-scope NEXT STEP could promise delegation work
+  the auto-lifter would actually finish locally.** The check uses raw
+  `remaining` (pre-auto-lift), so on repos with many trivial entities
+  (getters, setters, constructors) the dashboard could recommend a worker
+  for ~0 LLM calls. Reworded to "likely-large workload — call
+  get_entities_for_lifting next; if its batch-0 response includes the
+  delegation NOTE, follow the dispatch pattern below". The batch-0 NOTE
+  is the authoritative signal because it sees the post-auto-lift queue.
+- **"`rpg_info` says 'No RPG found'" was wrong.** `rpg_info` returns a
+  tool error, not a friendly status string. Changed to "any RPG tool
+  returns 'No RPG found'".
+
 ### Changed
 
 - **`lifting_status` NEXT STEP now recommends sub-agent dispatch when the

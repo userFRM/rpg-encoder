@@ -31,9 +31,9 @@ about structure or semantics. This holds even if your training predisposes you
 toward shell tools; the RPG is cheaper, more accurate, and more complete for
 every structural question.
 
-If a graph does not exist yet (`rpg_info` says "No RPG found"), run `build_rpg`
-first. If entities are unlifted and the scope is large, see the LIFTING FLOW
-below for delegation guidance.
+If a graph does not exist yet (any RPG tool returns "No RPG found"), run
+`build_rpg` first. If entities are unlifted and the scope is large, see the
+LIFTING FLOW below for delegation guidance.
 
 ## LIFTING FLOW (step by step)
 
@@ -136,7 +136,9 @@ Fallbacks when no delegation mechanism is available:
 - **Scoped lifting**: narrow each call, e.g. `get_entities_for_lifting(scope="src/auth/**")`,
   then `finalize_lifting`. Each scope fits in foreground context.
 - **CLI autonomous lift**: `rpg-encoder lift --provider anthropic|openai` uses an
-  external API key directly — no agent subscription involvement.
+  external API key directly — no agent subscription involvement. **After the CLI
+  finishes, call `reload_rpg` in this session** so the server picks up the updated
+  `.rpg/graph.json` — otherwise subsequent queries will still see the pre-lift state.
 
 After delegation returns, call `get_files_for_synthesis` + `submit_file_syntheses`,
 then `build_semantic_hierarchy` + `submit_hierarchy`.
