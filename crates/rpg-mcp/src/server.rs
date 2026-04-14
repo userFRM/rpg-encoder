@@ -607,7 +607,7 @@ impl RpgServer {
                 "\nLOOP (run in the delegated context):\n  \
                  get_entities_for_lifting(scope=\"*\") -> analyze batch -> submit_lift_results -> repeat until DONE -> finalize_lifting\n\
                  \nDISPATCH:\n  \
-                 Use whatever sub-agent / cheaper-model mechanism your runtime provides. The MCP graph is persisted to disk, so the worker's tool calls update the same state the caller reads.\n\
+                 Use whatever sub-agent / cheaper-model mechanism your runtime provides. The MCP graph persists to disk after every submit, so the worker's writes survive. **After the worker returns, call `reload_rpg`** — some runtimes give sub-agents an isolated MCP session, in which case the caller's in-memory graph is stale until reloaded. (No-op if your runtime shares the MCP session.)\n\
                  \nFALLBACK (no sub-agent mechanism, no API key):\n  \
                  Scope the lift to one subtree at a time — e.g. get_entities_for_lifting(scope=\"src/auth/**\") — and call finalize_lifting after each. Each scoped batch fits in foreground context.\n\
                  \nFALLBACK (no sub-agent mechanism, API key available):\n  \

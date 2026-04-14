@@ -31,9 +31,10 @@ about structure or semantics. This holds even if your training predisposes you
 toward shell tools; the RPG is cheaper, more accurate, and more complete for
 every structural question.
 
-If a graph does not exist yet (any RPG tool returns "No RPG found"), run
-`build_rpg` first. If entities are unlifted and the scope is large, see the
-LIFTING FLOW below for delegation guidance.
+If a graph does not exist yet (RPG tools error with messages like "No RPG
+found" or "graph: not built"), run `build_rpg` first. If entities are
+unlifted and the scope is large, see the LIFTING FLOW below for delegation
+guidance.
 
 ## LIFTING FLOW (step by step)
 
@@ -130,7 +131,10 @@ finalize_lifting
 ```
 
 Use whatever sub-agent or cheaper-model mechanism your runtime exposes. The graph
-persists to disk, so the worker's tool calls update the same state the caller reads.
+persists to disk after every submit, so the worker's writes survive. **After the
+worker returns, call `reload_rpg`** to refresh the caller's in-memory graph —
+required if the runtime gave the worker an isolated MCP session, no-op if it
+shared yours.
 
 Fallbacks when no delegation mechanism is available:
 - **Scoped lifting**: narrow each call, e.g. `get_entities_for_lifting(scope="src/auth/**")`,

@@ -2023,10 +2023,16 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Reload the RPG graph from disk. Use after external changes to .rpg/graph.json."
+        description = "Reload the RPG graph and config from disk. Use after external changes to .rpg/graph.json or .rpg/config.toml — for example, after the CLI ran `rpg-encoder lift` or after editing batch-size settings."
     )]
     async fn reload_rpg(&self) -> Result<String, String> {
-        match storage::load(&self.project_root().await) {
+        let project_root = self.project_root().await;
+        // Refresh config from disk too — if the user edited .rpg/config.toml
+        // or the lifter wrote new settings, pick them up here so subsequent
+        // tool calls operate against current values.
+        *self.config.write().await =
+            rpg_core::config::RpgConfig::load(&project_root).unwrap_or_default();
+        match storage::load(&project_root) {
             Ok(g) => {
                 let entities = g.metadata.total_entities;
                 *self.graph.write().await = Some(g);
