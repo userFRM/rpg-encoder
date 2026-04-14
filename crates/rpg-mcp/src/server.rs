@@ -37,7 +37,10 @@ impl PromptVersions {
 /// The RPG MCP server state.
 #[derive(Clone)]
 pub(crate) struct RpgServer {
-    pub(crate) project_root: PathBuf,
+    /// Active project root. Mutable at runtime via the `set_project_root` tool
+    /// so a single long-lived session can switch between projects without
+    /// restart. Tools acquire a snapshot via [`RpgServer::project_root`].
+    pub(crate) project_root_cell: Arc<RwLock<PathBuf>>,
     pub(crate) graph: Arc<RwLock<Option<RPGraph>>>,
     pub(crate) config: Arc<RwLock<RpgConfig>>,
     pub(crate) lifting_session: Arc<RwLock<Option<LiftingSession>>>,
@@ -69,13 +72,18 @@ pub(crate) struct RpgServer {
 impl std::fmt::Debug for RpgServer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RpgServer")
-            .field("project_root", &self.project_root)
+            .field("project_root", &"<lock>")
             .field("lifting_session", &"...")
             .finish()
     }
 }
 
 impl RpgServer {
+    /// Snapshot of the active project root. Cheap — locks for a single clone.
+    pub(crate) async fn project_root(&self) -> PathBuf {
+        self.project_root_cell.read().await.clone()
+    }
+
     /// Create a new server, loading graph and config from `project_root` if present.
     pub(crate) fn new(project_root: PathBuf) -> Self {
         let graph = storage::load(&project_root).ok();
@@ -86,7 +94,7 @@ impl RpgServer {
             .map(|s| s.entries)
             .unwrap_or_default();
         Self {
-            project_root,
+            project_root_cell: Arc::new(RwLock::new(project_root)),
             graph: Arc::new(RwLock::new(graph)),
             config: Arc::new(RwLock::new(config)),
             lifting_session: Arc::new(RwLock::new(None)),
@@ -107,16 +115,17 @@ impl RpgServer {
 
     /// Check if the loaded graph is stale (behind git HEAD) and return a notice string.
     pub(crate) async fn staleness_notice(&self) -> String {
+        let project_root = self.project_root().await;
         let guard = self.graph.read().await;
         let Some(graph) = guard.as_ref() else {
             return String::new();
         };
         // Detect workdir changes (committed + staged + unstaged)
-        let Ok(changes) = rpg_encoder::evolution::detect_workdir_changes(&self.project_root, graph)
+        let Ok(changes) = rpg_encoder::evolution::detect_workdir_changes(&project_root, graph)
         else {
             return String::new();
         };
-        let changes = rpg_encoder::evolution::filter_rpgignore_changes(&self.project_root, changes);
+        let changes = rpg_encoder::evolution::filter_rpgignore_changes(&project_root, changes);
         let languages = Self::resolve_languages(&graph.metadata);
         let source_changes = if languages.is_empty() {
             changes
@@ -150,8 +159,9 @@ impl RpgServer {
     /// markers — the next query will retry, so transient failures don't
     /// silently leave the server stale.
     pub(crate) async fn auto_sync_if_stale(&self) -> String {
+        let project_root = self.project_root().await;
         // Step 1: Get current HEAD (cheap, just opens .git/HEAD)
-        let Ok(current_head) = rpg_encoder::evolution::get_head_sha(&self.project_root) else {
+        let Ok(current_head) = rpg_encoder::evolution::get_head_sha(&project_root) else {
             return self.staleness_notice().await;
         };
 
@@ -161,13 +171,11 @@ impl RpgServer {
             let Some(graph) = guard.as_ref() else {
                 return String::new();
             };
-            let Ok(changes) =
-                rpg_encoder::evolution::detect_workdir_changes(&self.project_root, graph)
+            let Ok(changes) = rpg_encoder::evolution::detect_workdir_changes(&project_root, graph)
             else {
                 return String::new();
             };
-            let changes =
-                rpg_encoder::evolution::filter_rpgignore_changes(&self.project_root, changes);
+            let changes = rpg_encoder::evolution::filter_rpgignore_changes(&project_root, changes);
             let languages = Self::resolve_languages(&graph.metadata);
             let source_changes = if languages.is_empty() {
                 changes
@@ -175,7 +183,7 @@ impl RpgServer {
                 rpg_encoder::evolution::filter_source_changes(changes, &languages)
             };
             let paths = Self::change_paths(&source_changes);
-            let hash = Self::compute_changeset_hash(&source_changes, &self.project_root);
+            let hash = Self::compute_changeset_hash(&source_changes, &project_root);
             (source_changes, paths, hash)
         };
 
@@ -187,7 +195,7 @@ impl RpgServer {
             let last_paths = self.last_auto_sync_workdir_paths.read().await;
             let mut effective = source_changes.clone();
             for path in last_paths.difference(&current_paths) {
-                let abs = self.project_root.join(path);
+                let abs = project_root.join(path);
                 if abs.is_file() {
                     effective.push(rpg_encoder::evolution::FileChange::Modified(path.clone()));
                 } else {
@@ -228,7 +236,7 @@ impl RpgServer {
         let qcache_result =
             rpg_parser::paradigms::query_engine::QueryCache::compile_all(&paradigm_defs);
         let active_defs = rpg_parser::paradigms::detect_paradigms_toml(
-            &self.project_root,
+            &project_root,
             &detected_langs,
             &paradigm_defs,
         );
@@ -243,13 +251,13 @@ impl RpgServer {
 
         match rpg_encoder::evolution::run_update_from_changes(
             graph,
-            &self.project_root,
+            &project_root,
             effective_changes,
             pipeline.as_ref(),
         ) {
             Ok(summary) => {
                 graph.metadata.paradigms = paradigm_names;
-                let _ = storage::save(&self.project_root, graph);
+                let _ = storage::save(&project_root, graph);
                 *self.last_auto_sync_head.write().await = Some(current_head);
                 *self.last_auto_sync_changeset.write().await = Some(current_changeset);
                 *self.last_auto_sync_workdir_paths.write().await = current_paths;
@@ -405,7 +413,8 @@ impl RpgServer {
         }
         drop(read);
 
-        match storage::load(&self.project_root) {
+        let project_root = self.project_root().await;
+        match storage::load(&project_root) {
             Ok(g) => {
                 *self.graph.write().await = Some(g);
                 Ok(())
@@ -417,10 +426,10 @@ impl RpgServer {
     }
 
     /// Detailed staleness info: which source files changed (committed + staged + unstaged).
-    pub(crate) fn staleness_detail(&self, graph: &RPGraph) -> Option<String> {
-        let changes =
-            rpg_encoder::evolution::detect_workdir_changes(&self.project_root, graph).ok()?;
-        let changes = rpg_encoder::evolution::filter_rpgignore_changes(&self.project_root, changes);
+    pub(crate) async fn staleness_detail(&self, graph: &RPGraph) -> Option<String> {
+        let project_root = self.project_root().await;
+        let changes = rpg_encoder::evolution::detect_workdir_changes(&project_root, graph).ok()?;
+        let changes = rpg_encoder::evolution::filter_rpgignore_changes(&project_root, changes);
         let languages = Self::resolve_languages(&graph.metadata);
         let changes = rpg_encoder::evolution::filter_source_changes(changes, &languages);
 
@@ -471,7 +480,7 @@ impl RpgServer {
         };
 
         // Check staleness
-        let stale_detail = self.staleness_detail(graph);
+        let stale_detail = self.staleness_detail(graph).await;
         let graph_line = match &stale_detail {
             Some(detail) => format!(
                 "graph: {} ({} entities, {} files)",
@@ -592,9 +601,10 @@ impl RpgServer {
         Ok(out)
     }
 
-    /// Load config synchronously (for contexts that cannot await).
-    pub(crate) fn get_config_blocking(&self) -> RpgConfig {
-        RpgConfig::load(&self.project_root).unwrap_or_default()
+    /// Load the RPG config for the active project.
+    pub(crate) async fn load_config(&self) -> RpgConfig {
+        let project_root = self.project_root().await;
+        RpgConfig::load(&project_root).unwrap_or_default()
     }
 
     /// Lazy-initialize the embedding index on first semantic search.
@@ -612,8 +622,9 @@ impl RpgServer {
             return;
         }
 
+        let project_root = self.project_root().await;
         let updated_at = graph.updated_at.to_rfc3339();
-        match rpg_nav::embeddings::EmbeddingIndex::load_or_init(&self.project_root, &updated_at) {
+        match rpg_nav::embeddings::EmbeddingIndex::load_or_init(&project_root, &updated_at) {
             Ok(mut idx) => {
                 // Incremental sync: only re-embed entities whose features changed
                 if let Err(e) = idx.sync(graph) {

@@ -56,6 +56,13 @@ pub(crate) struct ExploreRpgParams {
     pub(crate) max_results: Option<usize>,
 }
 
+/// Parameters for the `set_project_root` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct SetProjectRootParams {
+    /// Absolute path to the project directory. Tilde expansion (`~`) is supported.
+    pub(crate) path: String,
+}
+
 /// Parameters for the `build_rpg` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct BuildRpgParams {

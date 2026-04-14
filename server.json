@@ -6,12 +6,12 @@
     "url": "https://github.com/userFRM/rpg-encoder",
     "source": "github"
   },
-  "version": "0.8.1",
+  "version": "0.8.2",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "rpg-encoder",
-      "version": "0.8.1",
+      "version": "0.8.2",
       "transport": {
         "type": "stdio"
       }

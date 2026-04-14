@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.2] - 2026-04-14
+
+### Added
+
+- **`set_project_root` MCP tool** — switch the active project root at runtime
+  without restarting the session. Loads the new root's `.rpg/graph.json` if
+  present, resets lifting/hierarchy sessions, auto-sync markers, and pending
+  routing state. Tilde-expands and canonicalizes the supplied path. Fixes the
+  common case where a session is launched from `$HOME` but the user wants to
+  work on `~/some-project` — previously the server's project root was locked
+  to the launch directory.
+- MCP tool count: 27 → 28.
+
+### Changed
+
+- `RpgServer::project_root` is now an async accessor backed by
+  `Arc<RwLock<PathBuf>>` (previously a static `PathBuf` field). All tool
+  handlers acquire a snapshot at call time, so each invocation reads whatever
+  `set_project_root` most recently set.
+- `get_config_blocking` renamed to `load_config` and made async.
+- `staleness_detail` made async (needed to acquire the new project-root lock).
+
 ## [0.8.1] - 2026-04-14
 
 ### Fixed

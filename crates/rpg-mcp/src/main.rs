@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
         if let Some(ref mut graph) = *lock
             && let (Some(base), Ok(head)) = (
                 &graph.base_commit.clone(),
-                rpg_encoder::evolution::get_head_sha(&server.project_root),
+                rpg_encoder::evolution::get_head_sha(&server.project_root().await),
             )
         {
             if *base != head {
@@ -51,7 +51,7 @@ async fn main() -> Result<()> {
                 let qcache_result =
                     rpg_parser::paradigms::query_engine::QueryCache::compile_all(&paradigm_defs);
                 let active_defs = rpg_parser::paradigms::detect_paradigms_toml(
-                    &server.project_root,
+                    &server.project_root().await,
                     &detected_langs,
                     &paradigm_defs,
                 );
@@ -66,13 +66,13 @@ async fn main() -> Result<()> {
                 });
                 match rpg_encoder::evolution::run_update(
                     graph,
-                    &server.project_root,
+                    &server.project_root().await,
                     None,
                     pipeline.as_ref(),
                 ) {
                     Ok(s) => {
                         graph.metadata.paradigms = paradigm_names;
-                        let _ = storage::save(&server.project_root, graph);
+                        let _ = storage::save(&server.project_root().await, graph);
                         eprintln!(
                             "  Auto-update complete: +{} -{} ~{}",
                             s.entities_added, s.entities_removed, s.entities_modified
@@ -85,7 +85,7 @@ async fn main() -> Result<()> {
             }
             // Seed auto-sync HEAD so the first query doesn't redundantly re-sync
             *server.last_auto_sync_head.write().await =
-                rpg_encoder::evolution::get_head_sha(&server.project_root).ok();
+                rpg_encoder::evolution::get_head_sha(&server.project_root().await).ok();
         }
     }
 
