@@ -270,37 +270,48 @@ impl RpgServer {
                 }
 
                 let (lifted, total) = graph.lifting_coverage();
-                let needs_lifting = total - lifted;
-                let needs_relift = summary.modified_entity_ids.len();
-                let total_drift = needs_lifting + needs_relift;
+                let total_unlifted = total - lifted;
+                let added_now = summary.entities_added;
+                let stale_now = summary.modified_entity_ids.len();
+                let aggregate_drift = total_unlifted + stale_now;
 
                 let mut notice = format!(
                     "[auto-synced: +{} -{} ~{} entities",
                     summary.entities_added, summary.entities_removed, summary.entities_modified,
                 );
 
-                if total_drift > 0 {
-                    if needs_lifting > 0 && needs_relift > 0 {
-                        notice.push_str(&format!(
-                            "; {} new + {} stale features",
-                            needs_lifting, needs_relift,
-                        ));
-                    } else if needs_lifting > 0 {
-                        notice.push_str(&format!("; {} new entities unlifted", needs_lifting));
-                    } else {
-                        notice.push_str(&format!(
-                            "; {} entities have stale features (modified since last lift)",
-                            needs_relift,
-                        ));
+                if aggregate_drift > 0 {
+                    // Per-update delta — what THIS sync changed
+                    let mut parts: Vec<String> = Vec::new();
+                    if added_now > 0 {
+                        parts.push(format!("+{} added unlifted", added_now));
                     }
-                    // Active recommendation — don't let the agent treat this as informational.
-                    if total_drift >= crate::LARGE_SCOPE_ENTITIES {
+                    if stale_now > 0 {
+                        parts.push(format!("~{} stale features", stale_now));
+                    }
+                    if !parts.is_empty() {
+                        notice.push_str("; ");
+                        notice.push_str(&parts.join(", "));
+                    }
+                    // Pre-existing backlog (entities that were already unlifted before this update)
+                    let pre_existing = total_unlifted.saturating_sub(added_now);
+                    if pre_existing > 0 {
+                        if parts.is_empty() {
+                            notice.push_str(&format!("; {} unlifted total", pre_existing));
+                        } else {
+                            notice.push_str(&format!(" (+{} pre-existing)", pre_existing));
+                        }
+                    }
+                    // Active recommendation — graded by aggregate severity. The
+                    // batch-0 NOTE in get_entities_for_lifting is authoritative
+                    // for the dispatch decision; this is a heuristic gate.
+                    if aggregate_drift >= crate::LARGE_SCOPE_ENTITIES {
                         notice.push_str(
-                            " — semantic search is now incomplete; call lifting_status for re-lift dispatch",
+                            " — semantic search is incomplete; call lifting_status for re-lift dispatch guidance",
                         );
                     } else {
                         notice.push_str(
-                            " — semantic search is now incomplete; call lifting_status to refresh",
+                            " — semantic search is incomplete; call lifting_status to refresh",
                         );
                     }
                 }
@@ -633,7 +644,7 @@ impl RpgServer {
                  \nDISPATCH:\n  \
                  Use whatever sub-agent / cheaper-model mechanism your runtime provides. The MCP graph persists to disk after every submit, so the worker's writes survive. **After the worker returns, call `reload_rpg`** — some runtimes give sub-agents an isolated MCP session, in which case the caller's in-memory graph is stale until reloaded. (No-op if your runtime shares the MCP session.)\n\
                  \nFALLBACK (no sub-agent mechanism, no API key):\n  \
-                 Scope the lift to one subtree at a time — e.g. get_entities_for_lifting(scope=\"src/auth/**\") — and call finalize_lifting after each. Each scoped batch fits in foreground context.\n\
+                 Scope the lift to one subtree at a time — e.g. get_entities_for_lifting(scope=\"src/auth/**\") — and submit features per batch within that scope. Each scoped batch fits in foreground context. Call finalize_lifting ONCE at the very end after all scopes are complete; calling it mid-flow auto-routes pending entities against incomplete signals and locks the hierarchy in early.\n\
                  \nFALLBACK (no sub-agent mechanism, API key available):\n  \
                  Run `rpg-encoder lift --provider anthropic` (or `openai`) from the terminal — the CLI drives an external LLM directly with no agent involvement. After the CLI finishes, call `reload_rpg` in this session so the server picks up the updated graph from disk.\n",
             );

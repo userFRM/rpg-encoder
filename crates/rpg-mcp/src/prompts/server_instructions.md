@@ -162,7 +162,10 @@ shared yours.
 
 Fallbacks when no delegation mechanism is available:
 - **Scoped lifting**: narrow each call, e.g. `get_entities_for_lifting(scope="src/auth/**")`,
-  then `finalize_lifting`. Each scope fits in foreground context.
+  and submit features per batch. Each scope fits in foreground context. Call
+  `finalize_lifting` ONCE after all scopes are complete — calling it mid-flow
+  auto-routes pending entities against incomplete signals and locks the
+  hierarchy in early.
 - **CLI autonomous lift**: `rpg-encoder lift --provider anthropic|openai` uses an
   external API key directly — no agent subscription involvement. **After the CLI
   finishes, call `reload_rpg` in this session** so the server picks up the updated

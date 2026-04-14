@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.8.3] - 2026-04-14
 
+### Fixed (Codex round 4 review)
+
+- **Auto-sync notice mislabelled the unlifted count.** `total - lifted`
+  is the global backlog, not the per-update delta. Saying "N new entities
+  unlifted" against that number meant a one-line edit on a partially-lifted
+  repo could claim "50 new entities unlifted" when only 1 was actually new.
+  Now reports the per-update delta separately (`+N added unlifted, ~M stale`)
+  and notes any pre-existing backlog as `(+P pre-existing)`.
+- **`finalize_lifting` guidance was wrong for scoped fallback.** The
+  no-dispatch fallback said to call `finalize_lifting` after each scoped
+  subtree. But `finalize_lifting` auto-routes pending entities and locks
+  the hierarchy — calling it mid-flow against incomplete signals would
+  bake in bad routing decisions. Corrected to "call finalize_lifting ONCE
+  at the very end after all scopes complete" across server.rs and
+  server_instructions.md.
+- **Heuristic divergence between `LARGE_SCOPE_ENTITIES` and
+  `LARGE_SCOPE_BATCHES` is now documented explicitly.** Both constants
+  carry doc comments explaining that the batch-0 NOTE in
+  `get_entities_for_lifting` is the authoritative dispatch decision; the
+  dashboard `lifting_status` is a heuristic gate that defers to the NOTE
+  when they disagree.
+
 ### Added (drift maintenance — re-lift after code changes)
 
 - **Auto-sync notice now actively recommends re-lift** when entities have

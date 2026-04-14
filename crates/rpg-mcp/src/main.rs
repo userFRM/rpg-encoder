@@ -9,17 +9,24 @@ mod server;
 mod tools;
 mod types;
 
-/// Entity count above which direct foreground lifting is discouraged.
-/// Caller-side context cost grows linearly with entity count × batch token
-/// budget; past this threshold the caller should delegate to a sub-agent
-/// or cheaper model rather than loop locally.
+/// Entity count above which `lifting_status` and similar dashboards switch to
+/// recommending sub-agent delegation. **This is a heuristic gate, not the
+/// authoritative dispatch decision.** The authoritative signal is the
+/// batch-0 NOTE in `get_entities_for_lifting`, which sees the post-auto-lift
+/// queue and uses the actual token-aware batch count. With user-tuned
+/// `max_batch_tokens` or unusually small/large entities, the two can
+/// diverge — when they do, the batch-0 NOTE wins. Both messages defer to
+/// each other: dashboard says "check the NOTE", batch-0 NOTE is silent
+/// when delegation isn't warranted.
 pub(crate) const LARGE_SCOPE_ENTITIES: usize = 100;
 
-/// Batch count above which the batch-0 response includes a dispatch note.
-/// Derived from `LARGE_SCOPE_ENTITIES` assuming ~10 entities per token-aware
-/// batch at default config (batch_size=25, max_batch_tokens=8000). Kept as a
-/// separate constant because the auto-lifter shrinks the LLM-needed set
-/// before batching, so the ratio is conservative.
+/// Batch count above which `get_entities_for_lifting` emits the batch-0
+/// dispatch note. Derived from `LARGE_SCOPE_ENTITIES` assuming ~10 entities
+/// per token-aware batch at default config (batch_size=25,
+/// max_batch_tokens=8000). Kept as a separate constant because the
+/// auto-lifter shrinks the LLM-needed set before batching, so the ratio is
+/// conservative. Authoritative for the dispatch decision (see
+/// `LARGE_SCOPE_ENTITIES` for why).
 pub(crate) const LARGE_SCOPE_BATCHES: usize = 10;
 
 use anyhow::Result;
