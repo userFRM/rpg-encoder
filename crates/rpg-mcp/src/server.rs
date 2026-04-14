@@ -53,6 +53,10 @@ pub(crate) struct RpgServer {
     pub(crate) prompt_versions: PromptVersions,
     /// Last git HEAD SHA at which auto-sync ran. Prevents redundant updates.
     pub(crate) last_auto_sync_head: Arc<RwLock<Option<String>>>,
+    /// Hash of the last-synced workdir changeset (dirty files + their stat).
+    /// Combined with `last_auto_sync_head` to detect when a re-sync is needed
+    /// for uncommitted/staged/unstaged changes.
+    pub(crate) last_auto_sync_changeset: Arc<RwLock<Option<String>>>,
     /// Guard: true while auto_lift is running. Rejects concurrent lift calls.
     pub(crate) lift_in_progress: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -90,6 +94,7 @@ impl RpgServer {
             tool_router: Self::create_tool_router(),
             prompt_versions: PromptVersions::new(),
             last_auto_sync_head: Arc::new(RwLock::new(initial_head)),
+            last_auto_sync_changeset: Arc::new(RwLock::new(None)),
             lift_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
@@ -123,30 +128,70 @@ impl RpgServer {
 
     /// Auto-sync the graph if stale, returning a notice string.
     ///
-    /// Runs a structural-only update (no re-lifting) when git HEAD has moved
-    /// since the last sync. Uses `last_auto_sync_head` to avoid redundant work.
-    /// Falls back to a passive staleness notice on error.
+    /// Syncs on two triggers:
+    /// 1. **HEAD changed** — commits, merges, rebases.
+    /// 2. **Workdir changed** — staged or unstaged file edits since last sync.
+    ///
+    /// Uses `last_auto_sync_head` + `last_auto_sync_changeset` to avoid redundant
+    /// re-parses. The changeset hash includes file paths and `(mtime, size)` stat
+    /// so repeated saves of the same file trigger re-sync, but idle queries don't.
+    ///
+    /// Structural-only update (no re-lifting). Falls back to a passive staleness
+    /// notice on error.
     pub(crate) async fn auto_sync_if_stale(&self) -> String {
-        // Fast path: compare HEAD SHA to last known sync point
+        // Step 1: Get current HEAD (cheap, just opens .git/HEAD)
         let Ok(current_head) = rpg_encoder::evolution::get_head_sha(&self.project_root) else {
             return self.staleness_notice().await;
         };
 
+        // Step 2: Detect current workdir state (changes + stat hash) under read lock
+        let (source_changes, current_changeset) = {
+            let guard = self.graph.read().await;
+            let Some(graph) = guard.as_ref() else {
+                return String::new();
+            };
+            let Ok(changes) =
+                rpg_encoder::evolution::detect_workdir_changes(&self.project_root, graph)
+            else {
+                return String::new();
+            };
+            let changes =
+                rpg_encoder::evolution::filter_rpgignore_changes(&self.project_root, changes);
+            let languages = Self::resolve_languages(&graph.metadata);
+            let source_changes = if languages.is_empty() {
+                changes
+            } else {
+                rpg_encoder::evolution::filter_source_changes(changes, &languages)
+            };
+            let hash = Self::compute_changeset_hash(&source_changes, &self.project_root);
+            (source_changes, hash)
+        };
+
+        // Step 3: Check if (HEAD, changeset) matches last-synced state
         {
-            let last = self.last_auto_sync_head.read().await;
-            if last.as_deref() == Some(current_head.as_str()) {
-                // HEAD unchanged since last sync — check for unstaged changes only
-                return self.staleness_notice_unstaged().await;
+            let last_head = self.last_auto_sync_head.read().await;
+            let last_changeset = self.last_auto_sync_changeset.read().await;
+            if last_head.as_deref() == Some(current_head.as_str())
+                && last_changeset.as_deref() == Some(current_changeset.as_str())
+            {
+                return String::new(); // already synced this exact state
             }
         }
 
-        // HEAD moved — try structural auto-update
+        // Step 4: If nothing actually changed, just update markers (HEAD moved but no source diff)
+        if source_changes.is_empty() {
+            *self.last_auto_sync_head.write().await = Some(current_head);
+            *self.last_auto_sync_changeset.write().await = Some(current_changeset);
+            return String::new();
+        }
+
+        // Step 5: Real changes exist — acquire write lock and run update
         let mut guard = self.graph.write().await;
         let Some(graph) = guard.as_mut() else {
             return String::new();
         };
 
-        // Detect paradigms for framework-aware classification
+        // Paradigm setup for framework-aware classification
         let detected_langs = Self::resolve_languages(&graph.metadata);
         let paradigm_defs = rpg_parser::paradigms::defs::load_builtin_defs().unwrap_or_default();
         let qcache_result =
@@ -171,6 +216,7 @@ impl RpgServer {
                 graph.metadata.paradigms = paradigm_names;
                 let _ = storage::save(&self.project_root, graph);
                 *self.last_auto_sync_head.write().await = Some(current_head);
+                *self.last_auto_sync_changeset.write().await = Some(current_changeset);
 
                 if summary.entities_added == 0
                     && summary.entities_modified == 0
@@ -188,27 +234,69 @@ impl RpgServer {
                     summary.entities_added, summary.entities_removed, summary.entities_modified,
                 );
                 if needs_lifting > 0 || needs_relift > 0 {
-                    notice.push_str(&format!("; {} need lifting", needs_lifting + needs_relift,));
+                    notice.push_str(&format!("; {} need lifting", needs_lifting + needs_relift));
                 }
                 notice.push_str("]\n\n");
                 notice
             }
             Err(e) => {
                 eprintln!("rpg: auto-sync failed (non-fatal): {e}");
-                // Update HEAD anyway to avoid retrying a failing update every call
+                // Update markers anyway so we don't retry a failing update every call
                 *self.last_auto_sync_head.write().await = Some(current_head);
-                // MUST drop the write lock before calling staleness_notice (which reads)
+                *self.last_auto_sync_changeset.write().await = Some(current_changeset);
+                // Drop write lock before calling staleness_notice (which reads)
                 drop(guard);
                 self.staleness_notice().await
             }
         }
     }
 
-    /// Lightweight staleness check for unstaged/uncommitted changes only.
-    /// Used when HEAD hasn't moved (auto-sync already ran for this HEAD).
-    /// Delegates to `staleness_notice` which handles the full detection.
-    async fn staleness_notice_unstaged(&self) -> String {
-        self.staleness_notice().await
+    /// Compute a stable hash of the current workdir changeset.
+    ///
+    /// Includes the path, change type, and `(size, mtime)` stat for each
+    /// added/modified/renamed file. Deleted files hash their path only.
+    /// Same changeset + same stat = same hash = no re-sync. Second save of the
+    /// same file changes mtime → different hash → re-sync fires.
+    fn compute_changeset_hash(
+        changes: &[rpg_encoder::evolution::FileChange],
+        project_root: &std::path::Path,
+    ) -> String {
+        use rpg_encoder::evolution::FileChange;
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
+        for change in changes {
+            match change {
+                FileChange::Added(p) | FileChange::Modified(p) => {
+                    hasher.update(format!("{:?}", change).as_bytes());
+                    if let Ok(meta) = std::fs::metadata(project_root.join(p)) {
+                        hasher.update(meta.len().to_le_bytes());
+                        if let Ok(modified) = meta.modified()
+                            && let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH)
+                        {
+                            hasher.update(duration.as_nanos().to_le_bytes());
+                        }
+                    }
+                }
+                FileChange::Deleted(p) => {
+                    hasher.update(format!("deleted:{}", p.display()).as_bytes());
+                }
+                FileChange::Renamed { from, to } => {
+                    hasher
+                        .update(format!("renamed:{}->{}", from.display(), to.display()).as_bytes());
+                    if let Ok(meta) = std::fs::metadata(project_root.join(to)) {
+                        hasher.update(meta.len().to_le_bytes());
+                        if let Ok(modified) = meta.modified()
+                            && let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH)
+                        {
+                            hasher.update(duration.as_nanos().to_le_bytes());
+                        }
+                    }
+                }
+            }
+        }
+        let result = hasher.finalize();
+        format!("{:x}", result)[..16].to_string()
     }
 
     /// Resolve all indexed languages from graph metadata (multi-language support).
@@ -559,5 +647,55 @@ mod tests {
         let hash1 = PromptVersions::hash_prompt("content A");
         let hash2 = PromptVersions::hash_prompt("content B");
         assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_changeset_hash_empty_is_stable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let h1 = RpgServer::compute_changeset_hash(&[], tmp.path());
+        let h2 = RpgServer::compute_changeset_hash(&[], tmp.path());
+        assert_eq!(h1, h2, "empty changeset hash must be deterministic");
+    }
+
+    #[test]
+    fn test_changeset_hash_differs_by_path() {
+        use rpg_encoder::evolution::FileChange;
+        let tmp = tempfile::tempdir().unwrap();
+        let h_deleted_a =
+            RpgServer::compute_changeset_hash(&[FileChange::Deleted("a.rs".into())], tmp.path());
+        let h_deleted_b =
+            RpgServer::compute_changeset_hash(&[FileChange::Deleted("b.rs".into())], tmp.path());
+        assert_ne!(
+            h_deleted_a, h_deleted_b,
+            "different paths → different hashes"
+        );
+    }
+
+    #[test]
+    fn test_changeset_hash_reflects_mtime() {
+        use rpg_encoder::evolution::FileChange;
+        use std::io::Write;
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("x.rs");
+        std::fs::File::create(&file_path)
+            .unwrap()
+            .write_all(b"v1")
+            .unwrap();
+
+        let change = FileChange::Modified("x.rs".into());
+        let h1 = RpgServer::compute_changeset_hash(std::slice::from_ref(&change), tmp.path());
+
+        // Different content + guaranteed-later mtime by sleeping a moment
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::File::create(&file_path)
+            .unwrap()
+            .write_all(b"v2_different_length")
+            .unwrap();
+
+        let h2 = RpgServer::compute_changeset_hash(std::slice::from_ref(&change), tmp.path());
+        assert_ne!(
+            h1, h2,
+            "same path + different size/mtime must yield different hashes"
+        );
     }
 }
