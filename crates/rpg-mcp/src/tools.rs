@@ -2675,85 +2675,96 @@ impl RpgServer {
         // Handle sharded workflow
         if needs_sharding {
             // Lock order invariant (see RpgServer doc): graph before
-            // hierarchy_session. Peek the session first WITHOUT holding
-            // graph; if we need to initialize, take graph.read() FIRST
-            // and hold it through the session.write() install so that a
-            // concurrent build_rpg/update_rpg that clears the session
-            // can't slip in between us computing clusters and installing
-            // them (that would persist clusters derived from the
-            // pre-update graph).
-            let already_initialized = self.hierarchy_session.read().await.is_some();
+            // hierarchy_session. A concurrent build_rpg/update_rpg/
+            // reload_rpg/set_project_root can clear the session at any
+            // moment before we hold its write lock, so decide whether to
+            // initialize only while holding the write lock — never by
+            // re-trusting an earlier peek. We take graph.read() FIRST
+            // (ordering) so that if we need to initialize, we can compute
+            // clusters from a stable graph and install under the
+            // session.write() that's about to follow.
+            enum Action {
+                EmitBatch0(Vec<rpg_encoder::hierarchy::FileCluster>),
+                EmitBatchN {
+                    batch_idx: usize,
+                    cluster: rpg_encoder::hierarchy::FileCluster,
+                    functional_areas: Vec<String>,
+                    total_batches: usize,
+                },
+                AllDone {
+                    total_batches: usize,
+                },
+            }
 
-            if !already_initialized {
-                let graph_guard = self.graph.read().await;
-                let graph = graph_guard.as_ref().unwrap();
-                let new_clusters = rpg_encoder::hierarchy::cluster_files_for_hierarchy(graph, 70);
+            let graph_guard = self.graph.read().await;
+            let graph = graph_guard.as_ref().unwrap();
 
-                // Acquire hierarchy_session under graph to close the TOCTOU
-                // window. If another caller raced us and already installed
-                // a session, keep theirs and drop our speculative clusters.
-                // Snapshot the winning clusters BEFORE dropping the session
-                // lock so `build_batch_0_domain_discovery` doesn't have to
-                // re-read `self.hierarchy_session` — that second read was
-                // the session-clear race Codex called out.
+            let action = {
                 let mut session_guard = self.hierarchy_session.write().await;
-                let clusters_snapshot: Vec<rpg_encoder::hierarchy::FileCluster> =
-                    if session_guard.is_none() {
-                        let snapshot = new_clusters.clone();
-                        *session_guard = Some(HierarchySession {
-                            clusters: new_clusters,
-                            functional_areas: None,
-                            assignments: std::collections::HashMap::new(),
-                            batches_completed: 0,
-                        });
-                        snapshot
+
+                // Initialize if absent — fresh or cleared-out-from-under-us.
+                if session_guard.is_none() {
+                    let new_clusters =
+                        rpg_encoder::hierarchy::cluster_files_for_hierarchy(graph, 70);
+                    let snapshot = new_clusters.clone();
+                    *session_guard = Some(HierarchySession {
+                        clusters: new_clusters,
+                        functional_areas: None,
+                        assignments: std::collections::HashMap::new(),
+                        batches_completed: 0,
+                    });
+                    Action::EmitBatch0(snapshot)
+                } else {
+                    let session = session_guard.as_mut().unwrap();
+                    let total_batches = session.clusters.len() + 1;
+
+                    if session.batches_completed == 0 {
+                        Action::EmitBatch0(session.clusters.clone())
+                    } else if session.batches_completed > session.clusters.len() {
+                        *session_guard = None;
+                        Action::AllDone { total_batches }
                     } else {
-                        session_guard.as_ref().unwrap().clusters.clone()
-                    };
-                drop(session_guard);
-                drop(graph_guard);
+                        let batch_idx = session.batches_completed - 1;
+                        Action::EmitBatchN {
+                            batch_idx,
+                            cluster: session.clusters[batch_idx].clone(),
+                            functional_areas: session.functional_areas.clone().unwrap_or_default(),
+                            total_batches,
+                        }
+                    }
+                }
+            };
 
-                return self
-                    .build_batch_0_domain_discovery(&clusters_snapshot)
-                    .await;
+            // Release graph lock before the potentially-expensive batch
+            // rendering — we've snapshotted everything we need.
+            drop(graph_guard);
+
+            match action {
+                Action::EmitBatch0(clusters) => {
+                    return self.build_batch_0_domain_discovery(&clusters).await;
+                }
+                Action::AllDone { total_batches } => {
+                    return Ok(format!(
+                        "All {} batches complete. Hierarchy has been applied.",
+                        total_batches
+                    ));
+                }
+                Action::EmitBatchN {
+                    batch_idx,
+                    cluster,
+                    functional_areas,
+                    total_batches,
+                } => {
+                    return self
+                        .build_cluster_batch(
+                            batch_idx + 1,
+                            total_batches,
+                            &cluster,
+                            &functional_areas,
+                        )
+                        .await;
+                }
             }
-
-            let mut session_guard = self.hierarchy_session.write().await;
-            // Session exists - continue with next batch
-            let session = session_guard.as_mut().unwrap();
-            let total_batches = session.clusters.len() + 1; // +1 for domain discovery
-
-            if session.batches_completed == 0 {
-                // Still on batch 0 — snapshot clusters under the session
-                // lock and hand them off so build_batch_0 doesn't re-read
-                // self.hierarchy_session (same race as the init path).
-                let clusters_snapshot: Vec<rpg_encoder::hierarchy::FileCluster> =
-                    session.clusters.clone();
-                drop(session_guard);
-                return self
-                    .build_batch_0_domain_discovery(&clusters_snapshot)
-                    .await;
-            }
-
-            if session.batches_completed > session.clusters.len() {
-                // All batches complete
-                *session_guard = None;
-                return Ok(format!(
-                    "All {} batches complete. Hierarchy has been applied.",
-                    total_batches
-                ));
-            }
-
-            // Return next file assignment batch
-            let batch_idx = session.batches_completed - 1; // -1 because batch 0 is domain discovery
-            let cluster = session.clusters[batch_idx].clone();
-            let functional_areas = session.functional_areas.clone().unwrap_or_default();
-
-            drop(session_guard);
-
-            return self
-                .build_cluster_batch(batch_idx + 1, total_batches, &cluster, &functional_areas)
-                .await;
         }
 
         // Non-sharded workflow (≤100 files) - original single-shot behavior
