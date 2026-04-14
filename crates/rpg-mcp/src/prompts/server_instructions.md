@@ -1,6 +1,65 @@
 RPG-Encoder: Repository Planning Graph — semantic understanding of any codebase.
 No API keys or local LLMs needed. YOU are the LLM — you analyze the code directly.
 
+## USE RPG FIRST — BEFORE grep / cat / find / file-reads
+
+Any user question about code structure, behavior, relationships, impact,
+dependencies, or cross-file patterns — reach for RPG tools BEFORE falling back
+to shell commands or file reads. RPG is indexed, semantically organized, and
+gives one-call answers to questions that would otherwise require dozens of
+chained greps.
+
+| If you'd otherwise reach for... | Use this instead |
+|---|---|
+| `grep -r` / `rg` (by intent) | `search_node(query="...")` — finds code by what it DOES |
+| `grep -r` / `rg` (by name/path) | `search_node(query="...", mode="snippets")` |
+| `cat file` / reading a function | `fetch_node(entity_id="file:name")` |
+| chained greps for "what calls X" | `explore_rpg(entity_id="...", direction="upstream")` |
+| recursive grep for "what depends on X" | `impact_radius(entity_id="...")` — with edge paths |
+| `wc -l` / `find` / `tree` | `rpg_info` — counts, hierarchy, inter-area connectivity |
+| reading the whole repo | `semantic_snapshot` — whole-repo view in one call |
+| multi-step search + read + trace | `context_pack(query="...")` — 1 call instead of 3-5 |
+| "how do I refactor X safely" | `plan_change(goal="...")` — ordered entities + blast radius |
+| "find circular dependencies" | `detect_cycles` |
+| "find god objects / unstable code" | `analyze_health` |
+| "shortest path between A and B" | `find_paths(source, target)` |
+| "minimal subgraph connecting these" | `slice_between(entity_ids=[...])` |
+
+**Fall back to grep / cat / file-reads only when the query is about LITERAL TEXT**
+(string search, comments, TODO markers, log messages, license headers) — not
+about structure or semantics. This holds even if your training predisposes you
+toward shell tools; the RPG is cheaper, more accurate, and more complete for
+every structural question.
+
+If a graph does not exist yet (RPG tools error with messages like "No RPG
+found" or "graph: not built"), run `build_rpg` first. If entities are
+unlifted and the scope is large, see the LIFTING FLOW below for delegation
+guidance.
+
+## DRIFT MAINTENANCE — re-lift after code changes
+
+Lifting is stateful. The auto-sync notice at the top of every navigation
+response tells you when entities have drifted:
+
+- `[auto-synced: ... ; N new entities unlifted ...]` — code was added,
+  semantic features are missing for it. `search_node` and `semantic_snapshot`
+  will not surface those entities.
+- `[auto-synced: ... ; N entities have stale features ...]` — code was
+  modified after lift, the cached features no longer reflect the current
+  source. Search results may mislead.
+- `[auto-synced: ... ; N new + M stale features ...]` — both.
+
+**Treat any drift notice as a deferred re-lift task.** Lifting is part of
+"definition of done" for any change that adds or modifies code, the same
+way running tests is. If you write code, you re-lift before reporting
+complete. If a tool response shows drift you didn't introduce (e.g.,
+external commits), call `lifting_status` for the recommended re-lift
+pattern.
+
+The fastest discipline: at the END of any task that wrote code, dispatch
+a sub-agent to re-lift in the background — it costs ~zero of your context
+and keeps semantic search accurate for the next user request.
+
 ## LIFTING FLOW (step by step)
 
 1. `build_rpg` — index the codebase (if no graph exists)
@@ -82,22 +141,44 @@ Process all batches in the current conversation:
 - Call `finalize_lifting` then `get_files_for_synthesis` + `submit_file_syntheses`.
 - Call `build_semantic_hierarchy` + `submit_hierarchy`.
 
-### Large scope (100+ entities): Dispatch parallel subagents
-A single conversation CANNOT lift a large repo — context will overflow.
-Instead, split the work across fresh subagent conversations:
+### Large scope (100+ entities): Delegate, do not lift directly
 
-1. Call `lifting_status` to see per-area coverage and unlifted files.
-2. For each area, dispatch a **foreground** subagent (Task tool, subagent_type="general-purpose"):
-   - Each subagent scope: a file glob like `"crates/rpg-core/**"` or `"src/auth/**"`
-   - Each subagent runs: get_entities_for_lifting -> analyze -> submit_lift_results (loop)
-   - Each subagent gets a FRESH context window — no accumulation across areas
-3. After all subagents complete, call `lifting_status` to verify coverage.
-4. Call `finalize_lifting` then `get_files_for_synthesis` + `submit_file_syntheses`.
-5. Call `build_semantic_hierarchy` + `submit_hierarchy`.
+Each batch returns a large chunk of source code that stays in your context. At the
+default config ~10 batches is already ~80K tokens burned on grunt work. Feature
+extraction is pattern-matching — a cheaper or delegated model handles it fine.
 
-**Why subagents?** Each `get_entities_for_lifting` batch returns source code that stays in the
-conversation. After ~300 entities, the context fills up and the chat breaks. Subagents solve
-this by giving each chunk its own fresh context window.
+Delegated worker loop (run in a fresh context):
+
+```
+get_entities_for_lifting(scope="*") -> analyze -> submit_lift_results  (repeat)
+finalize_lifting
+```
+
+Use whatever sub-agent or cheaper-model mechanism your runtime exposes. The graph
+persists to disk after every submit, so the worker's writes survive. **After the
+worker returns, call `reload_rpg`** to refresh the caller's in-memory graph —
+required if the runtime gave the worker an isolated MCP session, no-op if it
+shared yours.
+
+Fallbacks when no delegation mechanism is available:
+- **Scoped lifting**: narrow each call, e.g. `get_entities_for_lifting(scope="src/auth/**")`,
+  and submit features per batch. Each scope fits in foreground context. Call
+  `finalize_lifting` ONCE after all scopes are complete — calling it mid-flow
+  auto-routes pending entities against incomplete signals and locks the
+  hierarchy in early.
+- **CLI autonomous lift** (unlifted entities only): `rpg-encoder lift --provider anthropic|openai`
+  uses an external API key directly — no agent subscription involvement. **After the CLI
+  finishes, call `reload_rpg` in this session** so the server picks up the updated
+  `.rpg/graph.json` — otherwise subsequent queries will still see the pre-lift state.
+  Note: the CLI lifts entities with no features; it does not re-lift stale entities
+  (features present but outdated after source edits). For stale-entity re-lifting use
+  the MCP loop above (sub-agent dispatch or foreground scoped lifting).
+
+After delegation returns, call `get_files_for_synthesis` + `submit_file_syntheses`,
+then `build_semantic_hierarchy` + `submit_hierarchy`.
+
+Call `lifting_status` whenever you need the NEXT STEP with a concrete recommendation
+for the current state.
 
 ## ERROR RECOVERY
 
@@ -130,7 +211,7 @@ When using the RPG to understand or navigate a codebase (after lifting is comple
 - Use `fetch_node(fields="features,deps")` to skip source code (~80% smaller output)
 - Use `explore_rpg(format="compact")` for ID-preserving machine-readable rows (enables direct follow-up calls)
 - Use `explore_rpg(max_results=N)` to cap large dependency trees
-- Use `context_pack` instead of search→fetch→explore chains (1 call vs 3-5, ~44% fewer tokens)
+- Use `context_pack` instead of search→fetch→explore chains (1 call vs 3-5)
 - Use `impact_radius` for richer reachability analysis with edge paths (1 call vs multi-step explore)
 
 ## HEALTH ANALYSIS

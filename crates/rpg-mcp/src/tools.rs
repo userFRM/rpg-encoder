@@ -3,6 +3,8 @@
 //! The `#[tool_router]` proc macro requires every `#[tool]` method to live in one
 //! `impl` block, so this file cannot be split further without upstream changes.
 
+use std::collections::HashSet;
+
 use rmcp::{handler::server::wrapper::Parameters, tool, tool_router};
 use rpg_core::graph::{RPGraph, normalize_path};
 use rpg_core::storage;
@@ -13,7 +15,7 @@ use crate::types::*;
 #[tool_router]
 impl RpgServer {
     #[tool(
-        description = "Search for code entities by intent or keywords. Returns entities with file paths, line numbers, and relevance scores. Use mode='features' for semantic intent search (use behavioral/functional phrases as query), 'snippets' for name/path matching (use file paths, qualified entities, or keywords as query), 'auto' (default) tries both.",
+        description = "PREFER THIS OVER grep/rg FOR ANY QUESTION ABOUT CODE BEHAVIOR OR NAMES. Search for code entities by intent or keywords. Returns entities with file paths, line numbers, and relevance scores. Use mode='features' for semantic intent search (e.g., 'validate user input') — finds code by what it DOES even when names don't match. Use mode='snippets' for name/path matching (e.g., 'FilterGroupManager' or 'src/auth/'). Use mode='auto' (default) to try both. This replaces grep/rg for every structural query.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn search_node(
@@ -156,7 +158,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Fetch detailed metadata and source code for a known entity. Returns the entity's semantic features, dependencies (what it calls, what calls it), hierarchy position, and full source code.",
+        description = "PREFER THIS OVER cat OR WHOLE-FILE READS FOR A SINGLE ENTITY. Fetch detailed metadata and source code for a known entity by ID. Returns the entity's semantic features (what it does), dependencies (what it calls, what calls it), hierarchy position, and full source code. Use this instead of reading the whole file when you only need one function/class/method.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn fetch_node(
@@ -194,7 +196,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Explore the dependency graph starting from an entity. Traverses import, invocation, inheritance, composition, render, state-read/state-write, and dispatch edges. Use direction='downstream' to see what the entity calls, 'upstream' to see what calls it, 'both' for full picture.",
+        description = "PREFER THIS OVER CHAINED GREPS FOR DEPENDENCY QUESTIONS. Explore the dependency graph starting from an entity. Traverses import, invocation, inheritance, composition, render, state-read/state-write, and dispatch edges. Use direction='downstream' to see what the entity calls, 'upstream' to see what calls it, 'both' for full picture. Replaces the manual \"grep for X, then grep each result, then grep those\" loop with one graph walk.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn explore_rpg(
@@ -279,7 +281,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Get RPG statistics: entity count, file count, functional areas, dependency edges, containment edges, and hierarchy overview. Use this first to understand the codebase structure before searching.",
+        description = "PREFER THIS OVER wc/find/tree FOR CODEBASE OVERVIEW. RPG statistics: entity count, file count, functional areas, dependency edges, containment edges, inter-area connectivity, hierarchy overview. Call this first on any new codebase to orient yourself before searching.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn rpg_info(&self) -> Result<String, String> {
@@ -324,7 +326,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Generate a compact, token-efficient snapshot of the entire repository's semantic understanding. Designed for context window injection at session start. Includes: full hierarchy with aggregate features, all entities grouped by functional area with semantic features, condensed dependency skeleton, and coverage stats. Target: ~25-30K tokens for a 1000-entity codebase. Call this FIRST in any session to gain whole-repo awareness before using other tools.",
+        description = "PREFER THIS OVER READING MANY FILES FOR WHOLE-REPO CONTEXT. Compact, token-efficient snapshot of the entire repository's semantic understanding: full hierarchy with aggregate features, all entities grouped by functional area with semantic features, condensed dependency skeleton, and coverage stats. Target: ~25-30K tokens for a 1000-entity codebase. Call this at session start to gain whole-repo awareness in a single tool call — then use search_node/fetch_node for drill-down.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn semantic_snapshot(
@@ -405,7 +407,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Switch the active project root for this session. Use this when you started the session from one directory but want RPG to operate on a different project — for example, launched Claude Code from your home directory but want to work on ~/myproject. The server loads the graph from the new directory's .rpg/graph.json if present, resets all session state (lifting sessions, auto-sync markers, pending routing), and points every subsequent tool call at the new root. Path is tilde-expanded and canonicalized.",
+        description = "Switch the active project root for this session. Use this when the server was started from one directory but you want RPG to operate on a different project — e.g. the MCP server launched in your home directory but you want to work on ~/myproject. The server loads the graph from the new directory's .rpg/graph.json if present, resets all session state (lifting sessions, auto-sync markers, pending routing), and points every subsequent tool call at the new root. Path is tilde-expanded and canonicalized.",
         annotations(
             destructive_hint = false,
             idempotent_hint = true,
@@ -443,6 +445,28 @@ impl RpgServer {
         // Swap the root
         *self.project_root_cell.write().await = canonical.clone();
 
+        // Load the NEW project's config. Unlike `reload_rpg` (same-project
+        // reload, where keeping the previous in-memory config on parse
+        // error is the right call because the old config was project-
+        // valid), a project switch must *not* inherit the old project's
+        // config — that would silently cross-contaminate encoding/batch
+        // settings across unrelated codebases. So on parse failure we
+        // fall back to `RpgConfig::default()` and emit a warning, and on
+        // "file absent" we likewise use defaults.
+        {
+            let new_config = match rpg_core::config::RpgConfig::load(&canonical) {
+                Ok(cfg) => cfg,
+                Err(e) => {
+                    eprintln!(
+                        "rpg: failed to parse .rpg/config.toml in new project ({}); falling back to defaults for this project",
+                        e
+                    );
+                    rpg_core::config::RpgConfig::default()
+                }
+            };
+            *self.config.write().await = new_config;
+        }
+
         // Reset all session + sync state — everything is project-scoped
         *self.lifting_session.write().await = None;
         *self.hierarchy_session.write().await = None;
@@ -452,6 +476,7 @@ impl RpgServer {
         *self.last_auto_sync_head.write().await = None;
         *self.last_auto_sync_changeset.write().await = None;
         *self.last_auto_sync_workdir_paths.write().await = std::collections::HashSet::new();
+        *self.stale_entity_ids.write().await = std::collections::HashSet::new();
         #[cfg(feature = "embeddings")]
         {
             *self.embedding_index.write().await = None;
@@ -691,6 +716,14 @@ impl RpgServer {
         storage::save(project_root, &graph).map_err(|e| format!("Failed to save RPG: {}", e))?;
         let _ = storage::ensure_gitignore(project_root);
 
+        // Capture lifting coverage BEFORE the graph moves into `self.graph`.
+        // `lifting_coverage()` excludes `Module` entities (they get features
+        // via file-level synthesis, not direct lifting), which matches the
+        // semantics of `get_entities_for_lifting`. `meta.total_entities`
+        // includes modules, so it would inflate the "unlifted" count and
+        // trip the delegation threshold too early.
+        let (lifted_non_module, total_non_module) = graph.lifting_coverage();
+
         // Update in-memory state
         let meta = graph.metadata.clone();
         *self.graph.write().await = Some(graph);
@@ -720,6 +753,19 @@ impl RpgServer {
         self.pending_routing.write().await.clear();
         clear_pending_routing(&self.project_root().await);
 
+        // Prune the drift-tracking set against the new graph. build_rpg
+        // preserves features for entities whose IDs survive the rebuild,
+        // so a stale entity that still exists is correctly still stale.
+        // But IDs removed in the rebuild should drop out of the set so it
+        // doesn't accumulate dead references over many rebuilds.
+        {
+            let graph_guard = self.graph.read().await;
+            if let Some(ref g) = *graph_guard {
+                let mut stale = self.stale_entity_ids.write().await;
+                stale.retain(|id| g.entities.contains_key(id));
+            }
+        }
+
         let lang_display = if languages.len() == 1 {
             languages[0].name().to_string()
         } else {
@@ -734,6 +780,11 @@ impl RpgServer {
         } else {
             "structural"
         };
+        // `lifted: X/Y` uses non-module counts (matches `lifting_status` and
+        // `get_entities_for_lifting`) so the numbers agents see here line
+        // up with the numbers they see elsewhere. The `entities: N` line
+        // above is the raw total including modules — those get features
+        // via file-level synthesis, not direct lifting.
         let mut result = format!(
             "RPG built successfully.\n\
              languages: {}\n\
@@ -742,7 +793,7 @@ impl RpgServer {
              functional_areas: {}\n\
              dependency_edges: {}\n\
              containment_edges: {}\n\
-             lifted: {}/{}\n\
+             liftable_entities: {}/{} (modules are aggregated from files, not lifted directly)\n\
              hierarchy: {}",
             lang_display,
             meta.total_entities,
@@ -750,8 +801,8 @@ impl RpgServer {
             meta.functional_areas,
             meta.dependency_edges,
             meta.containment_edges,
-            meta.lifted_entities,
-            meta.total_entities,
+            lifted_non_module,
+            total_non_module,
             hierarchy_label,
         );
 
@@ -778,15 +829,35 @@ impl RpgServer {
                     stats.orphaned,
                     stats.new_entities,
                 ));
-            } else {
-                result.push_str(
-                    "\nTip: use get_entities_for_lifting + submit_lift_results to add semantic features.",
-                );
             }
-        } else {
+        }
+
+        // NEXT STEP — action-oriented, scale-aware. A build_rpg response is
+        // usually the first RPG tool call in a session, so the agent reads
+        // this before asking the user what to do next. A weak "tip" gets
+        // ignored; a directive with sizing guidance gets followed. Semantic
+        // tools (search_node, context_pack, plan_change) are lossy on an
+        // unlifted graph — users notice this as "search doesn't find the
+        // thing I know is there" — so the default is "lift now".
+        let unlifted = total_non_module.saturating_sub(lifted_non_module);
+        if unlifted == 0 {
             result.push_str(
-                "\nTip: use get_entities_for_lifting + submit_lift_results to add semantic features.",
+                "\n\nNEXT STEP: Graph is fully lifted. Semantic tools (search_node, context_pack, plan_change, explore_rpg) are ready — prefer them over grep/cat/find for any structural question.",
             );
+        } else if unlifted >= crate::LARGE_SCOPE_ENTITIES {
+            let batch_tokens = self.config.read().await.encoding.max_batch_tokens;
+            result.push_str(&format!(
+                "\n\nNEXT STEP: {} entities unlifted (of {}). Dispatch a sub-agent now to run the lift loop — don't wait for the user to ask. Each batch is ~{}K tokens of source, so running the loop here would exhaust caller context before any real work begins.\n\
+                 \nLOOP (sub-agent runs this in its own context):\n  \
+                 get_entities_for_lifting(scope=\"*\") -> analyze batch -> submit_lift_results -> repeat until DONE -> finalize_lifting\n\
+                 \nAfter the worker returns, call reload_rpg — some runtimes give sub-agents an isolated MCP session, in which case the caller's in-memory graph is stale until reloaded. Call lifting_status for per-state recommendations at any time.",
+                unlifted, total_non_module, batch_tokens.div_ceil(1000),
+            ));
+        } else {
+            result.push_str(&format!(
+                "\n\nNEXT STEP: {} entities unlifted (of {}). Lift now — don't wait for the user to ask; semantic search/fetch won't find unlifted entities by intent. Call get_entities_for_lifting(scope=\"*\"), analyze the batch, submit via submit_lift_results, repeat until DONE, then finalize_lifting.",
+                unlifted, total_non_module,
+            ));
         }
         Ok(result)
     }
@@ -887,8 +958,27 @@ impl RpgServer {
             let project_root = self.project_root().await.clone();
             let scope_owned = scope.to_string();
 
-            // Run the blocking pipeline on the current thread (tells tokio we're blocking).
-            // This is safe because MCP stdio is serial — no concurrent requests.
+            // Compute the in-scope entity IDs up front so we can drain
+            // them from `stale_entity_ids` after the pipeline runs. For a
+            // non-`*` scope the pipeline freshens features for every
+            // in-scope entity (the `*` scope auto-filters to feature-empty
+            // entities, but explicit scopes don't), so any stale entity
+            // in scope is no longer stale once the pipeline returns. We
+            // drain *unconditionally* by ID rather than diffing features
+            // before/after, because a deterministic re-lift can produce
+            // identical features for a cosmetic source change — the
+            // entity is still freshly lifted, just to the same value.
+            let in_scope_ids: HashSet<String> = {
+                let lift_scope = rpg_encoder::lift::resolve_scope(graph, scope);
+                lift_scope.entity_ids.into_iter().collect()
+            };
+
+            // Run the blocking pipeline on the current thread (tells tokio
+            // we're blocking). Safe because (1) the `lift_in_progress`
+            // atomic above rejects concurrent `auto_lift` calls, and
+            // (2) the graph write lock we hold below serializes against
+            // every other tool that touches the graph for the pipeline's
+            // duration.
             let report = tokio::task::block_in_place(|| {
                 let config = rpg_lift::LiftConfig {
                     provider: provider.as_ref(),
@@ -905,6 +995,14 @@ impl RpgServer {
             .map_err(|e| format!("Lift failed: {}", e))?;
 
             drop(guard);
+
+            // Drain stale tracking for every in-scope ID. After the
+            // pipeline, those entities have authoritative features (LLM
+            // or auto-lift), regardless of whether the features changed.
+            if !in_scope_ids.is_empty() {
+                let mut stale = self.stale_entity_ids.write().await;
+                stale.retain(|id| !in_scope_ids.contains(id));
+            }
 
             // Clear sessions — entity list changed
             *self.lifting_session.write().await = None;
@@ -1005,12 +1103,49 @@ impl RpgServer {
             };
 
             if needs_rebuild {
+                // Snapshot stale entity IDs *before* taking graph/session locks so
+                // we don't deadlock on nested writes. Stale entities are ones
+                // whose source changed after they were lifted — their features
+                // still exist but are outdated, so they should be treated as
+                // "needs LLM work" alongside unlifted entities.
+                let stale_snapshot: HashSet<String> = {
+                    let stale = self.stale_entity_ids.read().await;
+                    stale.iter().cloned().collect()
+                };
+
                 // Lock order: graph first, then session (consistent with lifting_status)
                 let mut guard = self.graph.write().await;
                 let mut session = self.lifting_session.write().await;
                 let graph = guard.as_mut().ok_or("No RPG loaded")?;
 
-                let scope = rpg_encoder::lift::resolve_scope(graph, &params.scope);
+                let mut scope = rpg_encoder::lift::resolve_scope(graph, &params.scope);
+
+                // For the "*"/"all" scope, `resolve_scope` filters to entities
+                // with *no* features — which correctly captures unlifted
+                // entities but excludes stale ones (they still have their old
+                // features). Augment the scope with any tracked stale
+                // entities so a single get_entities_for_lifting(scope="*")
+                // call covers both "never lifted" and "lifted-but-outdated".
+                // For other scope kinds (glob, hierarchy path, id list),
+                // `resolve_scope` doesn't filter by lifted state, so any
+                // stale entity matching the scope is already present.
+                let params_scope_trimmed = params.scope.trim();
+                if params_scope_trimmed == "*" || params_scope_trimmed.eq_ignore_ascii_case("all") {
+                    let already: HashSet<&String> = scope.entity_ids.iter().collect();
+                    let to_add: Vec<String> = stale_snapshot
+                        .iter()
+                        .filter(|id| !already.contains(id))
+                        .filter(|id| {
+                            graph
+                                .entities
+                                .get(*id)
+                                .is_some_and(|e| e.kind != rpg_core::graph::EntityKind::Module)
+                        })
+                        .cloned()
+                        .collect();
+                    scope.entity_ids.extend(to_add);
+                }
+
                 if scope.entity_ids.is_empty() {
                     *session = None;
                     return Ok(format!(
@@ -1041,33 +1176,51 @@ impl RpgServer {
                 let mut auto_lifted = 0usize;
                 let mut needs_llm = Vec::new();
                 let mut review_candidates: Vec<(String, Vec<String>)> = Vec::new();
+                // Track which stale entities got re-lifted (either via auto-lift
+                // above or routed into needs_llm below) so we can drain them
+                // from `stale_entity_ids` once they're written. Auto-lift
+                // persists its features directly inside this function, so it
+                // must drain the set itself; needs_llm entities are drained
+                // in `submit_lift_results` after the caller submits features.
+                let mut auto_relifted_stale: Vec<String> = Vec::new();
                 for raw in all_raw_entities {
-                    // Skip entities that already have curated features
-                    let already_lifted = graph
-                        .entities
-                        .get(&raw.id())
-                        .is_some_and(|e| !e.semantic_features.is_empty());
+                    let raw_id = raw.id();
+                    // Stale entities get re-lifted regardless of existing
+                    // features — their features are known-outdated because
+                    // the source was modified after the previous lift.
+                    let is_stale = stale_snapshot.contains(&raw_id);
+                    // Otherwise, skip entities that already have curated features.
+                    let already_lifted = !is_stale
+                        && graph
+                            .entities
+                            .get(&raw_id)
+                            .is_some_and(|e| !e.semantic_features.is_empty());
                     if already_lifted {
                         continue;
                     }
                     match engine.try_lift_with_confidence(&raw) {
                         Some((features, rpg_encoder::lift::LiftConfidence::Accept)) => {
                             // High confidence — apply features directly
-                            if let Some(entity) = graph.entities.get_mut(&raw.id()) {
+                            if let Some(entity) = graph.entities.get_mut(&raw_id) {
                                 entity.semantic_features = features;
                                 entity.feature_source = Some("auto".to_string());
                                 auto_lifted += 1;
+                                if is_stale {
+                                    auto_relifted_stale.push(raw_id.clone());
+                                }
                             }
                         }
                         Some((features, rpg_encoder::lift::LiftConfidence::Review)) => {
                             // Medium confidence — apply features but flag for review
-                            let eid = raw.id();
-                            if let Some(entity) = graph.entities.get_mut(&eid) {
+                            if let Some(entity) = graph.entities.get_mut(&raw_id) {
                                 entity.semantic_features = features.clone();
                                 entity.feature_source = Some("auto".to_string());
                                 auto_lifted += 1;
+                                if is_stale {
+                                    auto_relifted_stale.push(raw_id.clone());
+                                }
                             }
-                            review_candidates.push((eid, features));
+                            review_candidates.push((raw_id, features));
                         }
                         Some((_, rpg_encoder::lift::LiftConfidence::Reject)) | None => {
                             needs_llm.push(raw);
@@ -1080,6 +1233,17 @@ impl RpgServer {
                     graph.refresh_metadata();
                     if let Err(e) = rpg_core::storage::save(&self.project_root().await, graph) {
                         eprintln!("Warning: failed to persist auto-lifted features: {e}");
+                    }
+                }
+
+                // Drain stale tracking for entities auto-lifter just wrote
+                // fresh features for. Without this, lifting_status would keep
+                // counting them as stale forever because the auto-lift path
+                // skips submit_lift_results entirely.
+                if !auto_relifted_stale.is_empty() {
+                    let mut stale = self.stale_entity_ids.write().await;
+                    for id in &auto_relifted_stale {
+                        stale.remove(id);
                     }
                 }
 
@@ -1156,6 +1320,19 @@ impl RpgServer {
 
         // Only include repo context and full instructions on batch 0 to save context space
         if batch_index == 0 {
+            // Size-aware dispatch hint — if the queue is large, point the
+            // caller at `lifting_status` where the full dispatch guidance
+            // lives (kept there to avoid duplicating detail in the per-batch
+            // response, which ships with every batch's source payload).
+            if total_batches >= crate::LARGE_SCOPE_BATCHES {
+                let batch_tokens = self.config.read().await.encoding.max_batch_tokens;
+                let approx_total_k = (total_batches * batch_tokens).div_ceil(1000);
+                output.push_str(&format!(
+                    "\nNOTE: {} batches queued (~{}K tokens of source total). If your runtime supports sub-agent dispatch or a cheaper model, stop here — do not request further batches in this context — and invoke `lifting_status` for the delegation pattern. Continue the sequential loop only if no dispatch is available.\n\n",
+                    total_batches, approx_total_k,
+                ));
+            }
+
             if auto_lifted_count > 0 {
                 output.push_str(&format!(
                     "AUTO-LIFTED: {} trivial entities (getters/setters/constructors). Override by re-submitting features.\n\n",
@@ -1416,6 +1593,15 @@ impl RpgServer {
 
         graph.refresh_metadata();
 
+        // Re-lifted entities are no longer stale — drain them from the set
+        // tracked by auto-sync so lifting_status reports accurate drift.
+        if !resolved_features.is_empty() {
+            let mut stale = self.stale_entity_ids.write().await;
+            for id in resolved_features.keys() {
+                stale.remove(id);
+            }
+        }
+
         storage::save(&self.project_root().await, graph)
             .map_err(|e| format!("Failed to save RPG: {}", e))?;
 
@@ -1525,11 +1711,39 @@ impl RpgServer {
             }
         }
 
-        // NEXT action
-        if lifted < total {
-            result.push_str("\nNEXT: continue with get_entities_for_lifting, then call finalize_lifting when done.");
-        } else {
+        // NEXT action — scale-aware so the caller doesn't burn its context
+        // grinding through batches when delegation would cost zero of its
+        // tokens. Mirrors the threshold used in lifting_status.
+        //
+        // Work is "unlifted + stale" — stale entities still show as lifted
+        // in coverage but need re-lifting. Emitting DONE on `lifted == total`
+        // alone would tell a stale-only re-lift loop to stop after batch 1
+        // while later batches are still queued.
+        let stale_remaining = {
+            let stale = self.stale_entity_ids.read().await;
+            stale
+                .iter()
+                .filter(|id| graph.entities.contains_key(*id))
+                .count()
+        };
+        let unlifted = total.saturating_sub(lifted);
+        let work_remaining = unlifted + stale_remaining;
+        if work_remaining == 0 {
             result.push_str("\nDONE: all entities lifted. Call finalize_lifting to build the semantic hierarchy.");
+        } else if work_remaining >= crate::LARGE_SCOPE_ENTITIES {
+            let breakdown = if unlifted > 0 && stale_remaining > 0 {
+                format!("{} unlifted + {} stale", unlifted, stale_remaining)
+            } else if stale_remaining > 0 {
+                format!("{} stale", stale_remaining)
+            } else {
+                format!("{} unlifted", unlifted)
+            };
+            result.push_str(&format!(
+                "\nNEXT: {} entities still need LLM work ({}) — call lifting_status for the recommended re-lift dispatch (likely a sub-agent / cheaper model in your runtime). Continue here only if no dispatch mechanism is available.",
+                work_remaining, breakdown,
+            ));
+        } else {
+            result.push_str("\nNEXT: continue with get_entities_for_lifting, then call finalize_lifting when done.");
         }
         Ok(result)
     }
@@ -1568,9 +1782,14 @@ impl RpgServer {
 
         let batch = &pending[start..end];
 
+        // Header kept free of the revision hash so the response prefix stays
+        // stable across graph updates — the LLM prompt cache can then retain
+        // the instructions + entity list even as the revision changes. The
+        // revision itself is emitted below the data, near the NEXT_ACTION
+        // block where the agent actually needs to read it.
         let mut result = format!(
-            "## ROUTING CANDIDATES (batch {} of {}, revision: {})\n\n",
-            batch_index, total_batches, revision,
+            "## ROUTING CANDIDATES (batch {} of {})\n\n",
+            batch_index, total_batches,
         );
 
         // Include routing instructions on batch 0
@@ -1893,6 +2112,18 @@ impl RpgServer {
             rpg_encoder::evolution::get_head_sha(&self.project_root().await).ok();
         *self.last_auto_sync_changeset.write().await = None;
 
+        // Track modified entities so lifting_status and
+        // get_entities_for_lifting(scope="*") surface them as re-lift work.
+        // Without this, the "needs_relift: N" value we report below would
+        // point the caller at a path that returns zero entities.
+        {
+            let mut stale = self.stale_entity_ids.write().await;
+            for id in &summary.modified_entity_ids {
+                stale.insert(id.clone());
+            }
+            stale.retain(|id| g.entities.contains_key(id));
+        }
+
         // Clear sessions — entity list changed
         *self.lifting_session.write().await = None;
         *self.hierarchy_session.write().await = None;
@@ -2004,12 +2235,32 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Reload the RPG graph from disk. Use after external changes to .rpg/graph.json."
+        description = "Reload the RPG graph and config from disk. Use after external changes to .rpg/graph.json or .rpg/config.toml — for example, after the CLI ran `rpg-encoder lift` or after editing batch-size settings."
     )]
     async fn reload_rpg(&self) -> Result<String, String> {
-        match storage::load(&self.project_root().await) {
+        let project_root = self.project_root().await;
+        // Refresh config from disk — if the user edited .rpg/config.toml
+        // or the lifter wrote new settings, pick them up here. Logs a
+        // warning if the file exists but failed to parse, then keeps the
+        // existing config (don't clobber a working in-memory config over
+        // a temporarily broken edit).
+        Self::reload_config_with_warning(&self.config, &project_root).await;
+        match storage::load(&project_root) {
             Ok(g) => {
                 let entities = g.metadata.total_entities;
+                // Prune (don't clear) the drift-tracking set against the
+                // newly-loaded graph. Wholesale clearing was wrong because
+                // the documented CLI / isolated-subagent flow only re-lifts
+                // entities with no features — stale entities (features
+                // present but outdated) survive that flow, so clearing
+                // would let lifting_status report "100% coverage" even
+                // though re-lift work remains. Pruning by entity-existence
+                // keeps that backlog visible while dropping IDs that were
+                // removed in the new graph.
+                {
+                    let mut stale = self.stale_entity_ids.write().await;
+                    stale.retain(|id| g.entities.contains_key(id));
+                }
                 *self.graph.write().await = Some(g);
                 // Sync embedding index incrementally
                 #[cfg(feature = "embeddings")]
@@ -2470,60 +2721,98 @@ impl RpgServer {
 
         // Handle sharded workflow
         if needs_sharding {
-            let mut session_guard = self.hierarchy_session.write().await;
-
-            // Initialize session if it doesn't exist
-            if session_guard.is_none() {
-                let graph_guard = self.graph.read().await;
-                let graph = graph_guard.as_ref().unwrap();
-
-                let clusters = rpg_encoder::hierarchy::cluster_files_for_hierarchy(graph, 70);
-                let total_clusters = clusters.len();
-
-                *session_guard = Some(HierarchySession {
-                    clusters,
-                    functional_areas: None,
-                    assignments: std::collections::HashMap::new(),
-                    batches_completed: 0,
-                });
-
-                drop(graph_guard);
-                drop(session_guard);
-
-                // Return batch 0 (domain discovery)
-                return self.build_batch_0_domain_discovery(total_clusters).await;
+            // Lock order invariant (see RpgServer doc): graph before
+            // hierarchy_session. A concurrent build_rpg/update_rpg/
+            // reload_rpg/set_project_root can clear the session at any
+            // moment before we hold its write lock, so decide whether to
+            // initialize only while holding the write lock — never by
+            // re-trusting an earlier peek. We take graph.read() FIRST
+            // (ordering) so that if we need to initialize, we can compute
+            // clusters from a stable graph and install under the
+            // session.write() that's about to follow.
+            enum Action {
+                EmitBatch0(Vec<rpg_encoder::hierarchy::FileCluster>),
+                EmitBatchN {
+                    batch_idx: usize,
+                    cluster: rpg_encoder::hierarchy::FileCluster,
+                    functional_areas: Vec<String>,
+                    total_batches: usize,
+                },
+                AllDone {
+                    total_batches: usize,
+                },
             }
 
-            // Session exists - continue with next batch
-            let session = session_guard.as_mut().unwrap();
-            let total_batches = session.clusters.len() + 1; // +1 for domain discovery
-            let clusters_len = session.clusters.len();
+            let graph_guard = self.graph.read().await;
+            let graph = graph_guard.as_ref().unwrap();
 
-            if session.batches_completed == 0 {
-                // Still on batch 0 - waiting for functional areas
-                drop(session_guard);
-                return self.build_batch_0_domain_discovery(clusters_len).await;
+            let action = {
+                let mut session_guard = self.hierarchy_session.write().await;
+
+                // Initialize if absent — fresh or cleared-out-from-under-us.
+                if session_guard.is_none() {
+                    let new_clusters =
+                        rpg_encoder::hierarchy::cluster_files_for_hierarchy(graph, 70);
+                    let snapshot = new_clusters.clone();
+                    *session_guard = Some(HierarchySession {
+                        clusters: new_clusters,
+                        functional_areas: None,
+                        assignments: std::collections::HashMap::new(),
+                        batches_completed: 0,
+                    });
+                    Action::EmitBatch0(snapshot)
+                } else {
+                    let session = session_guard.as_mut().unwrap();
+                    let total_batches = session.clusters.len() + 1;
+
+                    if session.batches_completed == 0 {
+                        Action::EmitBatch0(session.clusters.clone())
+                    } else if session.batches_completed > session.clusters.len() {
+                        *session_guard = None;
+                        Action::AllDone { total_batches }
+                    } else {
+                        let batch_idx = session.batches_completed - 1;
+                        Action::EmitBatchN {
+                            batch_idx,
+                            cluster: session.clusters[batch_idx].clone(),
+                            functional_areas: session.functional_areas.clone().unwrap_or_default(),
+                            total_batches,
+                        }
+                    }
+                }
+            };
+
+            // Keep `graph_guard` held across rendering. Both helpers now
+            // take `&RPGraph` so they don't re-read `self.graph`, which
+            // would otherwise expose us to a concurrent `set_project_root`
+            // that could swap the graph to `None` mid-render.
+            match action {
+                Action::EmitBatch0(clusters) => {
+                    return self.build_batch_0_domain_discovery(graph, &clusters).await;
+                }
+                Action::AllDone { total_batches } => {
+                    return Ok(format!(
+                        "All {} batches complete. Hierarchy has been applied.",
+                        total_batches
+                    ));
+                }
+                Action::EmitBatchN {
+                    batch_idx,
+                    cluster,
+                    functional_areas,
+                    total_batches,
+                } => {
+                    return self
+                        .build_cluster_batch(
+                            graph,
+                            batch_idx + 1,
+                            total_batches,
+                            &cluster,
+                            &functional_areas,
+                        )
+                        .await;
+                }
             }
-
-            if session.batches_completed > session.clusters.len() {
-                // All batches complete
-                *session_guard = None;
-                return Ok(format!(
-                    "All {} batches complete. Hierarchy has been applied.",
-                    total_batches
-                ));
-            }
-
-            // Return next file assignment batch
-            let batch_idx = session.batches_completed - 1; // -1 because batch 0 is domain discovery
-            let cluster = session.clusters[batch_idx].clone();
-            let functional_areas = session.functional_areas.clone().unwrap_or_default();
-
-            drop(session_guard);
-
-            return self
-                .build_cluster_batch(batch_idx + 1, total_batches, &cluster, &functional_areas)
-                .await;
         }
 
         // Non-sharded workflow (≤100 files) - original single-shot behavior
@@ -2583,7 +2872,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Build a focused context pack in a single call. Searches for entities matching your query, fetches their details and source code, expands neighbors to the specified depth (default 1), and trims to a token budget. Replaces the typical search→fetch→explore multi-step workflow. Returns primary entities with source + features + deps, plus neighborhood entities for broader context.",
+        description = "PREFER THIS OVER MANUAL search → fetch → explore CHAINS. Single-call context pack: searches for entities matching your query, fetches their details and source code, expands neighbors to the specified depth (default 1), and trims to a token budget. Returns primary entities with source + features + deps, plus neighborhood entities for broader context. Replaces 3-5 chained tool calls with 1.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn context_pack(
@@ -2636,7 +2925,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Compute the impact radius of an entity: find all entities reachable via dependency edges with edge paths. Use direction='upstream' to answer 'what depends on this?', 'downstream' for 'what does this depend on?'. Returns a flat list with depth, edge paths, and features — ideal for change impact analysis."
+        description = "PREFER THIS OVER RECURSIVE GREP FOR \"WHAT BREAKS IF I CHANGE X\". Computes the impact radius of an entity: all entities reachable via dependency edges with edge paths and depth. Use direction='upstream' for 'what depends on this?', 'downstream' for 'what does this depend on?'. Returns a flat list with depth, edge paths, and features — one call replaces a dependency trace you'd otherwise grep manually."
     )]
     async fn impact_radius(
         &self,
@@ -2681,7 +2970,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Find multiple dependency paths between two entities (returns up to max_paths results of equal shortest length). Returns paths with entity IDs and edge kinds."
+        description = "PREFER THIS OVER MANUALLY TRACING CALLS. Finds shortest dependency paths between two entities (returns up to max_paths results of equal shortest length). Answers 'how does A reach B?' or 'is there any call chain from module X to module Y?' with entity IDs and edge kinds. Replaces the grep-follow-grep chain you'd otherwise walk by hand."
     )]
     async fn find_paths(
         &self,
@@ -2760,7 +3049,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Extract minimal connecting subgraph between a set of entities. Returns entities and edges on shortest paths connecting the specified entities."
+        description = "PREFER THIS FOR MULTI-ENTITY SLICE ANALYSIS. Extracts the minimal connecting subgraph between a set of entities — returns entities and edges on shortest paths connecting them. Useful for 'show me just the code that connects A, B, and C' without dragging in the whole graph."
     )]
     async fn slice_between(
         &self,
@@ -2819,7 +3108,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Plan code changes: find relevant entities, compute modification order, assess impact radius. Returns dependency-ordered entity list with blast radius analysis.",
+        description = "PREFER THIS BEFORE ANY REFACTOR OR CROSS-FILE EDIT. Plans code changes: finds relevant entities by intent, computes dependency-safe modification order, assesses impact radius per entity. Returns an ordered list of entities to touch with blast radius analysis so you know the minimal safe change set before you start editing.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn plan_change(
@@ -3207,7 +3496,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Analyze code health metrics including coupling, instability, centrality, and potential god objects. Returns entities with architectural issues and recommendations for refactoring. Set include_duplication=true to detect code clones via Rabin-Karp fingerprinting (reads source files, slower). Set include_semantic_duplication=true to detect conceptual duplicates via Jaccard similarity on lifted features (in-memory, fast; requires entities to be lifted).",
+        description = "PREFER THIS OVER EYEBALLING FOR ARCHITECTURAL SMELLS. Analyzes code health: coupling, instability, centrality, god object detection, optional clone detection. Returns entities with architectural issues and refactoring recommendations. Use `include_duplication=true` for token-level Rabin-Karp clones (reads source, slower). Use `include_semantic_duplication=true` for Jaccard-similarity conceptual duplicates on lifted features (in-memory, fast). Replaces manual review of cross-file patterns.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn analyze_health(
@@ -3242,7 +3531,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Detect circular dependencies (cycles) in the codebase. Cycles are architectural smells where A depends on B, B on C, and C back on A. Returns all detected cycles with their entity chains. First call returns summary + recommendations. Use parameters to filter results.",
+        description = "PREFER THIS OVER MANUAL CYCLE HUNTING. Detects circular dependencies: A→B→C→A chains anywhere in the graph. Returns cycles with entity chains, file counts, and cross-area filtering. First call returns summary + area breakdown; pass filters (area, min_cycle_length, cross_file_only) to get specific cycles. One call replaces hours of import-chain reading.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn detect_cycles(

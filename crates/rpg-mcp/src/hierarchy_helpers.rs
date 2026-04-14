@@ -1,18 +1,26 @@
 //! Helper functions for sharded hierarchy construction workflow.
 
 use crate::server::RpgServer;
-use rpg_core::graph::{EntityKind, normalize_path};
+use rpg_core::graph::{EntityKind, RPGraph, normalize_path};
 
 impl RpgServer {
-    /// Build batch 0: Domain discovery from representative files across all clusters
+    /// Build batch 0: Domain discovery from representative files across all clusters.
+    ///
+    /// Takes `graph` and `clusters` as parameters rather than re-reading
+    /// `self.graph` / `self.hierarchy_session` inside this function. The
+    /// caller holds the relevant locks at decision time and passes
+    /// snapshots through; that closes two races:
+    ///   1. session-clear: a concurrent build_rpg/update_rpg could clear
+    ///      hierarchy_session between the caller's decision and our re-read.
+    ///   2. graph-replace: a concurrent set_project_root could swap
+    ///      self.graph to `None` between the caller's decision and our
+    ///      re-read, panicking on `unwrap()`.
     pub(crate) async fn build_batch_0_domain_discovery(
         &self,
-        total_clusters: usize,
+        graph: &RPGraph,
+        clusters: &[rpg_encoder::hierarchy::FileCluster],
     ) -> Result<String, String> {
-        let guard = self.graph.read().await;
-        let graph = guard.as_ref().unwrap();
-        let session_guard = self.hierarchy_session.read().await;
-        let session = session_guard.as_ref().unwrap();
+        let total_clusters = clusters.len();
 
         let root = self.project_root().await;
         let repo_name = root
@@ -22,7 +30,7 @@ impl RpgServer {
 
         // Collect representative files from all clusters
         let mut representative_features = String::new();
-        for cluster in &session.clusters {
+        for cluster in clusters {
             for file in &cluster.representatives {
                 // Find Module entity for this file
                 for entity in graph.entities.values() {
@@ -79,17 +87,21 @@ impl RpgServer {
         Ok(output)
     }
 
-    /// Build file assignment batch for a specific cluster
+    /// Build file assignment batch for a specific cluster.
+    ///
+    /// Takes `graph` as a parameter for the same reasons as
+    /// `build_batch_0_domain_discovery` — the caller holds graph.read()
+    /// at decision time and passes the reference through so a concurrent
+    /// `set_project_root` can't swap `self.graph` to `None` and panic us
+    /// during rendering.
     pub(crate) async fn build_cluster_batch(
         &self,
+        graph: &RPGraph,
         batch_num: usize,
         total_batches: usize,
         cluster: &rpg_encoder::hierarchy::FileCluster,
         functional_areas: &[String],
     ) -> Result<String, String> {
-        let guard = self.graph.read().await;
-        let graph = guard.as_ref().unwrap();
-
         let root = self.project_root().await;
         let repo_name = root
             .file_name()

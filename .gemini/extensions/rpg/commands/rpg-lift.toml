@@ -18,5 +18,5 @@ The lift pipeline:
 
 Progress is saved after each batch. If interrupted, re-running continues from where it stopped.
 
-After completion, run `rpg-encoder info` to show the updated graph statistics.
+After completion, run `rpg-encoder info` to show the updated graph statistics. If an MCP RPG server is currently connected to your editor, also call its `reload_rpg` tool so it picks up the new graph from disk.
 """

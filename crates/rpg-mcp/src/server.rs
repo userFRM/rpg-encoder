@@ -35,6 +35,34 @@ impl PromptVersions {
 }
 
 /// The RPG MCP server state.
+///
+/// # Lock order invariant
+///
+/// Several of the fields below are `Arc<RwLock<T>>`. When a code path holds
+/// more than one of them at the same time, locks must be acquired in the
+/// following order (outermost first):
+///
+/// 1. `graph`
+/// 2. `lifting_session` / `hierarchy_session`
+/// 3. `stale_entity_ids`
+/// 4. `pending_routing`
+/// 5. `last_auto_sync_head` / `last_auto_sync_changeset` / `last_auto_sync_workdir_paths`
+/// 6. `config`
+/// 7. `embedding_index`
+/// 8. `project_root_cell`
+///
+/// Paths that touch only one lock at a time are unaffected. Paths that
+/// acquire several locks but release each before acquiring the next
+/// (statement-per-lock pattern in `set_project_root` and `reload_rpg`)
+/// are also unaffected — at no moment do they hold two locks, so no
+/// cycle can form.
+///
+/// The invariant is needed because tokio's `RwLock` is not re-entrant
+/// and writers block readers while waiting: two tasks that each hold
+/// one inner lock and wait for the other's outer lock would deadlock.
+/// Keeping `graph` as the outermost held lock everywhere ensures that
+/// any two nested paths serialize through `graph` and never form a
+/// cycle on the inner locks.
 #[derive(Clone)]
 pub(crate) struct RpgServer {
     /// Active project root. Mutable at runtime via the `set_project_root` tool
@@ -56,6 +84,12 @@ pub(crate) struct RpgServer {
     pub(crate) prompt_versions: PromptVersions,
     /// Last git HEAD SHA at which auto-sync ran. Prevents redundant updates.
     pub(crate) last_auto_sync_head: Arc<RwLock<Option<String>>>,
+    /// Entity IDs whose source was modified after their features were lifted.
+    /// Populated by `auto_sync_if_stale` (from `summary.modified_entity_ids`),
+    /// drained by `submit_lift_results` as entities get re-lifted. Lets
+    /// `lifting_status` surface stale-feature drift even though those entities
+    /// still appear "lifted" in the coverage count.
+    pub(crate) stale_entity_ids: Arc<RwLock<std::collections::HashSet<String>>>,
     /// Hash of the last-synced workdir changeset (dirty files + their stat).
     /// Combined with `last_auto_sync_head` to detect when a re-sync is needed
     /// for uncommitted/staged/unstaged changes.
@@ -84,6 +118,35 @@ impl RpgServer {
         self.project_root_cell.read().await.clone()
     }
 
+    /// Reload `.rpg/config.toml` into the given config slot.
+    /// - File missing → silently use defaults (the no-config-yet case).
+    /// - File present but malformed → log a warning, keep the existing config.
+    /// - File present and valid → swap.
+    pub(crate) async fn reload_config_with_warning(
+        slot: &Arc<RwLock<RpgConfig>>,
+        project_root: &std::path::Path,
+    ) {
+        let config_path = project_root.join(".rpg/config.toml");
+        if !config_path.exists() {
+            // Missing is a normal state — use defaults silently.
+            *slot.write().await = RpgConfig::default();
+            return;
+        }
+        match RpgConfig::load(project_root) {
+            Ok(cfg) => {
+                *slot.write().await = cfg;
+            }
+            Err(e) => {
+                eprintln!(
+                    "rpg: failed to parse {} ({}); keeping previous in-memory config",
+                    config_path.display(),
+                    e
+                );
+                // Do NOT overwrite — leave the previous (working) config in place.
+            }
+        }
+    }
+
     /// Create a new server, loading graph and config from `project_root` if present.
     pub(crate) fn new(project_root: PathBuf) -> Self {
         let graph = storage::load(&project_root).ok();
@@ -107,6 +170,7 @@ impl RpgServer {
             tool_router: Self::create_tool_router(),
             prompt_versions: PromptVersions::new(),
             last_auto_sync_head: Arc::new(RwLock::new(initial_head)),
+            stale_entity_ids: Arc::new(RwLock::new(std::collections::HashSet::new())),
             last_auto_sync_changeset: Arc::new(RwLock::new(None)),
             last_auto_sync_workdir_paths: Arc::new(RwLock::new(std::collections::HashSet::new())),
             lift_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -258,6 +322,25 @@ impl RpgServer {
             Ok(summary) => {
                 graph.metadata.paradigms = paradigm_names;
                 let _ = storage::save(&project_root, graph);
+
+                // Persist stale entity IDs so lifting_status can surface
+                // stale-feature drift in subsequent calls. These entities
+                // still count as "lifted" by coverage(), so without this
+                // set, lifting_status would report "100% coverage" while
+                // search_node returns outdated features.
+                //
+                // Each inner write below is statement-per-lock — no two
+                // inner locks are held at once while we're also holding
+                // graph.write(), so the order between them is irrelevant
+                // for correctness (see the lock-order doc on RpgServer).
+                {
+                    let mut stale = self.stale_entity_ids.write().await;
+                    for id in &summary.modified_entity_ids {
+                        stale.insert(id.clone());
+                    }
+                    // Prune entries for entities that no longer exist
+                    stale.retain(|id| graph.entities.contains_key(id));
+                }
                 *self.last_auto_sync_head.write().await = Some(current_head);
                 *self.last_auto_sync_changeset.write().await = Some(current_changeset);
                 *self.last_auto_sync_workdir_paths.write().await = current_paths;
@@ -270,15 +353,50 @@ impl RpgServer {
                 }
 
                 let (lifted, total) = graph.lifting_coverage();
-                let needs_lifting = total - lifted;
-                let needs_relift = summary.modified_entity_ids.len();
+                let total_unlifted = total - lifted;
+                let added_now = summary.entities_added;
+                let stale_now = summary.modified_entity_ids.len();
+                let aggregate_drift = total_unlifted + stale_now;
 
                 let mut notice = format!(
                     "[auto-synced: +{} -{} ~{} entities",
                     summary.entities_added, summary.entities_removed, summary.entities_modified,
                 );
-                if needs_lifting > 0 || needs_relift > 0 {
-                    notice.push_str(&format!("; {} need lifting", needs_lifting + needs_relift));
+
+                if aggregate_drift > 0 {
+                    // Per-update delta — what THIS sync changed
+                    let mut parts: Vec<String> = Vec::new();
+                    if added_now > 0 {
+                        parts.push(format!("+{} added unlifted", added_now));
+                    }
+                    if stale_now > 0 {
+                        parts.push(format!("~{} stale features", stale_now));
+                    }
+                    if !parts.is_empty() {
+                        notice.push_str("; ");
+                        notice.push_str(&parts.join(", "));
+                    }
+                    // Pre-existing backlog (entities that were already unlifted before this update)
+                    let pre_existing = total_unlifted.saturating_sub(added_now);
+                    if pre_existing > 0 {
+                        if parts.is_empty() {
+                            notice.push_str(&format!("; {} unlifted total", pre_existing));
+                        } else {
+                            notice.push_str(&format!(" (+{} pre-existing)", pre_existing));
+                        }
+                    }
+                    // Active recommendation — graded by aggregate severity. The
+                    // batch-0 NOTE in get_entities_for_lifting is authoritative
+                    // for the dispatch decision; this is a heuristic gate.
+                    if aggregate_drift >= crate::LARGE_SCOPE_ENTITIES {
+                        notice.push_str(
+                            " — semantic search is incomplete; call lifting_status for re-lift dispatch guidance",
+                        );
+                    } else {
+                        notice.push_str(
+                            " — semantic search is incomplete; call lifting_status to refresh",
+                        );
+                    }
                 }
                 notice.push_str("]\n\n");
                 notice
@@ -315,7 +433,7 @@ impl RpgServer {
     /// added/modified/renamed file. Deleted files hash their path only.
     /// Same changeset + same stat = same hash = no re-sync. Second save of the
     /// same file changes mtime → different hash → re-sync fires.
-    fn compute_changeset_hash(
+    pub(crate) fn compute_changeset_hash(
         changes: &[rpg_encoder::evolution::FileChange],
         project_root: &std::path::Path,
     ) -> String {
@@ -494,6 +612,19 @@ impl RpgServer {
             ),
         };
 
+        // Stale-feature drift — entities still counted as "lifted" because
+        // they have features, but those features are out of date because
+        // the source was modified after lifting. Tracked across syncs by
+        // auto_sync_if_stale.
+        let stale_features_count = {
+            let stale = self.stale_entity_ids.read().await;
+            // Filter to entities still present in the graph
+            stale
+                .iter()
+                .filter(|id| graph.entities.contains_key(*id))
+                .count()
+        };
+
         let mut out = format!(
             "=== RPG Lifting Status ===\n\
              {}\n\
@@ -501,6 +632,12 @@ impl RpgServer {
              hierarchy: {}\n",
             graph_line, lifted, total, coverage_pct, hierarchy_type,
         );
+        if stale_features_count > 0 {
+            out.push_str(&format!(
+                "stale_features: {} entities modified since last lift (features outdated)\n",
+                stale_features_count,
+            ));
+        }
 
         // Per-area coverage
         let area_cov = graph.area_coverage();
@@ -575,18 +712,99 @@ impl RpgServer {
             }
         }
 
-        // NEXT STEP — state machine guidance, staleness takes priority
+        // NEXT STEP — state machine guidance, staleness takes priority.
+        // `LARGE_SCOPE_ENTITIES` is the threshold above which direct
+        // foreground lifting is not recommended. See also the matching
+        // check in `get_entities_for_lifting` which expresses the same
+        // heuristic in terms of batches.
+        //
+        // The state machine considers two kinds of "work remaining":
+        //   - `remaining` — entities that have never been lifted
+        //   - `stale_features_count` — entities with outdated features after
+        //     a source modification (tracked across syncs via
+        //     `stale_entity_ids`). These look "lifted" in coverage but their
+        //     features no longer reflect the source.
+        // Their sum is what actually needs LLM work.
         out.push('\n');
+        let remaining = total.saturating_sub(lifted);
+        let work_remaining = remaining + stale_features_count;
+
         if stale_detail.is_some() {
-            out.push_str("NEXT STEP: Graph is stale. Call update_rpg to sync with code changes, then lift any new entities.\n");
+            out.push_str("NEXT STEP: Graph is stale. Call update_rpg to sync with code changes, then lift any new or modified entities.\n");
+        } else if work_remaining >= crate::LARGE_SCOPE_ENTITIES {
+            // Large repo — recommend delegating the mechanical loop so the
+            // caller doesn't exhaust its own context. Give the dispatch
+            // pattern *directly* here rather than bouncing the caller through
+            // get_entities_for_lifting first (which would burn batch-0's
+            // source payload in the caller's context, the exact thing we're
+            // trying to avoid).
+            //
+            // Note: `remaining` is the raw unlifted count *before* auto-lift
+            // runs (which happens inside get_entities_for_lifting). Auto-lift
+            // shrinks the LLM-needed set considerably for repos with many
+            // trivial entities (getters, setters, constructors). The agent
+            // can skip the dispatch if, once the worker calls
+            // get_entities_for_lifting batch 0, no delegation NOTE appears —
+            // in that case the queue is small enough to lift in one context.
+            let batch_tokens = self.config.read().await.encoding.max_batch_tokens;
+            let workload_desc = if remaining > 0 && stale_features_count > 0 {
+                format!(
+                    "{} unlifted + {} stale = {} entities",
+                    remaining, stale_features_count, work_remaining,
+                )
+            } else if stale_features_count > 0 {
+                format!(
+                    "{} stale entities to re-lift (modified since last lift)",
+                    stale_features_count,
+                )
+            } else {
+                format!("{} entities unlifted", remaining)
+            };
+            out.push_str(&format!(
+                "NEXT STEP: Likely-large lifting workload — {} (auto-lift may reduce this). Dispatch a sub-agent to run the LOOP below; do not run it in this context — each batch is ~{}K tokens of source and will exhaust caller context over many iterations.\n",
+                workload_desc,
+                batch_tokens.div_ceil(1000),
+            ));
+            out.push_str(
+                "\nLOOP (sub-agent runs this in its own context):\n  \
+                 get_entities_for_lifting(scope=\"*\") -> analyze batch -> submit_lift_results -> repeat until DONE -> finalize_lifting\n\
+                 \nDISPATCH:\n  \
+                 Use whatever sub-agent / cheaper-model mechanism your runtime provides. The MCP graph persists to disk after every submit, so the worker's writes survive. **After the worker returns, call `reload_rpg`** — some runtimes give sub-agents an isolated MCP session, in which case the caller's in-memory graph is stale until reloaded. (No-op if your runtime shares the MCP session.)\n\
+                 \nFALLBACK (no sub-agent mechanism, no API key):\n  \
+                 Scope the lift to one subtree at a time — e.g. get_entities_for_lifting(scope=\"src/auth/**\") — and submit features per batch within that scope. Each scoped batch fits in foreground context. Call finalize_lifting ONCE at the very end after all scopes are complete; calling it mid-flow auto-routes pending entities against incomplete signals and locks the hierarchy in early.\n",
+            );
+            // The CLI fallback only helps when there is unlifted work.
+            // `rpg-encoder lift` resolves `scope="*"` to entities with no
+            // features, so a stale-only backlog (features present, sources
+            // modified) is a no-op for the CLI — surfacing it there would
+            // be a dead-end recipe.
+            if remaining > 0 {
+                out.push_str(
+                    "\nFALLBACK (no sub-agent mechanism, API key available, unlifted entities only):\n  \
+                     Run `rpg-encoder lift --provider anthropic` (or `openai`) from the terminal — the CLI drives an external LLM directly with no agent involvement. After the CLI finishes, call `reload_rpg` in this session so the server picks up the updated graph from disk. Note: the CLI lifts entities with no features; stale entities (features present but outdated) must be re-lifted via the MCP loop above.\n",
+                );
+            }
         } else if lifted == 0 {
             out.push_str(
                 "NEXT STEP: Call get_entities_for_lifting(scope=\"*\") to start lifting.\n",
             );
-        } else if lifted < total {
+        } else if remaining > 0 && stale_features_count > 0 {
+            out.push_str(&format!(
+                "NEXT STEP: {} unlifted + {} stale = {} entities need LLM work. Call get_entities_for_lifting(scope=\"*\") — it returns both unlifted entities and stale ones that need re-lifting in the same batches.\n",
+                remaining, stale_features_count, work_remaining,
+            ));
+        } else if remaining > 0 {
             out.push_str(&format!(
                 "NEXT STEP: {} entities remaining. Call get_entities_for_lifting(scope=\"*\") to continue lifting.\n",
-                total - lifted,
+                remaining,
+            ));
+        } else if stale_features_count > 0 {
+            // All entities have features, but some features are outdated.
+            // The post-sync delta is what matters here — we track modified
+            // entities in stale_entity_ids so agents know to re-lift them.
+            out.push_str(&format!(
+                "NEXT STEP: Coverage is 100% but {} entities have stale features (source modified after lift). Call get_entities_for_lifting(scope=\"*\") to re-lift just those — it surfaces stale entities as if they were unlifted.\n",
+                stale_features_count,
             ));
         } else if !graph.metadata.semantic_hierarchy {
             out.push_str(

@@ -2,6 +2,19 @@
 
 RPG-Encoder builds semantic code graphs (Repository Planning Graphs) for AI-assisted code understanding.
 
+## Use RPG before grep / cat / find
+
+For any question about code structure, behavior, relationships, impact, or
+cross-file patterns, reach for RPG tools (MCP or CLI) before shell commands.
+RPG answers structural questions in one call that would otherwise require
+dozens of chained text searches.
+
+Fall back to grep / cat / file reads only when the query is about literal
+text (string search, comments, TODOs, log messages).
+
+See the MCP server instructions for the full mapping of shell patterns to
+RPG tools — it's loaded automatically when the extension is active.
+
 ## CLI Commands
 
 - `rpg-encoder build` — Index codebase, build graph (run once)
