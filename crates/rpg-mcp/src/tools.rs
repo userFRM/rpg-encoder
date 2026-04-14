@@ -827,9 +827,10 @@ impl RpgServer {
             *self.lifting_session.write().await = None;
             *self.hierarchy_session.write().await = None;
 
-            // Update auto-sync HEAD
+            // Update auto-sync markers — force re-evaluation on next query
             *self.last_auto_sync_head.write().await =
                 rpg_encoder::evolution::get_head_sha(&self.project_root).ok();
+            *self.last_auto_sync_changeset.write().await = None;
 
             let mut out = format!(
                 "Lifting complete ({}, {}).\n\
@@ -1790,9 +1791,10 @@ impl RpgServer {
 
         storage::save(&self.project_root, g).map_err(|e| format!("Failed to save RPG: {}", e))?;
 
-        // Update auto-sync HEAD so next query doesn't redundantly re-sync
+        // Update auto-sync markers — force re-evaluation on next query
         *self.last_auto_sync_head.write().await =
             rpg_encoder::evolution::get_head_sha(&self.project_root).ok();
+        *self.last_auto_sync_changeset.write().await = None;
 
         // Clear sessions — entity list changed
         *self.lifting_session.write().await = None;
