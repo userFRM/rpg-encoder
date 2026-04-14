@@ -1087,6 +1087,13 @@ impl RpgServer {
                 let mut auto_lifted = 0usize;
                 let mut needs_llm = Vec::new();
                 let mut review_candidates: Vec<(String, Vec<String>)> = Vec::new();
+                // Track which stale entities got re-lifted (either via auto-lift
+                // above or routed into needs_llm below) so we can drain them
+                // from `stale_entity_ids` once they're written. Auto-lift
+                // persists its features directly inside this function, so it
+                // must drain the set itself; needs_llm entities are drained
+                // in `submit_lift_results` after the caller submits features.
+                let mut auto_relifted_stale: Vec<String> = Vec::new();
                 for raw in all_raw_entities {
                     let raw_id = raw.id();
                     // Stale entities get re-lifted regardless of existing
@@ -1105,21 +1112,26 @@ impl RpgServer {
                     match engine.try_lift_with_confidence(&raw) {
                         Some((features, rpg_encoder::lift::LiftConfidence::Accept)) => {
                             // High confidence — apply features directly
-                            if let Some(entity) = graph.entities.get_mut(&raw.id()) {
+                            if let Some(entity) = graph.entities.get_mut(&raw_id) {
                                 entity.semantic_features = features;
                                 entity.feature_source = Some("auto".to_string());
                                 auto_lifted += 1;
+                                if is_stale {
+                                    auto_relifted_stale.push(raw_id.clone());
+                                }
                             }
                         }
                         Some((features, rpg_encoder::lift::LiftConfidence::Review)) => {
                             // Medium confidence — apply features but flag for review
-                            let eid = raw.id();
-                            if let Some(entity) = graph.entities.get_mut(&eid) {
+                            if let Some(entity) = graph.entities.get_mut(&raw_id) {
                                 entity.semantic_features = features.clone();
                                 entity.feature_source = Some("auto".to_string());
                                 auto_lifted += 1;
+                                if is_stale {
+                                    auto_relifted_stale.push(raw_id.clone());
+                                }
                             }
-                            review_candidates.push((eid, features));
+                            review_candidates.push((raw_id, features));
                         }
                         Some((_, rpg_encoder::lift::LiftConfidence::Reject)) | None => {
                             needs_llm.push(raw);
@@ -1132,6 +1144,17 @@ impl RpgServer {
                     graph.refresh_metadata();
                     if let Err(e) = rpg_core::storage::save(&self.project_root().await, graph) {
                         eprintln!("Warning: failed to persist auto-lifted features: {e}");
+                    }
+                }
+
+                // Drain stale tracking for entities auto-lifter just wrote
+                // fresh features for. Without this, lifting_status would keep
+                // counting them as stale forever because the auto-lift path
+                // skips submit_lift_results entirely.
+                if !auto_relifted_stale.is_empty() {
+                    let mut stale = self.stale_entity_ids.write().await;
+                    for id in &auto_relifted_stale {
+                        stale.remove(id);
                     }
                 }
 
