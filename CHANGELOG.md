@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   "Tip: use get_entities_for_lifting" hint that agents routinely skipped.
 - Canonical lock-order invariant documented on the `RpgServer` struct so
   reviewers don't have to re-derive it from scattered call sites.
+- `build_semantic_hierarchy` sharded init now takes `graph.read()` to
+  compute clusters *before* acquiring `hierarchy_session.write()`,
+  respecting the declared graph-before-session order. Previously the
+  sharded path acquired `hierarchy_session.write()` first and then
+  `graph.read()`, which formed a deadlock cycle with `update_rpg`'s
+  graph-then-session order under concurrent scheduling.
 - `lifting_status` tracks stale-feature drift across calls. A persistent
   per-server set records entities whose source was modified after they
   were lifted; the dashboard reports `stale_features: N entities modified
@@ -122,6 +128,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   to the post-auto-lift batch count in `get_entities_for_lifting`.
 - `rpg_info` error wording ("No RPG found") was miscited as a friendly
   status string; corrected to "any RPG tool returns 'No RPG found'".
+- `build_rpg` NEXT STEP previously counted `Module` entities in its
+  "unlifted" total, while `lifting_status` and `get_entities_for_lifting`
+  exclude them. The two could disagree by hundreds of entities on large
+  codebases, tripping the delegation threshold in `build_rpg` when
+  `lifting_status` would still recommend foreground lifting. Both paths
+  now use `lifting_coverage()` (non-module) for the count.
 - `submit_lift_results` previously emitted `DONE` as soon as coverage
   reached 100%, which could terminate a stale-only re-lift loop after
   batch 1 while later batches were still queued. The NEXT/DONE branch

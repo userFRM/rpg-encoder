@@ -700,6 +700,14 @@ impl RpgServer {
         storage::save(project_root, &graph).map_err(|e| format!("Failed to save RPG: {}", e))?;
         let _ = storage::ensure_gitignore(project_root);
 
+        // Capture lifting coverage BEFORE the graph moves into `self.graph`.
+        // `lifting_coverage()` excludes `Module` entities (they get features
+        // via file-level synthesis, not direct lifting), which matches the
+        // semantics of `get_entities_for_lifting`. `meta.total_entities`
+        // includes modules, so it would inflate the "unlifted" count and
+        // trip the delegation threshold too early.
+        let (lifted_non_module, total_non_module) = graph.lifting_coverage();
+
         // Update in-memory state
         let meta = graph.metadata.clone();
         *self.graph.write().await = Some(graph);
@@ -743,6 +751,11 @@ impl RpgServer {
         } else {
             "structural"
         };
+        // `lifted: X/Y` uses non-module counts (matches `lifting_status` and
+        // `get_entities_for_lifting`) so the numbers agents see here line
+        // up with the numbers they see elsewhere. The `entities: N` line
+        // above is the raw total including modules — those get features
+        // via file-level synthesis, not direct lifting.
         let mut result = format!(
             "RPG built successfully.\n\
              languages: {}\n\
@@ -751,7 +764,7 @@ impl RpgServer {
              functional_areas: {}\n\
              dependency_edges: {}\n\
              containment_edges: {}\n\
-             lifted: {}/{}\n\
+             lifted: {}/{} (excludes modules, which are aggregated from files)\n\
              hierarchy: {}",
             lang_display,
             meta.total_entities,
@@ -759,8 +772,8 @@ impl RpgServer {
             meta.functional_areas,
             meta.dependency_edges,
             meta.containment_edges,
-            meta.lifted_entities,
-            meta.total_entities,
+            lifted_non_module,
+            total_non_module,
             hierarchy_label,
         );
 
@@ -797,7 +810,7 @@ impl RpgServer {
         // tools (search_node, context_pack, plan_change) are lossy on an
         // unlifted graph — users notice this as "search doesn't find the
         // thing I know is there" — so the default is "lift now".
-        let unlifted = meta.total_entities.saturating_sub(meta.lifted_entities);
+        let unlifted = total_non_module.saturating_sub(lifted_non_module);
         if unlifted == 0 {
             result.push_str(
                 "\n\nNEXT STEP: Graph is fully lifted. Semantic tools (search_node, context_pack, plan_change, explore_rpg) are ready — prefer them over grep/cat/find for any structural question.",
@@ -809,12 +822,12 @@ impl RpgServer {
                  \nLOOP (sub-agent runs this in its own context):\n  \
                  get_entities_for_lifting(scope=\"*\") -> analyze batch -> submit_lift_results -> repeat until DONE -> finalize_lifting\n\
                  \nAfter the worker returns, call reload_rpg — some runtimes give sub-agents an isolated MCP session, in which case the caller's in-memory graph is stale until reloaded. Call lifting_status for per-state recommendations at any time.",
-                unlifted, meta.total_entities, batch_tokens.div_ceil(1000),
+                unlifted, total_non_module, batch_tokens.div_ceil(1000),
             ));
         } else {
             result.push_str(&format!(
                 "\n\nNEXT STEP: {} entities unlifted (of {}). Lift now — don't wait for the user to ask; semantic search/fetch won't find unlifted entities by intent. Call get_entities_for_lifting(scope=\"*\"), analyze the batch, submit via submit_lift_results, repeat until DONE, then finalize_lifting.",
-                unlifted, meta.total_entities,
+                unlifted, total_non_module,
             ));
         }
         Ok(result)
@@ -2645,30 +2658,42 @@ impl RpgServer {
 
         // Handle sharded workflow
         if needs_sharding {
-            let mut session_guard = self.hierarchy_session.write().await;
+            // Lock order invariant (see RpgServer doc): graph before
+            // hierarchy_session. Peek the session first WITHOUT holding
+            // graph, compute clusters under graph if we need to
+            // initialize, then take hierarchy_session.write() and install
+            // — with a re-check against racing initializers.
+            let already_initialized = self.hierarchy_session.read().await.is_some();
 
-            // Initialize session if it doesn't exist
-            if session_guard.is_none() {
-                let graph_guard = self.graph.read().await;
-                let graph = graph_guard.as_ref().unwrap();
+            if !already_initialized {
+                // Compute clusters under graph.read() (no session held)
+                let new_clusters = {
+                    let graph_guard = self.graph.read().await;
+                    let graph = graph_guard.as_ref().unwrap();
+                    rpg_encoder::hierarchy::cluster_files_for_hierarchy(graph, 70)
+                };
 
-                let clusters = rpg_encoder::hierarchy::cluster_files_for_hierarchy(graph, 70);
-                let total_clusters = clusters.len();
-
-                *session_guard = Some(HierarchySession {
-                    clusters,
-                    functional_areas: None,
-                    assignments: std::collections::HashMap::new(),
-                    batches_completed: 0,
-                });
-
-                drop(graph_guard);
+                // Now install — if another caller raced us, keep theirs.
+                let mut session_guard = self.hierarchy_session.write().await;
+                let total_clusters = if session_guard.is_none() {
+                    let count = new_clusters.len();
+                    *session_guard = Some(HierarchySession {
+                        clusters: new_clusters,
+                        functional_areas: None,
+                        assignments: std::collections::HashMap::new(),
+                        batches_completed: 0,
+                    });
+                    count
+                } else {
+                    session_guard.as_ref().unwrap().clusters.len()
+                };
                 drop(session_guard);
 
                 // Return batch 0 (domain discovery)
                 return self.build_batch_0_domain_discovery(total_clusters).await;
             }
 
+            let mut session_guard = self.hierarchy_session.write().await;
             // Session exists - continue with next batch
             let session = session_guard.as_mut().unwrap();
             let total_batches = session.clusters.len() + 1; // +1 for domain discovery
