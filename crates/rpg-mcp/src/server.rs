@@ -35,6 +35,34 @@ impl PromptVersions {
 }
 
 /// The RPG MCP server state.
+///
+/// # Lock order invariant
+///
+/// Several of the fields below are `Arc<RwLock<T>>`. When a code path holds
+/// more than one of them at the same time, locks must be acquired in the
+/// following order (outermost first):
+///
+/// 1. `graph`
+/// 2. `lifting_session` / `hierarchy_session`
+/// 3. `stale_entity_ids`
+/// 4. `pending_routing`
+/// 5. `last_auto_sync_head` / `last_auto_sync_changeset` / `last_auto_sync_workdir_paths`
+/// 6. `config`
+/// 7. `embedding_index`
+/// 8. `project_root_cell`
+///
+/// Paths that touch only one lock at a time are unaffected. Paths that
+/// acquire several locks but release each before acquiring the next
+/// (statement-per-lock pattern in `set_project_root` and `reload_rpg`)
+/// are also unaffected — at no moment do they hold two locks, so no
+/// cycle can form.
+///
+/// The invariant is needed because tokio's `RwLock` is not re-entrant
+/// and writers block readers while waiting: two tasks that each hold
+/// one inner lock and wait for the other's outer lock would deadlock.
+/// Keeping `graph` as the outermost held lock everywhere ensures that
+/// any two nested paths serialize through `graph` and never form a
+/// cycle on the inner locks.
 #[derive(Clone)]
 pub(crate) struct RpgServer {
     /// Active project root. Mutable at runtime via the `set_project_root` tool

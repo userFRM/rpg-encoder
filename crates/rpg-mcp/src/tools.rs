@@ -787,15 +787,35 @@ impl RpgServer {
                     stats.orphaned,
                     stats.new_entities,
                 ));
-            } else {
-                result.push_str(
-                    "\nTip: use get_entities_for_lifting + submit_lift_results to add semantic features.",
-                );
             }
-        } else {
+        }
+
+        // NEXT STEP — action-oriented, scale-aware. A build_rpg response is
+        // usually the first RPG tool call in a session, so the agent reads
+        // this before asking the user what to do next. A weak "tip" gets
+        // ignored; a directive with sizing guidance gets followed. Semantic
+        // tools (search_node, context_pack, plan_change) are lossy on an
+        // unlifted graph — users notice this as "search doesn't find the
+        // thing I know is there" — so the default is "lift now".
+        let unlifted = meta.total_entities.saturating_sub(meta.lifted_entities);
+        if unlifted == 0 {
             result.push_str(
-                "\nTip: use get_entities_for_lifting + submit_lift_results to add semantic features.",
+                "\n\nNEXT STEP: Graph is fully lifted. Semantic tools (search_node, context_pack, plan_change, explore_rpg) are ready — prefer them over grep/cat/find for any structural question.",
             );
+        } else if unlifted >= crate::LARGE_SCOPE_ENTITIES {
+            let batch_tokens = self.config.read().await.encoding.max_batch_tokens;
+            result.push_str(&format!(
+                "\n\nNEXT STEP: {} entities unlifted (of {}). Dispatch a sub-agent now to run the lift loop — don't wait for the user to ask. Each batch is ~{}K tokens of source, so running the loop here would exhaust caller context before any real work begins.\n\
+                 \nLOOP (sub-agent runs this in its own context):\n  \
+                 get_entities_for_lifting(scope=\"*\") -> analyze batch -> submit_lift_results -> repeat until DONE -> finalize_lifting\n\
+                 \nAfter the worker returns, call reload_rpg — some runtimes give sub-agents an isolated MCP session, in which case the caller's in-memory graph is stale until reloaded. Call lifting_status for per-state recommendations at any time.",
+                unlifted, meta.total_entities, batch_tokens.div_ceil(1000),
+            ));
+        } else {
+            result.push_str(&format!(
+                "\n\nNEXT STEP: {} entities unlifted (of {}). Lift now — don't wait for the user to ask; semantic search/fetch won't find unlifted entities by intent. Call get_entities_for_lifting(scope=\"*\"), analyze the batch, submit via submit_lift_results, repeat until DONE, then finalize_lifting.",
+                unlifted, meta.total_entities,
+            ));
         }
         Ok(result)
     }
@@ -1693,9 +1713,14 @@ impl RpgServer {
 
         let batch = &pending[start..end];
 
+        // Header kept free of the revision hash so the response prefix stays
+        // stable across graph updates — the LLM prompt cache can then retain
+        // the instructions + entity list even as the revision changes. The
+        // revision itself is emitted below the data, near the NEXT_ACTION
+        // block where the agent actually needs to read it.
         let mut result = format!(
-            "## ROUTING CANDIDATES (batch {} of {}, revision: {})\n\n",
-            batch_index, total_batches, revision,
+            "## ROUTING CANDIDATES (batch {} of {})\n\n",
+            batch_index, total_batches,
         );
 
         // Include routing instructions on batch 0

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `build_rpg` response now emits an action-oriented NEXT STEP directing the
+  agent to lift the graph immediately — small scope lifts in the current
+  context, large scope dispatches a sub-agent. Previously a passive
+  "Tip: use get_entities_for_lifting" hint that agents routinely skipped.
+- Canonical lock-order invariant documented on the `RpgServer` struct so
+  reviewers don't have to re-derive it from scattered call sites.
 - `lifting_status` tracks stale-feature drift across calls. A persistent
   per-server set records entities whose source was modified after they
   were lifted; the dashboard reports `stale_features: N entities modified
@@ -67,6 +73,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   emitted in labeled blocks immediately below.
 - `server_instructions.md` LIFTING FLOW sub-section rewritten and
   shortened.
+- `get_routing_candidates` response header no longer includes the graph
+  revision hash — it moved to the NEXT_ACTION block at the bottom. Keeps
+  the stable preamble (instructions + entity table) cache-eligible while
+  still surfacing the revision where the agent needs to read it back.
 - `update_rpg` now feeds `summary.modified_entity_ids` into the
   stale-tracking set so its `needs_relift: N` reply aligns with what
   `lifting_status` and `get_entities_for_lifting(scope="*")` report.
