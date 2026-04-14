@@ -407,7 +407,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Switch the active project root for this session. Use this when you started the session from one directory but want RPG to operate on a different project — for example, launched Claude Code from your home directory but want to work on ~/myproject. The server loads the graph from the new directory's .rpg/graph.json if present, resets all session state (lifting sessions, auto-sync markers, pending routing), and points every subsequent tool call at the new root. Path is tilde-expanded and canonicalized.",
+        description = "Switch the active project root for this session. Use this when the server was started from one directory but you want RPG to operate on a different project — e.g. the MCP server launched in your home directory but you want to work on ~/myproject. The server loads the graph from the new directory's .rpg/graph.json if present, resets all session state (lifting sessions, auto-sync markers, pending routing), and points every subsequent tool call at the new root. Path is tilde-expanded and canonicalized.",
         annotations(
             destructive_hint = false,
             idempotent_hint = true,
@@ -753,6 +753,19 @@ impl RpgServer {
         self.pending_routing.write().await.clear();
         clear_pending_routing(&self.project_root().await);
 
+        // Prune the drift-tracking set against the new graph. build_rpg
+        // preserves features for entities whose IDs survive the rebuild,
+        // so a stale entity that still exists is correctly still stale.
+        // But IDs removed in the rebuild should drop out of the set so it
+        // doesn't accumulate dead references over many rebuilds.
+        {
+            let graph_guard = self.graph.read().await;
+            if let Some(ref g) = *graph_guard {
+                let mut stale = self.stale_entity_ids.write().await;
+                stale.retain(|id| g.entities.contains_key(id));
+            }
+        }
+
         let lang_display = if languages.len() == 1 {
             languages[0].name().to_string()
         } else {
@@ -945,6 +958,19 @@ impl RpgServer {
             let project_root = self.project_root().await.clone();
             let scope_owned = scope.to_string();
 
+            // Snapshot pre-lift fingerprints so we can drain re-lifted IDs
+            // from `stale_entity_ids` afterwards. For a non-`*` scope the
+            // pipeline freshens features for every in-scope entity (ignoring
+            // the "already has features" gate that resolve_scope=`*` enforces),
+            // so any in-scope stale entity is no longer stale once the
+            // pipeline returns. Without this drain, lifting_status would
+            // keep reporting the count.
+            let pre_lift_features: std::collections::HashMap<String, Vec<String>> = graph
+                .entities
+                .iter()
+                .map(|(id, e)| (id.clone(), e.semantic_features.clone()))
+                .collect();
+
             // Run the blocking pipeline on the current thread (tells tokio we're blocking).
             // This is safe because MCP stdio is serial — no concurrent requests.
             let report = tokio::task::block_in_place(|| {
@@ -962,7 +988,30 @@ impl RpgServer {
             })
             .map_err(|e| format!("Lift failed: {}", e))?;
 
+            // Drain stale entries for entities the pipeline freshened
+            // (features changed or transitioned from empty → present).
+            // Done while still holding the graph write lock so the
+            // before/after snapshot is consistent.
+            let refreshed_ids: Vec<String> = graph
+                .entities
+                .iter()
+                .filter_map(|(id, e)| {
+                    let prev = pre_lift_features.get(id);
+                    let changed = match prev {
+                        None => !e.semantic_features.is_empty(),
+                        Some(p) => p != &e.semantic_features,
+                    };
+                    if changed { Some(id.clone()) } else { None }
+                })
+                .collect();
             drop(guard);
+
+            if !refreshed_ids.is_empty() {
+                let mut stale = self.stale_entity_ids.write().await;
+                for id in &refreshed_ids {
+                    stale.remove(id);
+                }
+            }
 
             // Clear sessions — entity list changed
             *self.lifting_session.write().await = None;
@@ -1288,7 +1337,7 @@ impl RpgServer {
                 let batch_tokens = self.config.read().await.encoding.max_batch_tokens;
                 let approx_total_k = (total_batches * batch_tokens).div_ceil(1000);
                 output.push_str(&format!(
-                    "\nNOTE: {} batches queued (~{}K tokens of source total). If your runtime supports sub-agent dispatch or a cheaper model, stop here — do not request batches 2..N — and invoke `lifting_status` for the delegation pattern. Continue the sequential loop only if no dispatch is available.\n\n",
+                    "\nNOTE: {} batches queued (~{}K tokens of source total). If your runtime supports sub-agent dispatch or a cheaper model, stop here — do not request further batches in this context — and invoke `lifting_status` for the delegation pattern. Continue the sequential loop only if no dispatch is available.\n\n",
                     total_batches, approx_total_k,
                 ));
             }

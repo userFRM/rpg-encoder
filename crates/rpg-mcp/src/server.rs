@@ -322,15 +322,18 @@ impl RpgServer {
             Ok(summary) => {
                 graph.metadata.paradigms = paradigm_names;
                 let _ = storage::save(&project_root, graph);
-                *self.last_auto_sync_head.write().await = Some(current_head);
-                *self.last_auto_sync_changeset.write().await = Some(current_changeset);
-                *self.last_auto_sync_workdir_paths.write().await = current_paths;
 
                 // Persist stale entity IDs so lifting_status can surface
                 // stale-feature drift in subsequent calls. These entities
                 // still count as "lifted" by coverage(), so without this
                 // set, lifting_status would report "100% coverage" while
                 // search_node returns outdated features.
+                //
+                // Ordered before the last_auto_sync_* writes to follow the
+                // canonical lock rank declared on RpgServer (stale=3 before
+                // auto-sync markers=5). Each statement releases its write
+                // lock before the next is acquired, so order would be moot,
+                // but matching rank keeps the file readable as an exemplar.
                 {
                     let mut stale = self.stale_entity_ids.write().await;
                     for id in &summary.modified_entity_ids {
@@ -339,6 +342,9 @@ impl RpgServer {
                     // Prune entries for entities that no longer exist
                     stale.retain(|id| graph.entities.contains_key(id));
                 }
+                *self.last_auto_sync_head.write().await = Some(current_head);
+                *self.last_auto_sync_changeset.write().await = Some(current_changeset);
+                *self.last_auto_sync_workdir_paths.write().await = current_paths;
 
                 if summary.entities_added == 0
                     && summary.entities_modified == 0
@@ -428,7 +434,7 @@ impl RpgServer {
     /// added/modified/renamed file. Deleted files hash their path only.
     /// Same changeset + same stat = same hash = no re-sync. Second save of the
     /// same file changes mtime → different hash → re-sync fires.
-    fn compute_changeset_hash(
+    pub(crate) fn compute_changeset_hash(
         changes: &[rpg_encoder::evolution::FileChange],
         project_root: &std::path::Path,
     ) -> String {

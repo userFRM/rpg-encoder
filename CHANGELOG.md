@@ -37,6 +37,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   stale entities (features present but outdated) survive it, so
   clearing the set would let `lifting_status` report 100% coverage
   while re-lift work remained.
+- Server startup auto-update now feeds `summary.modified_entity_ids`
+  into the stale-tracking set. Previously the result was discarded:
+  modifications between the last lift and a session restart silently
+  dropped off the dashboard, even though the same modifications would
+  have been tracked correctly if they happened mid-session via
+  `auto_sync_if_stale` or `update_rpg`.
+- `auto_lift` now drains stale entries for the entities its pipeline
+  re-lifted. The non-`*` scope path freshens features for every
+  in-scope entity (including ones that were stale), so stale entries
+  for those IDs become invalid after the call. Without the drain,
+  `lifting_status` would keep counting them.
+- `build_rpg` now prunes the stale-tracking set against the newly built
+  graph so dead entity IDs don't accumulate across rebuilds.
+- `set_project_root` tool description is no longer Claude-Code-specific
+  in its example. Reads as `MCP server launched in your home directory
+  but you want to work on ~/myproject` — applies to every runtime.
+- `get_entities_for_lifting` batch-0 dispatch NOTE no longer references
+  "batches 2..N" (off-by-one against the 0-based `batch_index` parameter
+  it actually takes). Reads as "do not request further batches in this
+  context".
+- `auto_sync_if_stale` reorders its inner writes to follow the canonical
+  lock rank (stale before auto-sync markers). Functionally equivalent
+  because each write is statement-per-lock, but matches the declared
+  invariant so the file reads as a clean exemplar.
 - `set_project_root` no longer preserves the previous project's
   in-memory config when the new project has a malformed
   `.rpg/config.toml`. It now falls back to `RpgConfig::default()` on
