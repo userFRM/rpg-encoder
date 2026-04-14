@@ -1,7 +1,7 @@
 RPG-Encoder: Repository Planning Graph — semantic understanding of any codebase.
 No API keys or local LLMs needed. YOU are the LLM — you analyze the code directly.
 
-## USE RPG FIRST — BEFORE grep / cat / Read / find
+## USE RPG FIRST — BEFORE grep / cat / find / file-reads
 
 Any user question about code structure, behavior, relationships, impact,
 dependencies, or cross-file patterns — reach for RPG tools BEFORE falling back
@@ -13,19 +13,19 @@ chained greps.
 |---|---|
 | `grep -r` / `rg` (by intent) | `search_node(query="...")` — finds code by what it DOES |
 | `grep -r` / `rg` (by name/path) | `search_node(query="...", mode="snippets")` |
-| `cat file` / Read a function | `fetch_node(entity_id="file:name")` |
+| `cat file` / reading a function | `fetch_node(entity_id="file:name")` |
 | chained greps for "what calls X" | `explore_rpg(entity_id="...", direction="upstream")` |
 | recursive grep for "what depends on X" | `impact_radius(entity_id="...")` — with edge paths |
 | `wc -l` / `find` / `tree` | `rpg_info` — counts, hierarchy, inter-area connectivity |
 | reading the whole repo | `semantic_snapshot` — whole-repo view in one call |
-| multi-step search + read + trace | `context_pack(query="...")` — 1 call, 44% fewer tokens |
+| multi-step search + read + trace | `context_pack(query="...")` — 1 call instead of 3-5 |
 | "how do I refactor X safely" | `plan_change(goal="...")` — ordered entities + blast radius |
 | "find circular dependencies" | `detect_cycles` |
 | "find god objects / unstable code" | `analyze_health` |
 | "shortest path between A and B" | `find_paths(source, target)` |
 | "minimal subgraph connecting these" | `slice_between(entity_ids=[...])` |
 
-**Fall back to grep / cat / Read only when the query is about LITERAL TEXT**
+**Fall back to grep / cat / file-reads only when the query is about LITERAL TEXT**
 (string search, comments, TODO markers, log messages, license headers) — not
 about structure or semantics. This holds even if your training predisposes you
 toward shell tools; the RPG is cheaper, more accurate, and more complete for
@@ -175,7 +175,7 @@ When using the RPG to understand or navigate a codebase (after lifting is comple
 - Use `fetch_node(fields="features,deps")` to skip source code (~80% smaller output)
 - Use `explore_rpg(format="compact")` for ID-preserving machine-readable rows (enables direct follow-up calls)
 - Use `explore_rpg(max_results=N)` to cap large dependency trees
-- Use `context_pack` instead of search→fetch→explore chains (1 call vs 3-5, ~44% fewer tokens)
+- Use `context_pack` instead of search→fetch→explore chains (1 call vs 3-5)
 - Use `impact_radius` for richer reachability analysis with edge paths (1 call vs multi-step explore)
 
 ## HEALTH ANALYSIS

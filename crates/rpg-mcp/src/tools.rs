@@ -156,7 +156,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "PREFER THIS OVER cat/Read FOR A SINGLE ENTITY. Fetch detailed metadata and source code for a known entity by ID. Returns the entity's semantic features (what it does), dependencies (what it calls, what calls it), hierarchy position, and full source code. Use this instead of reading the whole file when you only need one function/class/method.",
+        description = "PREFER THIS OVER cat OR WHOLE-FILE READS FOR A SINGLE ENTITY. Fetch detailed metadata and source code for a known entity by ID. Returns the entity's semantic features (what it does), dependencies (what it calls, what calls it), hierarchy position, and full source code. Use this instead of reading the whole file when you only need one function/class/method.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn fetch_node(
@@ -1164,7 +1164,7 @@ impl RpgServer {
                 let batch_tokens = self.config.read().await.encoding.max_batch_tokens;
                 let approx_total_k = (total_batches * batch_tokens).div_ceil(1000);
                 output.push_str(&format!(
-                    "\nNOTE: {} batches queued (~{}K tokens of source total). If your runtime supports sub-agent dispatch or a cheaper model, abort this call and invoke `lifting_status` for the delegation pattern. Continue here only if no dispatch is available.\n\n",
+                    "\nNOTE: {} batches queued (~{}K tokens of source total). If your runtime supports sub-agent dispatch or a cheaper model, stop here — do not request batches 2..N — and invoke `lifting_status` for the delegation pattern. Continue the sequential loop only if no dispatch is available.\n\n",
                     total_batches, approx_total_k,
                 ));
             }
@@ -2596,7 +2596,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "PREFER THIS OVER MANUAL search → fetch → explore CHAINS. Single-call context pack: searches for entities matching your query, fetches their details and source code, expands neighbors to the specified depth (default 1), and trims to a token budget. Returns primary entities with source + features + deps, plus neighborhood entities for broader context. Replaces 3-5 chained tool calls with 1, ~44% fewer tokens.",
+        description = "PREFER THIS OVER MANUAL search → fetch → explore CHAINS. Single-call context pack: searches for entities matching your query, fetches their details and source code, expands neighbors to the specified depth (default 1), and trims to a token budget. Returns primary entities with source + features + deps, plus neighborhood entities for broader context. Replaces 3-5 chained tool calls with 1.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn context_pack(

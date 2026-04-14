@@ -32,8 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   dispatch hint when ≥`LARGE_SCOPE_BATCHES` (10) batches are queued,
   directing the caller back to `lifting_status` for the full delegation
   recommendation. Kept deliberately short so it doesn't duplicate detail.
-- `server_instructions.md` large-scope section rewritten and shortened —
-  net prompt growth ≤30 tokens over pre-PR baseline.
+- `server_instructions.md` LIFTING FLOW sub-section rewritten and shortened
+  (net ≤30 tokens over pre-PR baseline for that sub-section). Note: the
+  separate "USE RPG FIRST" section below adds ~500 tokens to the handshake
+  prompt — the intended intervention.
 - New workspace-visible constants `LARGE_SCOPE_ENTITIES` and
   `LARGE_SCOPE_BATCHES` in `rpg-mcp` replace duplicated magic numbers
   across server.rs and tools.rs.
