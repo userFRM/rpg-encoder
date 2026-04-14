@@ -21,6 +21,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   sharded path acquired `hierarchy_session.write()` first and then
   `graph.read()`, which formed a deadlock cycle with `update_rpg`'s
   graph-then-session order under concurrent scheduling.
+- `build_batch_0_domain_discovery` now takes clusters as a parameter
+  instead of re-reading `self.hierarchy_session`. The previous design
+  left a TOCTOU window where a concurrent `build_rpg`/`update_rpg`
+  could clear the session between installation and domain-discovery
+  rendering; the re-read would then panic on `unwrap()`. Callers
+  snapshot the clusters while holding the session lock and pass them
+  through.
+- `set_project_root` no longer preserves the previous project's
+  in-memory config when the new project has a malformed
+  `.rpg/config.toml`. It now falls back to `RpgConfig::default()` on
+  parse failure — project switch must not silently cross-contaminate
+  encoding/batch settings. (Same-project `reload_rpg` keeps the
+  previous config on parse failure, which is correct for that flow.)
 - `lifting_status` tracks stale-feature drift across calls. A persistent
   per-server set records entities whose source was modified after they
   were lifted; the dashboard reports `stale_features: N entities modified

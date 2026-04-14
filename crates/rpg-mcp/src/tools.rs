@@ -445,11 +445,27 @@ impl RpgServer {
         // Swap the root
         *self.project_root_cell.write().await = canonical.clone();
 
-        // Reload the config from the new project — encoding.max_batch_tokens
-        // and other project-scoped settings must follow the root or tools
-        // will operate with the previous project's configuration. Logs a
-        // warning if the new project has a malformed .rpg/config.toml.
-        Self::reload_config_with_warning(&self.config, &canonical).await;
+        // Load the NEW project's config. Unlike `reload_rpg` (same-project
+        // reload, where keeping the previous in-memory config on parse
+        // error is the right call because the old config was project-
+        // valid), a project switch must *not* inherit the old project's
+        // config — that would silently cross-contaminate encoding/batch
+        // settings across unrelated codebases. So on parse failure we
+        // fall back to `RpgConfig::default()` and emit a warning, and on
+        // "file absent" we likewise use defaults.
+        {
+            let new_config = match rpg_core::config::RpgConfig::load(&canonical) {
+                Ok(cfg) => cfg,
+                Err(e) => {
+                    eprintln!(
+                        "rpg: failed to parse .rpg/config.toml in new project ({}); falling back to defaults for this project",
+                        e
+                    );
+                    rpg_core::config::RpgConfig::default()
+                }
+            };
+            *self.config.write().await = new_config;
+        }
 
         // Reset all session + sync state — everything is project-scoped
         *self.lifting_session.write().await = None;
@@ -2676,36 +2692,47 @@ impl RpgServer {
                 // Acquire hierarchy_session under graph to close the TOCTOU
                 // window. If another caller raced us and already installed
                 // a session, keep theirs and drop our speculative clusters.
+                // Snapshot the winning clusters BEFORE dropping the session
+                // lock so `build_batch_0_domain_discovery` doesn't have to
+                // re-read `self.hierarchy_session` — that second read was
+                // the session-clear race Codex called out.
                 let mut session_guard = self.hierarchy_session.write().await;
-                let total_clusters = if session_guard.is_none() {
-                    let count = new_clusters.len();
-                    *session_guard = Some(HierarchySession {
-                        clusters: new_clusters,
-                        functional_areas: None,
-                        assignments: std::collections::HashMap::new(),
-                        batches_completed: 0,
-                    });
-                    count
-                } else {
-                    session_guard.as_ref().unwrap().clusters.len()
-                };
+                let clusters_snapshot: Vec<rpg_encoder::hierarchy::FileCluster> =
+                    if session_guard.is_none() {
+                        let snapshot = new_clusters.clone();
+                        *session_guard = Some(HierarchySession {
+                            clusters: new_clusters,
+                            functional_areas: None,
+                            assignments: std::collections::HashMap::new(),
+                            batches_completed: 0,
+                        });
+                        snapshot
+                    } else {
+                        session_guard.as_ref().unwrap().clusters.clone()
+                    };
                 drop(session_guard);
                 drop(graph_guard);
 
-                // Return batch 0 (domain discovery)
-                return self.build_batch_0_domain_discovery(total_clusters).await;
+                return self
+                    .build_batch_0_domain_discovery(&clusters_snapshot)
+                    .await;
             }
 
             let mut session_guard = self.hierarchy_session.write().await;
             // Session exists - continue with next batch
             let session = session_guard.as_mut().unwrap();
             let total_batches = session.clusters.len() + 1; // +1 for domain discovery
-            let clusters_len = session.clusters.len();
 
             if session.batches_completed == 0 {
-                // Still on batch 0 - waiting for functional areas
+                // Still on batch 0 — snapshot clusters under the session
+                // lock and hand them off so build_batch_0 doesn't re-read
+                // self.hierarchy_session (same race as the init path).
+                let clusters_snapshot: Vec<rpg_encoder::hierarchy::FileCluster> =
+                    session.clusters.clone();
                 drop(session_guard);
-                return self.build_batch_0_domain_discovery(clusters_len).await;
+                return self
+                    .build_batch_0_domain_discovery(&clusters_snapshot)
+                    .await;
             }
 
             if session.batches_completed > session.clusters.len() {

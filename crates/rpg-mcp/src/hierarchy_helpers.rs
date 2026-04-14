@@ -4,15 +4,21 @@ use crate::server::RpgServer;
 use rpg_core::graph::{EntityKind, normalize_path};
 
 impl RpgServer {
-    /// Build batch 0: Domain discovery from representative files across all clusters
+    /// Build batch 0: Domain discovery from representative files across all clusters.
+    ///
+    /// Takes `clusters` as a direct parameter rather than re-reading
+    /// `self.hierarchy_session` inside this function. The caller's already
+    /// held the session lock when it decided to emit batch 0, so passing
+    /// the data through avoids a TOCTOU window where a concurrent
+    /// `build_rpg`/`update_rpg` could clear the session between the
+    /// caller's decision and our re-read.
     pub(crate) async fn build_batch_0_domain_discovery(
         &self,
-        total_clusters: usize,
+        clusters: &[rpg_encoder::hierarchy::FileCluster],
     ) -> Result<String, String> {
+        let total_clusters = clusters.len();
         let guard = self.graph.read().await;
         let graph = guard.as_ref().unwrap();
-        let session_guard = self.hierarchy_session.read().await;
-        let session = session_guard.as_ref().unwrap();
 
         let root = self.project_root().await;
         let repo_name = root
@@ -22,7 +28,7 @@ impl RpgServer {
 
         // Collect representative files from all clusters
         let mut representative_features = String::new();
-        for cluster in &session.clusters {
+        for cluster in clusters {
             for file in &cluster.representatives {
                 // Find Module entity for this file
                 for entity in graph.entities.values() {
