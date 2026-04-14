@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] - 2026-04-14
+
+### Added
+
+- **`rpg-build` crate** — designs an `RPGraph` from a natural-language project
+  specification. Inverse of `rpg-encoder`: where the encoder extracts a graph
+  from existing source code, `rpg-build` produces a graph for code that doesn't
+  exist yet (hierarchy, entities, dependencies, verb-object features — but no
+  source code). Inspired by the ZeroRepo paper (Luo et al., 2026,
+  arXiv:2509.16198), limited to the design phases.
+- **`design_rpg` MCP tool** — exposes `rpg-build` over MCP. Takes a spec, returns
+  a proposed graph rendered as a `semantic_snapshot`. Pass `save=true` to write
+  the design to `.rpg/graph.json` (overwrites any existing graph). Same provider
+  surface as `auto_lift`: Anthropic, OpenAI, OpenRouter, Gemini, with
+  `api_key_env` for safe key handling.
+- MCP tool count: 27 → 28.
+
 ## [0.8.1] - 2026-04-14
 
 ### Fixed

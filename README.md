@@ -96,7 +96,7 @@ Whenever your working tree changes — committed, staged, or unstaged — the MC
   <img src="diagrams/architecture.webp" alt="Your codebase (15 languages) → RPG Engine (5 Rust crates: parser, encoder, nav, lift, mcp) → Clients (Claude Code, Cursor, opencode) via MCP Protocol" width="95%" />
 </p>
 
-Seven Rust crates, one MCP server binary, one CLI binary:
+Eight Rust crates, one MCP server binary, one CLI binary:
 
 | Crate | Role |
 |-------|------|
@@ -105,12 +105,13 @@ Seven Rust crates, one MCP server binary, one CLI binary:
 | `rpg-encoder` | Encoding pipeline, lifting utilities, incremental evolution |
 | `rpg-nav` | Search, fetch, explore, snapshot, TOON serialization |
 | `rpg-lift` | Autonomous LLM lifting (Anthropic, OpenAI, OpenRouter, Gemini) |
+| `rpg-build` | Design RPG blueprints from natural-language specs (inverse of encoder) |
 | `rpg-cli` | CLI binary (`rpg-encoder`) |
-| `rpg-mcp` | MCP server binary (`rpg-mcp-server`) with 27 tools |
+| `rpg-mcp` | MCP server binary (`rpg-mcp-server`) with 28 tools |
 
 ---
 
-## MCP Tools (27)
+## MCP Tools (28)
 
 <details>
 <summary><strong>Build & Maintain</strong> (4 tools)</summary>
@@ -118,6 +119,7 @@ Seven Rust crates, one MCP server binary, one CLI binary:
 | Tool | Description |
 |------|-------------|
 | `build_rpg` | Index the codebase (run once, instant) |
+| `design_rpg` | Design an RPG blueprint from a natural-language spec (inverse of build) |
 | `update_rpg` | Incremental update from git changes |
 | `reload_rpg` | Reload graph from disk after external changes |
 | `rpg_info` | Graph statistics, hierarchy overview, per-area lifting coverage |

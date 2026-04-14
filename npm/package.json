@@ -1,6 +1,6 @@
 {
   "name": "rpg-encoder",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "mcpName": "io.github.userFRM/rpg-encoder",
   "description": "RPG-Encoder — semantic code graph for AI-assisted code understanding",
   "license": "MIT",

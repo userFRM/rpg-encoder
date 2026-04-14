@@ -8,10 +8,11 @@ members = [
     "crates/rpg-cli",
     "crates/rpg-mcp",
     "crates/rpg-lift",
+    "crates/rpg-build",
 ]
 
 [workspace.package]
-version = "0.8.1"
+version = "0.9.0"
 edition = "2024"
 license = "MIT"
 authors = ["userFRM"]
@@ -161,3 +162,4 @@ rpg-parser = { path = "crates/rpg-parser" }
 rpg-encoder = { path = "crates/rpg-encoder" }
 rpg-nav = { path = "crates/rpg-nav" }
 rpg-lift = { path = "crates/rpg-lift" }
+rpg-build = { path = "crates/rpg-build" }

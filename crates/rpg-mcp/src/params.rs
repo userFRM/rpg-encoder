@@ -294,3 +294,35 @@ impl std::fmt::Debug for AutoLiftParams {
             .finish()
     }
 }
+
+/// Parameters for the `design_rpg` tool.
+#[derive(Deserialize, JsonSchema)]
+pub(crate) struct DesignRpgParams {
+    /// Natural-language project specification. Describe what the system should do, who uses it, and any technical constraints.
+    pub(crate) spec: String,
+    /// LLM provider: "anthropic", "openai", or any OpenAI-compatible endpoint.
+    pub(crate) provider: String,
+    /// API key for the provider. Use this OR api_key_env (not both). Prefer api_key_env to avoid exposing keys in tool call transcripts.
+    pub(crate) api_key: Option<String>,
+    /// Environment variable name containing the API key (e.g., "ANTHROPIC_API_KEY"). Safer than passing the key directly.
+    pub(crate) api_key_env: Option<String>,
+    /// Model override (default: claude-haiku-4-5-20251001 for anthropic, gpt-4o-mini for openai). For larger projects, pass a stronger model like claude-sonnet-4 or gpt-4o.
+    pub(crate) model: Option<String>,
+    /// Base URL for OpenAI-compatible endpoints.
+    pub(crate) base_url: Option<String>,
+    /// Save the designed graph to .rpg/graph.json (overwrites any existing graph). Default: false — review the output first, save when satisfied.
+    pub(crate) save: Option<bool>,
+}
+
+impl std::fmt::Debug for DesignRpgParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesignRpgParams")
+            .field("spec_len", &self.spec.len())
+            .field("provider", &self.provider)
+            .field("api_key", &"[REDACTED]")
+            .field("model", &self.model)
+            .field("base_url", &self.base_url)
+            .field("save", &self.save)
+            .finish()
+    }
+}

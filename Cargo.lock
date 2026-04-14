@@ -2678,8 +2678,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpg-build"
+version = "0.9.0"
+dependencies = [
+ "chrono",
+ "rpg-core",
+ "rpg-lift",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "rpg-cli"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2700,7 +2713,7 @@ dependencies = [
 
 [[package]]
 name = "rpg-core"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2716,7 +2729,7 @@ dependencies = [
 
 [[package]]
 name = "rpg-encoder"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2736,7 +2749,7 @@ dependencies = [
 
 [[package]]
 name = "rpg-lift"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "globset",
  "indicatif 0.18.3",
@@ -2753,12 +2766,13 @@ dependencies = [
 
 [[package]]
 name = "rpg-mcp"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "globset",
  "ignore",
  "rmcp",
+ "rpg-build",
  "rpg-core",
  "rpg-encoder",
  "rpg-lift",
@@ -2774,7 +2788,7 @@ dependencies = [
 
 [[package]]
 name = "rpg-nav"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "criterion",
@@ -2793,7 +2807,7 @@ dependencies = [
 
 [[package]]
 name = "rpg-parser"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "criterion",

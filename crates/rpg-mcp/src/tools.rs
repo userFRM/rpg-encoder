@@ -1,4 +1,4 @@
-//! MCP tool handlers — all 27 `#[tool]` methods in a single `#[tool_router]` impl block.
+//! MCP tool handlers — all 28 `#[tool]` methods in a single `#[tool_router]` impl block.
 //!
 //! The `#[tool_router]` proc macro requires every `#[tool]` method to live in one
 //! `impl` block, so this file cannot be split further without upstream changes.
@@ -868,6 +868,112 @@ impl RpgServer {
             );
             Ok(out)
         } // #[cfg(feature = "auto-lift")]
+    }
+
+    #[tool(
+        description = "Design an RPG blueprint from a natural-language project specification. Takes a description like 'a HTTP API for managing tasks with PostgreSQL persistence' and returns a complete graph: hierarchy, entities, dependencies, and verb-object features — but no source code. The connected agent then walks the graph in dependency-safe order and generates the implementation. Inverse of build_rpg + auto_lift, which extract a graph from existing code; design_rpg produces a graph for code that doesn't exist yet. Inspired by the ZeroRepo paper. Pass save=true to write the result to .rpg/graph.json (overwrites any existing graph).",
+        annotations(
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn design_rpg(
+        &self,
+        #[allow(unused_variables)] Parameters(params): Parameters<DesignRpgParams>,
+    ) -> Result<String, String> {
+        #[cfg(not(feature = "rpg-build"))]
+        {
+            return Err("design_rpg is not available: this binary was compiled without the rpg-build feature.".into());
+        }
+
+        #[cfg(feature = "rpg-build")]
+        {
+            // Resolve API key (same pattern as auto_lift)
+            let api_key = if let Some(ref env_var) = params.api_key_env {
+                std::env::var(env_var).map_err(|_| {
+                    format!(
+                        "Environment variable '{}' not set. Set it or use api_key instead.",
+                        env_var
+                    )
+                })?
+            } else if let Some(ref key) = params.api_key {
+                key.clone()
+            } else {
+                let env_var = match params.provider.as_str() {
+                    "anthropic" => "ANTHROPIC_API_KEY",
+                    "openai" => "OPENAI_API_KEY",
+                    _ => "OPENAI_API_KEY",
+                };
+                std::env::var(env_var).map_err(|_| {
+                    format!(
+                        "No API key provided. Use api_key_env=\"{}\" or api_key, or set {} env var.",
+                        env_var, env_var
+                    )
+                })?
+            };
+
+            let provider = rpg_lift::create_provider(
+                &params.provider,
+                &api_key,
+                params.model.as_deref(),
+                params.base_url.as_deref(),
+            )
+            .map_err(|e| format!("Failed to create LLM provider: {}", e))?;
+
+            let spec_owned = params.spec.clone();
+            let provider_name = params.provider.clone();
+            let model_name = provider.model_name().to_string();
+
+            // Run the (blocking) HTTP call on a worker thread
+            let (graph, report) = tokio::task::block_in_place(|| {
+                let config = rpg_build::DesignConfig {
+                    provider: provider.as_ref(),
+                    max_retries: 2,
+                };
+                rpg_build::design_rpg(&spec_owned, &config)
+            })
+            .map_err(|e| format!("Design failed: {}", e))?;
+
+            let mut output = format!(
+                "Design complete ({}, {}).\n\
+                 entities: {}\n\
+                 areas: {}\n\
+                 edges: {}\n\
+                 tokens: {} in / {} out\n\
+                 cost: ${:.4}\n\n",
+                provider_name,
+                model_name,
+                report.entities,
+                report.areas,
+                report.edges,
+                report.input_tokens,
+                report.output_tokens,
+                report.cost_usd,
+            );
+
+            let snapshot = rpg_nav::snapshot::build_semantic_snapshot(
+                &graph,
+                &rpg_nav::snapshot::SnapshotRequest::default(),
+            );
+            output.push_str(&rpg_nav::toon::format_semantic_snapshot(&snapshot));
+
+            if params.save.unwrap_or(false) {
+                rpg_core::storage::save(&self.project_root, &graph)
+                    .map_err(|e| format!("Failed to save designed graph: {}", e))?;
+                *self.graph.write().await = Some(graph);
+                *self.last_auto_sync_head.write().await = None;
+                *self.last_auto_sync_changeset.write().await = None;
+                *self.last_auto_sync_workdir_paths.write().await = std::collections::HashSet::new();
+                output.push_str("\n\nSaved to .rpg/graph.json. Use semantic_snapshot, fetch_node, etc. to explore. The graph contains the design — generate code by walking it in dependency order (use reconstruct_plan for a topological schedule).");
+            } else {
+                output.push_str(
+                    "\n\n(Not saved. Pass save=true to write this design to .rpg/graph.json.)",
+                );
+            }
+
+            Ok(output)
+        }
     }
 
     #[tool(

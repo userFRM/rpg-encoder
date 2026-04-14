@@ -1,0 +1,22 @@
+[package]
+name = "rpg-build"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Design Repository Planning Graphs from natural-language specifications (inverse of rpg-encoder)"
+
+[dependencies]
+rpg-core = { workspace = true }
+rpg-lift = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
