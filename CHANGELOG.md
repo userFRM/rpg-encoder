@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.1] - 2026-04-14
+
+### Fixed
+
+- **CRITICAL: Auto-sync on workdir changes was a no-op** (caught by Codex audit) —
+  v0.8.0 detected workdir changes and computed a hash, but the underlying
+  `run_update` only diffed `base_commit..HEAD`, so uncommitted edits were
+  silently ignored. The hash was then cached as "synced", masking the
+  staleness from later queries. This made the headline v0.8.0 feature
+  (workdir auto-sync) effectively non-functional.
+- **Auto-sync error path no longer caches markers** — transient failures
+  no longer leave the server silently stale. The next query retries.
+- **Revert detection** — when a previously-dirty file returns to its HEAD
+  state, the graph is now restored. Previously, the entity additions from
+  the dirty version persisted forever.
+- **CLI `update` now defaults to workdir-aware** — matches the MCP server.
+  Pass `--since <commit>` for commit-range diffing as before.
+- README said "six crates" while listing seven. Now says seven.
+- `tools.rs` module comment said "17 tools" — actually 27.
+
+### Added
+
+- **`run_update_workdir`** in `rpg-encoder::evolution` — public API that
+  applies the working-tree diff (committed + staged + unstaged) instead of
+  the committed-only diff.
+- **`run_update_from_changes`** in `rpg-encoder::evolution` — public API
+  that applies a caller-supplied `Vec<FileChange>`. Used by the MCP server
+  to compose workdir changes with revert-detection re-parses.
+
 ## [0.8.0] - 2026-04-13
 
 ### Added

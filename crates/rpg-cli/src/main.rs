@@ -612,12 +612,22 @@ fn cmd_update(project_root: &Path, since: Option<String>) -> Result<()> {
     };
 
     eprintln!("Running incremental update...");
-    let summary = rpg_encoder::evolution::run_update(
-        &mut graph,
-        project_root,
-        since.as_deref(),
-        Some(&paradigm_pipeline),
-    )?;
+    // Default: workdir-aware (committed + staged + unstaged).
+    // When --since is supplied, fall back to committed-only diff.
+    let summary = if let Some(since) = since.as_deref() {
+        rpg_encoder::evolution::run_update(
+            &mut graph,
+            project_root,
+            Some(since),
+            Some(&paradigm_pipeline),
+        )?
+    } else {
+        rpg_encoder::evolution::run_update_workdir(
+            &mut graph,
+            project_root,
+            Some(&paradigm_pipeline),
+        )?
+    };
 
     rpg_core::storage::save_with_config(project_root, &graph, &config.storage)?;
 

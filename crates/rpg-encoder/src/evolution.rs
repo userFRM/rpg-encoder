@@ -914,12 +914,48 @@ pub fn route_new_entity(graph: &mut RPGraph, entity_id: &str) -> Option<String> 
 
 /// Run the full incremental update pipeline (structural only).
 ///
+/// Sources changes from `base_commit..HEAD` (committed diff only). For
+/// including staged/unstaged edits, see [`run_update_workdir`].
+///
 /// Semantic re-lifting of modified entities is left to the connected
 /// coding agent via the MCP interactive protocol.
 pub fn run_update(
     graph: &mut RPGraph,
     project_root: &Path,
     since: Option<&str>,
+    paradigm: Option<&ParadigmPipeline<'_>>,
+) -> Result<UpdateSummary> {
+    let changes = detect_changes(project_root, graph, since)?;
+    run_update_from_changes(graph, project_root, changes, paradigm)
+}
+
+/// Run the full incremental update pipeline, sourcing changes from the
+/// working tree (committed + staged + unstaged).
+///
+/// Unlike [`run_update`], this captures uncommitted edits, making it the
+/// right choice for mid-development auto-sync. Sets `base_commit` to
+/// current HEAD after applying — the working tree delta is baked into the
+/// graph.
+pub fn run_update_workdir(
+    graph: &mut RPGraph,
+    project_root: &Path,
+    paradigm: Option<&ParadigmPipeline<'_>>,
+) -> Result<UpdateSummary> {
+    let changes = detect_workdir_changes(project_root, graph)?;
+    run_update_from_changes(graph, project_root, changes, paradigm)
+}
+
+/// Run the full incremental update pipeline against a caller-supplied
+/// change set.
+///
+/// Use this when you already know which files changed (e.g., auto-sync
+/// tracking previously-dirty files that went clean and need re-parse to
+/// the HEAD version). The changes are filtered by language, `.rpgignore`,
+/// and file-system existence before being applied.
+pub fn run_update_from_changes(
+    graph: &mut RPGraph,
+    project_root: &Path,
+    changes: Vec<FileChange>,
     paradigm: Option<&ParadigmPipeline<'_>>,
 ) -> Result<UpdateSummary> {
     // Resolve all indexed languages (multi-language support)
@@ -943,7 +979,6 @@ pub fn run_update(
         ));
     }
 
-    let changes = detect_changes(project_root, graph, since)?;
     let changes = filter_rpgignore_changes(project_root, changes);
     let mut changes = filter_source_changes(changes, &languages);
 

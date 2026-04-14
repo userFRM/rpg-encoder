@@ -1,4 +1,4 @@
-//! MCP tool handlers — all 17 `#[tool]` methods in a single `#[tool_router]` impl block.
+//! MCP tool handlers — all 27 `#[tool]` methods in a single `#[tool_router]` impl block.
 //!
 //! The `#[tool_router]` proc macro requires every `#[tool]` method to live in one
 //! `impl` block, so this file cannot be split further without upstream changes.
@@ -1751,7 +1751,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Incrementally update the RPG from git changes since the last build. Detects added, modified, deleted, and renamed files, re-extracts entities, and updates structural metadata. Modified entities with stale features are tracked for interactive re-lifting. Much faster than a full rebuild.",
+        description = "Incrementally update the RPG from the current working tree — committed, staged, and unstaged edits since the last build. Detects added, modified, deleted, and renamed files, re-extracts entities, and updates structural metadata. Modified entities with stale features are tracked for interactive re-lifting. Pass `since` to scope to a committed-only diff from a specific commit. Much faster than a full rebuild.",
         annotations(destructive_hint = false, open_world_hint = false)
     )]
     async fn update_rpg(
@@ -1781,12 +1781,22 @@ impl RpgServer {
             qcache: &qcache,
         };
 
-        let summary = rpg_encoder::evolution::run_update(
-            g,
-            &self.project_root,
-            params.since.as_deref(),
-            Some(&paradigm_pipeline),
-        )
+        // Default: sync from current working tree (committed + staged + unstaged).
+        // If `since` is provided, fall back to committed-only diff from that commit.
+        let summary = if let Some(since) = params.since.as_deref() {
+            rpg_encoder::evolution::run_update(
+                g,
+                &self.project_root,
+                Some(since),
+                Some(&paradigm_pipeline),
+            )
+        } else {
+            rpg_encoder::evolution::run_update_workdir(
+                g,
+                &self.project_root,
+                Some(&paradigm_pipeline),
+            )
+        }
         .map_err(|e| format!("Update failed: {}", e))?;
 
         storage::save(&self.project_root, g).map_err(|e| format!("Failed to save RPG: {}", e))?;

@@ -77,7 +77,7 @@ Instead of grepping through files, the LLM calls `semantic_snapshot` once and re
   <img src="diagrams/auto-staleness.webp" alt="Git HEAD moves → RPG Server auto-syncs → update_rpg applies additions/modifications/removals → graph always fresh, zero agent action" width="80%" />
 </p>
 
-When git HEAD moves (commits, merges, rebases), the MCP server automatically runs a structural update before responding to the next query. No manual `update_rpg` calls, no stale warnings your agent ignores. The graph owns its own consistency.
+Whenever your working tree changes — committed, staged, or unstaged — the MCP server automatically re-syncs before responding to the next query. A changeset hash over `(path, size, mtime)` means repeated saves of the same file trigger one sync, and idle queries trigger none. Reverts are detected too: if a previously-dirty file returns to its HEAD state, the graph is restored.
 
 ### Two ways to lift
 
@@ -96,7 +96,7 @@ When git HEAD moves (commits, merges, rebases), the MCP server automatically run
   <img src="diagrams/architecture.webp" alt="Your codebase (15 languages) → RPG Engine (5 Rust crates: parser, encoder, nav, lift, mcp) → Clients (Claude Code, Cursor, opencode) via MCP Protocol" width="95%" />
 </p>
 
-Six Rust crates, one MCP server binary, one CLI binary:
+Seven Rust crates, one MCP server binary, one CLI binary:
 
 | Crate | Role |
 |-------|------|

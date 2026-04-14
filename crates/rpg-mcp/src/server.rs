@@ -57,6 +57,11 @@ pub(crate) struct RpgServer {
     /// Combined with `last_auto_sync_head` to detect when a re-sync is needed
     /// for uncommitted/staged/unstaged changes.
     pub(crate) last_auto_sync_changeset: Arc<RwLock<Option<String>>>,
+    /// Paths that were dirty at the last successful auto-sync. Lets us detect
+    /// reverts: when a previously-dirty file returns to clean, the workdir
+    /// diff no longer lists it — we must re-parse it to restore HEAD content.
+    pub(crate) last_auto_sync_workdir_paths:
+        Arc<RwLock<std::collections::HashSet<std::path::PathBuf>>>,
     /// Guard: true while auto_lift is running. Rejects concurrent lift calls.
     pub(crate) lift_in_progress: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -95,6 +100,7 @@ impl RpgServer {
             prompt_versions: PromptVersions::new(),
             last_auto_sync_head: Arc::new(RwLock::new(initial_head)),
             last_auto_sync_changeset: Arc::new(RwLock::new(None)),
+            last_auto_sync_workdir_paths: Arc::new(RwLock::new(std::collections::HashSet::new())),
             lift_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
@@ -128,24 +134,29 @@ impl RpgServer {
 
     /// Auto-sync the graph if stale, returning a notice string.
     ///
-    /// Syncs on two triggers:
-    /// 1. **HEAD changed** — commits, merges, rebases.
-    /// 2. **Workdir changed** — staged or unstaged file edits since last sync.
+    /// Syncs the graph to match the current **working tree** (committed + staged
+    /// + unstaged). Triggers on:
     ///
-    /// Uses `last_auto_sync_head` + `last_auto_sync_changeset` to avoid redundant
-    /// re-parses. The changeset hash includes file paths and `(mtime, size)` stat
-    /// so repeated saves of the same file trigger re-sync, but idle queries don't.
+    /// 1. HEAD changed (commits, merges, rebases).
+    /// 2. Any workdir file in the relevant language set added/modified/deleted/renamed.
+    /// 3. A previously-dirty file returning to clean state (revert detection).
     ///
-    /// Structural-only update (no re-lifting). Falls back to a passive staleness
-    /// notice on error.
+    /// Uses `last_auto_sync_head` + `last_auto_sync_changeset` to skip re-sync
+    /// when nothing changed since the last successful run. The changeset hash
+    /// covers path + `(size, mtime)` stat so repeated saves trigger re-sync
+    /// but idle queries don't.
+    ///
+    /// Structural-only update (no re-lifting). On error, does **not** cache
+    /// markers — the next query will retry, so transient failures don't
+    /// silently leave the server stale.
     pub(crate) async fn auto_sync_if_stale(&self) -> String {
         // Step 1: Get current HEAD (cheap, just opens .git/HEAD)
         let Ok(current_head) = rpg_encoder::evolution::get_head_sha(&self.project_root) else {
             return self.staleness_notice().await;
         };
 
-        // Step 2: Detect current workdir state (changes + stat hash) under read lock
-        let (source_changes, current_changeset) = {
+        // Step 2: Detect current workdir state under read lock
+        let (source_changes, current_paths, current_changeset) = {
             let guard = self.graph.read().await;
             let Some(graph) = guard.as_ref() else {
                 return String::new();
@@ -163,11 +174,30 @@ impl RpgServer {
             } else {
                 rpg_encoder::evolution::filter_source_changes(changes, &languages)
             };
+            let paths = Self::change_paths(&source_changes);
             let hash = Self::compute_changeset_hash(&source_changes, &self.project_root);
-            (source_changes, hash)
+            (source_changes, paths, hash)
         };
 
-        // Step 3: Check if (HEAD, changeset) matches last-synced state
+        // Step 3: Union with previously-dirty paths (revert detection).
+        // Any file that was dirty last time but isn't in the current workdir
+        // diff has returned to clean state — we need to re-parse it to restore
+        // HEAD content in the graph.
+        let effective_changes = {
+            let last_paths = self.last_auto_sync_workdir_paths.read().await;
+            let mut effective = source_changes.clone();
+            for path in last_paths.difference(&current_paths) {
+                let abs = self.project_root.join(path);
+                if abs.is_file() {
+                    effective.push(rpg_encoder::evolution::FileChange::Modified(path.clone()));
+                } else {
+                    effective.push(rpg_encoder::evolution::FileChange::Deleted(path.clone()));
+                }
+            }
+            effective
+        };
+
+        // Step 4: Check if (HEAD, changeset) matches last-synced state
         {
             let last_head = self.last_auto_sync_head.read().await;
             let last_changeset = self.last_auto_sync_changeset.read().await;
@@ -178,14 +208,15 @@ impl RpgServer {
             }
         }
 
-        // Step 4: If nothing actually changed, just update markers (HEAD moved but no source diff)
-        if source_changes.is_empty() {
+        // Step 5: Nothing to apply — just update markers (HEAD moved with no source diff)
+        if effective_changes.is_empty() {
             *self.last_auto_sync_head.write().await = Some(current_head);
             *self.last_auto_sync_changeset.write().await = Some(current_changeset);
+            *self.last_auto_sync_workdir_paths.write().await = current_paths;
             return String::new();
         }
 
-        // Step 5: Real changes exist — acquire write lock and run update
+        // Step 6: Acquire write lock and run update with our composed change set
         let mut guard = self.graph.write().await;
         let Some(graph) = guard.as_mut() else {
             return String::new();
@@ -210,13 +241,18 @@ impl RpgServer {
             }
         });
 
-        match rpg_encoder::evolution::run_update(graph, &self.project_root, None, pipeline.as_ref())
-        {
+        match rpg_encoder::evolution::run_update_from_changes(
+            graph,
+            &self.project_root,
+            effective_changes,
+            pipeline.as_ref(),
+        ) {
             Ok(summary) => {
                 graph.metadata.paradigms = paradigm_names;
                 let _ = storage::save(&self.project_root, graph);
                 *self.last_auto_sync_head.write().await = Some(current_head);
                 *self.last_auto_sync_changeset.write().await = Some(current_changeset);
+                *self.last_auto_sync_workdir_paths.write().await = current_paths;
 
                 if summary.entities_added == 0
                     && summary.entities_modified == 0
@@ -241,14 +277,28 @@ impl RpgServer {
             }
             Err(e) => {
                 eprintln!("rpg: auto-sync failed (non-fatal): {e}");
-                // Update markers anyway so we don't retry a failing update every call
-                *self.last_auto_sync_head.write().await = Some(current_head);
-                *self.last_auto_sync_changeset.write().await = Some(current_changeset);
-                // Drop write lock before calling staleness_notice (which reads)
+                // Do NOT cache markers on error — the next call must retry.
+                // Silent staleness is worse than repeated sync attempts.
                 drop(guard);
                 self.staleness_notice().await
             }
         }
+    }
+
+    /// Extract the path set from a changeset (for revert detection).
+    fn change_paths(
+        changes: &[rpg_encoder::evolution::FileChange],
+    ) -> std::collections::HashSet<std::path::PathBuf> {
+        use rpg_encoder::evolution::FileChange;
+        changes
+            .iter()
+            .map(|c| match c {
+                FileChange::Added(p) | FileChange::Modified(p) | FileChange::Deleted(p) => {
+                    p.clone()
+                }
+                FileChange::Renamed { to, .. } => to.clone(),
+            })
+            .collect()
     }
 
     /// Compute a stable hash of the current workdir changeset.
