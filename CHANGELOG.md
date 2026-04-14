@@ -45,6 +45,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   aren't surprised when `lifting_status` starts returning delegation
   recommendations instead of direct lift instructions.
 
+### Tool-preference guidance (RPG first, grep second)
+
+Agents consistently fall back to `grep`/`cat`/`Read` for codebase questions
+even when RPG is installed, because the server's prompt and tool descriptions
+didn't actively counter the training default.
+
+- **`server_instructions.md`**: new top section "USE RPG FIRST — BEFORE
+  grep / cat / Read / find" with a concrete mapping table listing each
+  shell pattern and the RPG tool that replaces it. Placed before the
+  LIFTING FLOW so the directive is read before any workflow detail.
+- **Tool descriptions**: each of `search_node`, `fetch_node`, `explore_rpg`,
+  `rpg_info`, `semantic_snapshot`, `context_pack`, `impact_radius`,
+  `plan_change`, `analyze_health`, `detect_cycles`, `find_paths`,
+  `slice_between` now opens with a "PREFER THIS OVER ..." marker naming
+  the shell command or workflow it replaces. Description tokens are
+  what agents weigh when choosing a tool — making the displacement
+  explicit is the intervention that sticks.
+- **`.claude/skills/rpg/SKILL.md`**: same mapping table scoped to the
+  CLI surface, plus a note pointing to MCP tools when available.
+- **README**: dedicated "Use RPG before grep/cat/find" section with
+  the same mapping table as the server prompt — so human readers see
+  the same positioning the agent does.
+
 ## [0.8.2] - 2026-04-14
 
 ### Added

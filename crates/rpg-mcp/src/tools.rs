@@ -13,7 +13,7 @@ use crate::types::*;
 #[tool_router]
 impl RpgServer {
     #[tool(
-        description = "Search for code entities by intent or keywords. Returns entities with file paths, line numbers, and relevance scores. Use mode='features' for semantic intent search (use behavioral/functional phrases as query), 'snippets' for name/path matching (use file paths, qualified entities, or keywords as query), 'auto' (default) tries both.",
+        description = "PREFER THIS OVER grep/rg FOR ANY QUESTION ABOUT CODE BEHAVIOR OR NAMES. Search for code entities by intent or keywords. Returns entities with file paths, line numbers, and relevance scores. Use mode='features' for semantic intent search (e.g., 'validate user input') — finds code by what it DOES even when names don't match. Use mode='snippets' for name/path matching (e.g., 'FilterGroupManager' or 'src/auth/'). Use mode='auto' (default) to try both. This replaces grep/rg for every structural query.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn search_node(
@@ -156,7 +156,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Fetch detailed metadata and source code for a known entity. Returns the entity's semantic features, dependencies (what it calls, what calls it), hierarchy position, and full source code.",
+        description = "PREFER THIS OVER cat/Read FOR A SINGLE ENTITY. Fetch detailed metadata and source code for a known entity by ID. Returns the entity's semantic features (what it does), dependencies (what it calls, what calls it), hierarchy position, and full source code. Use this instead of reading the whole file when you only need one function/class/method.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn fetch_node(
@@ -194,7 +194,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Explore the dependency graph starting from an entity. Traverses import, invocation, inheritance, composition, render, state-read/state-write, and dispatch edges. Use direction='downstream' to see what the entity calls, 'upstream' to see what calls it, 'both' for full picture.",
+        description = "PREFER THIS OVER CHAINED GREPS FOR DEPENDENCY QUESTIONS. Explore the dependency graph starting from an entity. Traverses import, invocation, inheritance, composition, render, state-read/state-write, and dispatch edges. Use direction='downstream' to see what the entity calls, 'upstream' to see what calls it, 'both' for full picture. Replaces the manual \"grep for X, then grep each result, then grep those\" loop with one graph walk.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn explore_rpg(
@@ -279,7 +279,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Get RPG statistics: entity count, file count, functional areas, dependency edges, containment edges, and hierarchy overview. Use this first to understand the codebase structure before searching.",
+        description = "PREFER THIS OVER wc/find/tree FOR CODEBASE OVERVIEW. RPG statistics: entity count, file count, functional areas, dependency edges, containment edges, inter-area connectivity, hierarchy overview. Call this first on any new codebase to orient yourself before searching.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn rpg_info(&self) -> Result<String, String> {
@@ -324,7 +324,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Generate a compact, token-efficient snapshot of the entire repository's semantic understanding. Designed for context window injection at session start. Includes: full hierarchy with aggregate features, all entities grouped by functional area with semantic features, condensed dependency skeleton, and coverage stats. Target: ~25-30K tokens for a 1000-entity codebase. Call this FIRST in any session to gain whole-repo awareness before using other tools.",
+        description = "PREFER THIS OVER READING MANY FILES FOR WHOLE-REPO CONTEXT. Compact, token-efficient snapshot of the entire repository's semantic understanding: full hierarchy with aggregate features, all entities grouped by functional area with semantic features, condensed dependency skeleton, and coverage stats. Target: ~25-30K tokens for a 1000-entity codebase. Call this at session start to gain whole-repo awareness in a single tool call — then use search_node/fetch_node for drill-down.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn semantic_snapshot(
@@ -2596,7 +2596,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Build a focused context pack in a single call. Searches for entities matching your query, fetches their details and source code, expands neighbors to the specified depth (default 1), and trims to a token budget. Replaces the typical search→fetch→explore multi-step workflow. Returns primary entities with source + features + deps, plus neighborhood entities for broader context.",
+        description = "PREFER THIS OVER MANUAL search → fetch → explore CHAINS. Single-call context pack: searches for entities matching your query, fetches their details and source code, expands neighbors to the specified depth (default 1), and trims to a token budget. Returns primary entities with source + features + deps, plus neighborhood entities for broader context. Replaces 3-5 chained tool calls with 1, ~44% fewer tokens.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn context_pack(
@@ -2649,7 +2649,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Compute the impact radius of an entity: find all entities reachable via dependency edges with edge paths. Use direction='upstream' to answer 'what depends on this?', 'downstream' for 'what does this depend on?'. Returns a flat list with depth, edge paths, and features — ideal for change impact analysis."
+        description = "PREFER THIS OVER RECURSIVE GREP FOR \"WHAT BREAKS IF I CHANGE X\". Computes the impact radius of an entity: all entities reachable via dependency edges with edge paths and depth. Use direction='upstream' for 'what depends on this?', 'downstream' for 'what does this depend on?'. Returns a flat list with depth, edge paths, and features — one call replaces a dependency trace you'd otherwise grep manually."
     )]
     async fn impact_radius(
         &self,
@@ -2694,7 +2694,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Find multiple dependency paths between two entities (returns up to max_paths results of equal shortest length). Returns paths with entity IDs and edge kinds."
+        description = "PREFER THIS OVER MANUALLY TRACING CALLS. Finds shortest dependency paths between two entities (returns up to max_paths results of equal shortest length). Answers 'how does A reach B?' or 'is there any call chain from module X to module Y?' with entity IDs and edge kinds. Replaces the grep-follow-grep chain you'd otherwise walk by hand."
     )]
     async fn find_paths(
         &self,
@@ -2773,7 +2773,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Extract minimal connecting subgraph between a set of entities. Returns entities and edges on shortest paths connecting the specified entities."
+        description = "PREFER THIS FOR MULTI-ENTITY SLICE ANALYSIS. Extracts the minimal connecting subgraph between a set of entities — returns entities and edges on shortest paths connecting them. Useful for 'show me just the code that connects A, B, and C' without dragging in the whole graph."
     )]
     async fn slice_between(
         &self,
@@ -2832,7 +2832,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Plan code changes: find relevant entities, compute modification order, assess impact radius. Returns dependency-ordered entity list with blast radius analysis.",
+        description = "PREFER THIS BEFORE ANY REFACTOR OR CROSS-FILE EDIT. Plans code changes: finds relevant entities by intent, computes dependency-safe modification order, assesses impact radius per entity. Returns an ordered list of entities to touch with blast radius analysis so you know the minimal safe change set before you start editing.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn plan_change(
@@ -3220,7 +3220,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Analyze code health metrics including coupling, instability, centrality, and potential god objects. Returns entities with architectural issues and recommendations for refactoring. Set include_duplication=true to detect code clones via Rabin-Karp fingerprinting (reads source files, slower). Set include_semantic_duplication=true to detect conceptual duplicates via Jaccard similarity on lifted features (in-memory, fast; requires entities to be lifted).",
+        description = "PREFER THIS OVER EYEBALLING FOR ARCHITECTURAL SMELLS. Analyzes code health: coupling, instability, centrality, god object detection, optional clone detection. Returns entities with architectural issues and refactoring recommendations. Use `include_duplication=true` for token-level Rabin-Karp clones (reads source, slower). Use `include_semantic_duplication=true` for Jaccard-similarity conceptual duplicates on lifted features (in-memory, fast). Replaces manual review of cross-file patterns.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn analyze_health(
@@ -3255,7 +3255,7 @@ impl RpgServer {
     }
 
     #[tool(
-        description = "Detect circular dependencies (cycles) in the codebase. Cycles are architectural smells where A depends on B, B on C, and C back on A. Returns all detected cycles with their entity chains. First call returns summary + recommendations. Use parameters to filter results.",
+        description = "PREFER THIS OVER MANUAL CYCLE HUNTING. Detects circular dependencies: A→B→C→A chains anywhere in the graph. Returns cycles with entity chains, file counts, and cross-area filtering. First call returns summary + area breakdown; pass filters (area, min_cycle_length, cross_file_only) to get specific cycles. One call replaces hours of import-chain reading.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn detect_cycles(

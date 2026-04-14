@@ -1,10 +1,37 @@
 ---
 name: rpg
-description: 'Build and query semantic code graphs using RPG-Encoder. Use when the user wants to understand codebase structure, search for code by intent, explore dependencies, analyze change impact, or perform semantic lifting.'
+description: 'Build and query semantic code graphs using RPG-Encoder. Use BEFORE grep/cat/find for any question about code structure, behavior, relationships, impact, dependencies, or cross-file patterns.'
 allowed-tools: Bash(rpg-encoder *), Read, Glob, Grep
 ---
 
-# RPG-Encoder CLI Skill
+# RPG-Encoder — USE BEFORE grep/cat/find
+
+## Reach for RPG first, shell commands second
+
+Whenever the user asks about code structure, behavior, relationships, impact,
+dependencies, or cross-file patterns, reach for RPG commands BEFORE falling
+back to `grep`, `cat`, `find`, `wc`, or `Read`. RPG is indexed, semantically
+organized, and answers structural questions in one call that would otherwise
+require dozens of chained text searches.
+
+| If you'd otherwise... | Use this instead |
+|---|---|
+| `grep -r` by intent | `rpg-encoder search "describe what it does"` |
+| `grep -r` by name | `rpg-encoder search "name" --mode snippets` |
+| `cat file` for a function | `rpg-encoder fetch "file:func"` |
+| chained greps for callers | `rpg-encoder explore ENTITY --direction up` |
+| chained greps for callees | `rpg-encoder explore ENTITY --direction down` |
+| `wc -l` / `find` / `tree` | `rpg-encoder info` |
+| reading many files | Use the MCP `semantic_snapshot` tool if available |
+
+Fall back to `grep` / `cat` / `Read` only when the query is about literal text
+(string search, comments, TODOs, log messages) — not structure or semantics.
+
+If you have the RPG MCP server connected, prefer its tools (`search_node`,
+`fetch_node`, `explore_rpg`, `impact_radius`, `plan_change`, `semantic_snapshot`,
+`context_pack`) over the CLI — they're faster and return structured data.
+
+---
 
 You have access to `rpg-encoder`, a CLI tool that builds semantic code graphs (Repository Planning Graphs) from any codebase. Use it to understand code structure, search by intent, trace dependencies, and perform autonomous semantic lifting.
 

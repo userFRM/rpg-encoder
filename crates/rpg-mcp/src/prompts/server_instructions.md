@@ -1,6 +1,40 @@
 RPG-Encoder: Repository Planning Graph — semantic understanding of any codebase.
 No API keys or local LLMs needed. YOU are the LLM — you analyze the code directly.
 
+## USE RPG FIRST — BEFORE grep / cat / Read / find
+
+Any user question about code structure, behavior, relationships, impact,
+dependencies, or cross-file patterns — reach for RPG tools BEFORE falling back
+to shell commands or file reads. RPG is indexed, semantically organized, and
+gives one-call answers to questions that would otherwise require dozens of
+chained greps.
+
+| If you'd otherwise reach for... | Use this instead |
+|---|---|
+| `grep -r` / `rg` (by intent) | `search_node(query="...")` — finds code by what it DOES |
+| `grep -r` / `rg` (by name/path) | `search_node(query="...", mode="snippets")` |
+| `cat file` / Read a function | `fetch_node(entity_id="file:name")` |
+| chained greps for "what calls X" | `explore_rpg(entity_id="...", direction="upstream")` |
+| recursive grep for "what depends on X" | `impact_radius(entity_id="...")` — with edge paths |
+| `wc -l` / `find` / `tree` | `rpg_info` — counts, hierarchy, inter-area connectivity |
+| reading the whole repo | `semantic_snapshot` — whole-repo view in one call |
+| multi-step search + read + trace | `context_pack(query="...")` — 1 call, 44% fewer tokens |
+| "how do I refactor X safely" | `plan_change(goal="...")` — ordered entities + blast radius |
+| "find circular dependencies" | `detect_cycles` |
+| "find god objects / unstable code" | `analyze_health` |
+| "shortest path between A and B" | `find_paths(source, target)` |
+| "minimal subgraph connecting these" | `slice_between(entity_ids=[...])` |
+
+**Fall back to grep / cat / Read only when the query is about LITERAL TEXT**
+(string search, comments, TODO markers, log messages, license headers) — not
+about structure or semantics. This holds even if your training predisposes you
+toward shell tools; the RPG is cheaper, more accurate, and more complete for
+every structural question.
+
+If a graph does not exist yet (`rpg_info` says "No RPG found"), run `build_rpg`
+first. If entities are unlifted and the scope is large, see the LIFTING FLOW
+below for delegation guidance.
+
 ## LIFTING FLOW (step by step)
 
 1. `build_rpg` — index the codebase (if no graph exists)

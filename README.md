@@ -47,6 +47,29 @@ Once lifted, try:
 
 ---
 
+## Use RPG before `grep`, `cat`, `find`
+
+The server instructions tell your agent to reach for RPG tools FIRST for any
+question about code structure or behavior. That reflex matters — `grep`/`cat`/
+`Read` loops burn tokens and miss semantic relationships RPG already knows.
+
+| If you'd otherwise reach for... | Use this instead |
+|---|---|
+| `grep -r` / `rg` (by intent) | `search_node(query="...")` |
+| `grep -r` / `rg` (by name) | `search_node(query="...", mode="snippets")` |
+| `cat` / `Read` a function | `fetch_node(entity_id="file:name")` |
+| chained greps for callers/callees | `explore_rpg(entity_id="...", direction="...")` |
+| recursive grep for "what depends on X" | `impact_radius(entity_id="...")` |
+| `wc -l` / `find` / `tree` | `rpg_info` |
+| reading many files for context | `semantic_snapshot` |
+| manual search → fetch → explore chains | `context_pack(query="...")` |
+| "how do I refactor X safely" | `plan_change(goal="...")` |
+
+Fall back to `grep` / `cat` / `Read` only when the query is about literal text
+(string search, comments, TODOs, log messages) — not about structure.
+
+---
+
 ## How It Works
 
 <p align="center">
