@@ -329,11 +329,10 @@ impl RpgServer {
                 // set, lifting_status would report "100% coverage" while
                 // search_node returns outdated features.
                 //
-                // Ordered before the last_auto_sync_* writes to follow the
-                // canonical lock rank declared on RpgServer (stale=3 before
-                // auto-sync markers=5). Each statement releases its write
-                // lock before the next is acquired, so order would be moot,
-                // but matching rank keeps the file readable as an exemplar.
+                // Each inner write below is statement-per-lock — no two
+                // inner locks are held at once while we're also holding
+                // graph.write(), so the order between them is irrelevant
+                // for correctness (see the lock-order doc on RpgServer).
                 {
                     let mut stale = self.stale_entity_ids.write().await;
                     for id in &summary.modified_entity_ids {

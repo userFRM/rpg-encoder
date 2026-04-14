@@ -958,21 +958,27 @@ impl RpgServer {
             let project_root = self.project_root().await.clone();
             let scope_owned = scope.to_string();
 
-            // Snapshot pre-lift fingerprints so we can drain re-lifted IDs
-            // from `stale_entity_ids` afterwards. For a non-`*` scope the
-            // pipeline freshens features for every in-scope entity (ignoring
-            // the "already has features" gate that resolve_scope=`*` enforces),
-            // so any in-scope stale entity is no longer stale once the
-            // pipeline returns. Without this drain, lifting_status would
-            // keep reporting the count.
-            let pre_lift_features: std::collections::HashMap<String, Vec<String>> = graph
-                .entities
-                .iter()
-                .map(|(id, e)| (id.clone(), e.semantic_features.clone()))
-                .collect();
+            // Compute the in-scope entity IDs up front so we can drain
+            // them from `stale_entity_ids` after the pipeline runs. For a
+            // non-`*` scope the pipeline freshens features for every
+            // in-scope entity (the `*` scope auto-filters to feature-empty
+            // entities, but explicit scopes don't), so any stale entity
+            // in scope is no longer stale once the pipeline returns. We
+            // drain *unconditionally* by ID rather than diffing features
+            // before/after, because a deterministic re-lift can produce
+            // identical features for a cosmetic source change — the
+            // entity is still freshly lifted, just to the same value.
+            let in_scope_ids: HashSet<String> = {
+                let lift_scope = rpg_encoder::lift::resolve_scope(graph, scope);
+                lift_scope.entity_ids.into_iter().collect()
+            };
 
-            // Run the blocking pipeline on the current thread (tells tokio we're blocking).
-            // This is safe because MCP stdio is serial — no concurrent requests.
+            // Run the blocking pipeline on the current thread (tells tokio
+            // we're blocking). Safe because (1) the `lift_in_progress`
+            // atomic above rejects concurrent `auto_lift` calls, and
+            // (2) the graph write lock we hold below serializes against
+            // every other tool that touches the graph for the pipeline's
+            // duration.
             let report = tokio::task::block_in_place(|| {
                 let config = rpg_lift::LiftConfig {
                     provider: provider.as_ref(),
@@ -988,29 +994,14 @@ impl RpgServer {
             })
             .map_err(|e| format!("Lift failed: {}", e))?;
 
-            // Drain stale entries for entities the pipeline freshened
-            // (features changed or transitioned from empty → present).
-            // Done while still holding the graph write lock so the
-            // before/after snapshot is consistent.
-            let refreshed_ids: Vec<String> = graph
-                .entities
-                .iter()
-                .filter_map(|(id, e)| {
-                    let prev = pre_lift_features.get(id);
-                    let changed = match prev {
-                        None => !e.semantic_features.is_empty(),
-                        Some(p) => p != &e.semantic_features,
-                    };
-                    if changed { Some(id.clone()) } else { None }
-                })
-                .collect();
             drop(guard);
 
-            if !refreshed_ids.is_empty() {
+            // Drain stale tracking for every in-scope ID. After the
+            // pipeline, those entities have authoritative features (LLM
+            // or auto-lift), regardless of whether the features changed.
+            if !in_scope_ids.is_empty() {
                 let mut stale = self.stale_entity_ids.write().await;
-                for id in &refreshed_ids {
-                    stale.remove(id);
-                }
+                stale.retain(|id| !in_scope_ids.contains(id));
             }
 
             // Clear sessions — entity list changed
