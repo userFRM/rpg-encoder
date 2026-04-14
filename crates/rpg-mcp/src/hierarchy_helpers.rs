@@ -14,8 +14,8 @@ impl RpgServer {
         let session_guard = self.hierarchy_session.read().await;
         let session = session_guard.as_ref().unwrap();
 
-        let repo_name = self
-            .project_root
+        let root = self.project_root().await;
+        let repo_name = root
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
@@ -90,8 +90,8 @@ impl RpgServer {
         let guard = self.graph.read().await;
         let graph = guard.as_ref().unwrap();
 
-        let repo_name = self
-            .project_root
+        let root = self.project_root().await;
+        let repo_name = root
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
