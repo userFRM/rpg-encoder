@@ -764,7 +764,7 @@ impl RpgServer {
              functional_areas: {}\n\
              dependency_edges: {}\n\
              containment_edges: {}\n\
-             lifted: {}/{} (excludes modules, which are aggregated from files)\n\
+             liftable_entities: {}/{} (modules are aggregated from files, not lifted directly)\n\
              hierarchy: {}",
             lang_display,
             meta.total_entities,
@@ -2660,20 +2660,22 @@ impl RpgServer {
         if needs_sharding {
             // Lock order invariant (see RpgServer doc): graph before
             // hierarchy_session. Peek the session first WITHOUT holding
-            // graph, compute clusters under graph if we need to
-            // initialize, then take hierarchy_session.write() and install
-            // — with a re-check against racing initializers.
+            // graph; if we need to initialize, take graph.read() FIRST
+            // and hold it through the session.write() install so that a
+            // concurrent build_rpg/update_rpg that clears the session
+            // can't slip in between us computing clusters and installing
+            // them (that would persist clusters derived from the
+            // pre-update graph).
             let already_initialized = self.hierarchy_session.read().await.is_some();
 
             if !already_initialized {
-                // Compute clusters under graph.read() (no session held)
-                let new_clusters = {
-                    let graph_guard = self.graph.read().await;
-                    let graph = graph_guard.as_ref().unwrap();
-                    rpg_encoder::hierarchy::cluster_files_for_hierarchy(graph, 70)
-                };
+                let graph_guard = self.graph.read().await;
+                let graph = graph_guard.as_ref().unwrap();
+                let new_clusters = rpg_encoder::hierarchy::cluster_files_for_hierarchy(graph, 70);
 
-                // Now install — if another caller raced us, keep theirs.
+                // Acquire hierarchy_session under graph to close the TOCTOU
+                // window. If another caller raced us and already installed
+                // a session, keep theirs and drop our speculative clusters.
                 let mut session_guard = self.hierarchy_session.write().await;
                 let total_clusters = if session_guard.is_none() {
                     let count = new_clusters.len();
@@ -2688,6 +2690,7 @@ impl RpgServer {
                     session_guard.as_ref().unwrap().clusters.len()
                 };
                 drop(session_guard);
+                drop(graph_guard);
 
                 // Return batch 0 (domain discovery)
                 return self.build_batch_0_domain_discovery(total_clusters).await;
