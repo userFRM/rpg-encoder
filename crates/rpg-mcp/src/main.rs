@@ -9,6 +9,19 @@ mod server;
 mod tools;
 mod types;
 
+/// Entity count above which direct foreground lifting is discouraged.
+/// Caller-side context cost grows linearly with entity count × batch token
+/// budget; past this threshold the caller should delegate to a sub-agent
+/// or cheaper model rather than loop locally.
+pub(crate) const LARGE_SCOPE_ENTITIES: usize = 100;
+
+/// Batch count above which the batch-0 response includes a dispatch note.
+/// Derived from `LARGE_SCOPE_ENTITIES` assuming ~10 entities per token-aware
+/// batch at default config (batch_size=25, max_batch_tokens=8000). Kept as a
+/// separate constant because the auto-lifter shrinks the LLM-needed set
+/// before batching, so the ratio is conservative.
+pub(crate) const LARGE_SCOPE_BATCHES: usize = 10;
+
 use anyhow::Result;
 use rmcp::ServiceExt;
 use rpg_core::storage;

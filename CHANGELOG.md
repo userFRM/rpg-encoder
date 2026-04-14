@@ -10,22 +10,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - **`lifting_status` NEXT STEP now recommends sub-agent dispatch when the
-  remaining entity count is ≥100.** The previous guidance was to call
-  `get_entities_for_lifting(scope="*")` directly in the foreground regardless
-  of size — which silently burns ~12K tokens per batch of the caller's
-  context window. On a repo with 1500 unlifted entities that's ~150 batches
-  = ~1.8M tokens of grunt work before any real help begins.
-- **`get_entities_for_lifting` batch-0 response now includes a dispatch note
-  when 10+ batches are queued**, in case the caller skipped `lifting_status`
-  and jumped straight to pulling batches.
-- **Guidance is runtime-agnostic.** Mentions Claude Code's `Task(model="haiku")`
-  as one example but calls out Gemini CLI, Codex, Cursor, opencode, and
-  Windsurf as needing their own equivalent dispatch mechanism. Falls back to
-  `rpg-encoder lift --provider anthropic` (CLI, uses external API key) when
-  the runtime has no sub-agent concept at all.
-- `server_instructions.md` large-scope guidance simplified from "parallel
-  subagents per area" to "one sub-agent drains it" — same result, simpler
-  caller reasoning.
+  remaining entity count is ≥`LARGE_SCOPE_ENTITIES` (100).** Previously the
+  guidance was to call `get_entities_for_lifting(scope="*")` directly in
+  the foreground regardless of size, which silently consumed the caller's
+  context window — on a 1500-entity repo, ~150 batches of source code
+  before any real user work could begin.
+- **`NEXT STEP:` is still a single parseable line.** Dispatch detail is
+  emitted in labeled blocks (`LOOP:`, `DISPATCH:`, `FALLBACK:`) immediately
+  below, so existing line-based consumers continue to work.
+- **Batch-size estimates are read from the live `max_batch_tokens` config**
+  (default 8000) instead of the previous hard-coded `~12K` figure. The
+  total-token estimate scales correctly when the user overrides the budget.
+- **Guidance is runtime-neutral.** No specific runtime's dispatch syntax
+  appears in the core response — callers use whatever sub-agent or
+  cheaper-model mechanism their runtime exposes. Two fallbacks are listed
+  explicitly: scoped lifting (`get_entities_for_lifting(scope="src/area/**")`)
+  for callers with no delegation mechanism and no API key, and
+  `rpg-encoder lift --provider anthropic|openai` for callers with an API key
+  and no sub-agent support.
+- **`get_entities_for_lifting` batch-0 response** includes a one-line
+  dispatch hint when ≥`LARGE_SCOPE_BATCHES` (10) batches are queued,
+  directing the caller back to `lifting_status` for the full delegation
+  recommendation. Kept deliberately short so it doesn't duplicate detail.
+- `server_instructions.md` large-scope section rewritten and shortened —
+  net prompt growth ≤30 tokens over pre-PR baseline.
+- New workspace-visible constants `LARGE_SCOPE_ENTITIES` and
+  `LARGE_SCOPE_BATCHES` in `rpg-mcp` replace duplicated magic numbers
+  across server.rs and tools.rs.
+
+### Documentation
+
+- README delegation guidance: added a short paragraph explaining the
+  large-repo path (sub-agent dispatch or CLI autonomous lift) so users
+  aren't surprised when `lifting_status` starts returning delegation
+  recommendations instead of direct lift instructions.
 
 ## [0.8.2] - 2026-04-14
 

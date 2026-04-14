@@ -576,33 +576,34 @@ impl RpgServer {
         }
 
         // NEXT STEP — state machine guidance, staleness takes priority.
-        // `subagent_threshold` (100) is the entity count above which direct
-        // lifting will exhaust the caller's context — each batch returns
-        // ~12K tokens of source, so ~100 entities ≈ ~120K tokens burned.
+        // `LARGE_SCOPE_ENTITIES` is the threshold above which direct
+        // foreground lifting is not recommended. See also the matching
+        // check in `get_entities_for_lifting` which expresses the same
+        // heuristic in terms of batches.
         out.push('\n');
-        let subagent_threshold = 100usize;
         let remaining = total.saturating_sub(lifted);
 
         if stale_detail.is_some() {
             out.push_str("NEXT STEP: Graph is stale. Call update_rpg to sync with code changes, then lift any new entities.\n");
-        } else if remaining >= subagent_threshold {
-            // Large repo — recommend delegating to a sub-agent/cheaper model
-            // so the caller doesn't exhaust its own context on grunt work.
+        } else if remaining >= crate::LARGE_SCOPE_ENTITIES {
+            // Large repo — recommend delegating the mechanical loop so the
+            // caller doesn't exhaust its own context. Keep NEXT STEP on one
+            // line; follow-up detail is in labeled blocks below.
+            let batch_tokens = self.config.read().await.encoding.max_batch_tokens;
             out.push_str(&format!(
-                "NEXT STEP: {} entities to lift. Each batch returns ~12K tokens of source — lifting this directly in your current conversation will exhaust context before completion.\n\n\
-                 Delegate this to a fresh sub-agent / cheaper model if your runtime supports it. The worker's prompt should loop:\n\n  \
-                   lifting_status -> get_entities_for_lifting(scope=\"*\") -> analyze batch -> submit_lift_results\n\n  \
-                 Repeat until DONE, then call finalize_lifting.\n\n\
-                 Example dispatch in Claude Code (substitute your runtime's equivalent):\n\n  \
-                   Task(\n    \
-                     description: \"Lift RPG\",\n    \
-                     subagent_type: \"general-purpose\",\n    \
-                     model: \"haiku\",  // or \"sonnet\" for higher quality\n    \
-                     prompt: \"<loop described above>\"\n  \
-                   )\n\n\
-                 Gemini CLI, Codex, Cursor, opencode, Windsurf, and others have their own dispatch mechanisms — use whichever one sends the work to a fresh context window. If your runtime has no such mechanism, you can lift in the foreground but expect to run out of context partway through.\n",
-                remaining,
+                "NEXT STEP: Delegate lifting to a sub-agent or cheaper model — {} entities remain, each batch returns ~{}K tokens of source.\n",
+                remaining, batch_tokens.div_ceil(1000),
             ));
+            out.push_str(
+                "\nLOOP (run in the delegated context):\n  \
+                 get_entities_for_lifting(scope=\"*\") -> analyze batch -> submit_lift_results -> repeat until DONE -> finalize_lifting\n\
+                 \nDISPATCH:\n  \
+                 Use whatever sub-agent / cheaper-model mechanism your runtime provides. The MCP graph is persisted to disk, so the worker's tool calls update the same state the caller reads.\n\
+                 \nFALLBACK (no sub-agent mechanism, no API key):\n  \
+                 Scope the lift to one subtree at a time — e.g. get_entities_for_lifting(scope=\"src/auth/**\") — and call finalize_lifting after each. Each scoped batch fits in foreground context.\n\
+                 \nFALLBACK (no sub-agent mechanism, API key available):\n  \
+                 Run `rpg-encoder lift --provider anthropic` (or `openai`) from the terminal — the CLI drives an external LLM directly with no agent involvement.\n",
+            );
         } else if lifted == 0 {
             out.push_str(
                 "NEXT STEP: Call get_entities_for_lifting(scope=\"*\") to start lifting.\n",

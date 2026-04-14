@@ -37,6 +37,8 @@ Then open any repo and tell your agent:
 
 Your agent handles everything: indexes entities (seconds), reads each function and adds intent-level features (a few minutes), organizes them into a semantic hierarchy, and commits `.rpg/graph.json` for your team.
 
+For repos with ~100+ entities, `lifting_status` will tell your agent to delegate the lifting loop to a sub-agent or a cheaper model — feature extraction is pattern-matching, not novel reasoning. If your runtime has no sub-agent mechanism, run `rpg-encoder lift --provider anthropic|openai` from the terminal with an API key — the CLI drives an external LLM directly with no agent involvement.
+
 Once lifted, try:
 
 - *"What handles authentication?"* — finds code even when nothing is named "auth"
