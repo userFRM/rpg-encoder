@@ -36,6 +36,30 @@ found" or "graph: not built"), run `build_rpg` first. If entities are
 unlifted and the scope is large, see the LIFTING FLOW below for delegation
 guidance.
 
+## DRIFT MAINTENANCE — re-lift after code changes
+
+Lifting is stateful. The auto-sync notice at the top of every navigation
+response tells you when entities have drifted:
+
+- `[auto-synced: ... ; N new entities unlifted ...]` — code was added,
+  semantic features are missing for it. `search_node` and `semantic_snapshot`
+  will not surface those entities.
+- `[auto-synced: ... ; N entities have stale features ...]` — code was
+  modified after lift, the cached features no longer reflect the current
+  source. Search results may mislead.
+- `[auto-synced: ... ; N new + M stale features ...]` — both.
+
+**Treat any drift notice as a deferred re-lift task.** Lifting is part of
+"definition of done" for any change that adds or modifies code, the same
+way running tests is. If you write code, you re-lift before reporting
+complete. If a tool response shows drift you didn't introduce (e.g.,
+external commits), call `lifting_status` for the recommended re-lift
+pattern.
+
+The fastest discipline: at the END of any task that wrote code, dispatch
+a sub-agent to re-lift in the background — it costs ~zero of your context
+and keeps semantic search accurate for the next user request.
+
 ## LIFTING FLOW (step by step)
 
 1. `build_rpg` — index the codebase (if no graph exists)

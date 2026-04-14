@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.8.3] - 2026-04-14
 
+### Added (drift maintenance — re-lift after code changes)
+
+- **Auto-sync notice now actively recommends re-lift** when entities have
+  drifted. Previous notice was informational (`"; N need lifting"`) and
+  agents treated it as such — they read the count and moved on. New notice
+  separates new-entity drift from stale-feature drift and includes a verb
+  ("call lifting_status to refresh" or, at large scale, "...for re-lift
+  dispatch"). The change targets the specific failure mode where an agent
+  commits new code, sees the drift count, and continues to the next user
+  request without re-lifting — leaving semantic search incomplete for
+  downstream sessions.
+- **New "DRIFT MAINTENANCE" section in `server_instructions.md`** explains
+  the three notice variants (`new entities unlifted`, `stale features`,
+  both) and frames re-lift as part of "definition of done" for any task
+  that wrote code — the same way running tests is.
+- **`submit_lift_results` NEXT action is now scale-aware**: when the
+  remaining count after a batch ≥ `LARGE_SCOPE_ENTITIES`, it points the
+  caller back at `lifting_status` for the dispatch recommendation rather
+  than encouraging another foreground batch.
+
 ### Fixed (Codex round 2 review)
 
 - **CLI fallback (`rpg-encoder lift --provider ...`) leaves the MCP server

@@ -272,13 +272,37 @@ impl RpgServer {
                 let (lifted, total) = graph.lifting_coverage();
                 let needs_lifting = total - lifted;
                 let needs_relift = summary.modified_entity_ids.len();
+                let total_drift = needs_lifting + needs_relift;
 
                 let mut notice = format!(
                     "[auto-synced: +{} -{} ~{} entities",
                     summary.entities_added, summary.entities_removed, summary.entities_modified,
                 );
-                if needs_lifting > 0 || needs_relift > 0 {
-                    notice.push_str(&format!("; {} need lifting", needs_lifting + needs_relift));
+
+                if total_drift > 0 {
+                    if needs_lifting > 0 && needs_relift > 0 {
+                        notice.push_str(&format!(
+                            "; {} new + {} stale features",
+                            needs_lifting, needs_relift,
+                        ));
+                    } else if needs_lifting > 0 {
+                        notice.push_str(&format!("; {} new entities unlifted", needs_lifting));
+                    } else {
+                        notice.push_str(&format!(
+                            "; {} entities have stale features (modified since last lift)",
+                            needs_relift,
+                        ));
+                    }
+                    // Active recommendation — don't let the agent treat this as informational.
+                    if total_drift >= crate::LARGE_SCOPE_ENTITIES {
+                        notice.push_str(
+                            " — semantic search is now incomplete; call lifting_status for re-lift dispatch",
+                        );
+                    } else {
+                        notice.push_str(
+                            " — semantic search is now incomplete; call lifting_status to refresh",
+                        );
+                    }
                 }
                 notice.push_str("]\n\n");
                 notice

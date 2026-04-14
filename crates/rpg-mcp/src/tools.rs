@@ -1544,9 +1544,19 @@ impl RpgServer {
             }
         }
 
-        // NEXT action
+        // NEXT action — scale-aware so the caller doesn't burn its context
+        // grinding through batches when delegation would cost zero of its
+        // tokens. Mirrors the threshold used in lifting_status.
         if lifted < total {
-            result.push_str("\nNEXT: continue with get_entities_for_lifting, then call finalize_lifting when done.");
+            let remaining = total - lifted;
+            if remaining >= crate::LARGE_SCOPE_ENTITIES {
+                result.push_str(&format!(
+                    "\nNEXT: {} entities still unlifted — call lifting_status for the recommended re-lift dispatch (likely a sub-agent / cheaper model in your runtime). Continue here only if no dispatch mechanism is available.",
+                    remaining,
+                ));
+            } else {
+                result.push_str("\nNEXT: continue with get_entities_for_lifting, then call finalize_lifting when done.");
+            }
         } else {
             result.push_str("\nDONE: all entities lifted. Call finalize_lifting to build the semantic hierarchy.");
         }
