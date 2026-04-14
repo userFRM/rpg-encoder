@@ -2208,12 +2208,19 @@ impl RpgServer {
         match storage::load(&project_root) {
             Ok(g) => {
                 let entities = g.metadata.total_entities;
-                // Reset drift tracking only on success — the on-disk graph
-                // might already reflect submissions from an external CLI
-                // run, so the in-memory stale set no longer applies. On
-                // failure we keep the previous graph *and* its drift backlog
-                // so a transient read error doesn't silently erase state.
-                *self.stale_entity_ids.write().await = std::collections::HashSet::new();
+                // Prune (don't clear) the drift-tracking set against the
+                // newly-loaded graph. Wholesale clearing was wrong because
+                // the documented CLI / isolated-subagent flow only re-lifts
+                // entities with no features — stale entities (features
+                // present but outdated) survive that flow, so clearing
+                // would let lifting_status report "100% coverage" even
+                // though re-lift work remains. Pruning by entity-existence
+                // keeps that backlog visible while dropping IDs that were
+                // removed in the new graph.
+                {
+                    let mut stale = self.stale_entity_ids.write().await;
+                    stale.retain(|id| g.entities.contains_key(id));
+                }
                 *self.graph.write().await = Some(g);
                 // Sync embedding index incrementally
                 #[cfg(feature = "embeddings")]
@@ -2735,13 +2742,13 @@ impl RpgServer {
                 }
             };
 
-            // Release graph lock before the potentially-expensive batch
-            // rendering — we've snapshotted everything we need.
-            drop(graph_guard);
-
+            // Keep `graph_guard` held across rendering. Both helpers now
+            // take `&RPGraph` so they don't re-read `self.graph`, which
+            // would otherwise expose us to a concurrent `set_project_root`
+            // that could swap the graph to `None` mid-render.
             match action {
                 Action::EmitBatch0(clusters) => {
-                    return self.build_batch_0_domain_discovery(&clusters).await;
+                    return self.build_batch_0_domain_discovery(graph, &clusters).await;
                 }
                 Action::AllDone { total_batches } => {
                     return Ok(format!(
@@ -2757,6 +2764,7 @@ impl RpgServer {
                 } => {
                     return self
                         .build_cluster_batch(
+                            graph,
                             batch_idx + 1,
                             total_batches,
                             &cluster,

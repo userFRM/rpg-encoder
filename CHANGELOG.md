@@ -21,13 +21,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   sharded path acquired `hierarchy_session.write()` first and then
   `graph.read()`, which formed a deadlock cycle with `update_rpg`'s
   graph-then-session order under concurrent scheduling.
-- `build_batch_0_domain_discovery` now takes clusters as a parameter
-  instead of re-reading `self.hierarchy_session`. The previous design
-  left a TOCTOU window where a concurrent `build_rpg`/`update_rpg`
-  could clear the session between installation and domain-discovery
-  rendering; the re-read would then panic on `unwrap()`. Callers
-  snapshot the clusters while holding the session lock and pass them
-  through.
+- `build_batch_0_domain_discovery` and `build_cluster_batch` now take
+  `&RPGraph` and (where applicable) clusters as parameters instead of
+  re-reading `self.graph` / `self.hierarchy_session`. The previous
+  design left two TOCTOU windows: a session-clear race where a
+  concurrent `build_rpg`/`update_rpg` could panic the helper on
+  `session_guard.as_mut().unwrap()`, and a graph-replace race where a
+  concurrent `set_project_root` could panic on `graph.as_ref().unwrap()`.
+  Callers snapshot everything they need under the appropriate locks and
+  pass references through; the helpers no longer touch server state
+  beyond the project root.
+- `reload_rpg` now prunes the stale-tracking set against the newly
+  loaded graph instead of clearing it wholesale. The CLI / isolated
+  sub-agent re-lift flow only refreshes entities with no features —
+  stale entities (features present but outdated) survive it, so
+  clearing the set would let `lifting_status` report 100% coverage
+  while re-lift work remained.
 - `set_project_root` no longer preserves the previous project's
   in-memory config when the new project has a malformed
   `.rpg/config.toml`. It now falls back to `RpgConfig::default()` on
