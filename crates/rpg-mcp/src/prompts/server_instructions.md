@@ -82,22 +82,40 @@ Process all batches in the current conversation:
 - Call `finalize_lifting` then `get_files_for_synthesis` + `submit_file_syntheses`.
 - Call `build_semantic_hierarchy` + `submit_hierarchy`.
 
-### Large scope (100+ entities): Dispatch parallel subagents
-A single conversation CANNOT lift a large repo — context will overflow.
-Instead, split the work across fresh subagent conversations:
+### Large scope (100+ entities): Delegate — DO NOT LIFT DIRECTLY
 
-1. Call `lifting_status` to see per-area coverage and unlifted files.
-2. For each area, dispatch a **foreground** subagent (Task tool, subagent_type="general-purpose"):
-   - Each subagent scope: a file glob like `"crates/rpg-core/**"` or `"src/auth/**"`
-   - Each subagent runs: get_entities_for_lifting -> analyze -> submit_lift_results (loop)
-   - Each subagent gets a FRESH context window — no accumulation across areas
-3. After all subagents complete, call `lifting_status` to verify coverage.
-4. Call `finalize_lifting` then `get_files_for_synthesis` + `submit_file_syntheses`.
-5. Call `build_semantic_hierarchy` + `submit_hierarchy`.
+A single conversation CANNOT lift a large repo in the foreground — each batch returns
+~12K tokens of source code that stays in your context. 100 entities ≈ 10 batches ≈
+120K tokens burned on grunt work before you even start helping the user.
 
-**Why subagents?** Each `get_entities_for_lifting` batch returns source code that stays in the
-conversation. After ~300 entities, the context fills up and the chat breaks. Subagents solve
-this by giving each chunk its own fresh context window.
+**Delegate the loop to a sub-agent / cheaper model** using whatever dispatch mechanism
+your runtime exposes. Feature extraction is pattern-matching (a small verb-object phrase
+per entity) — a fast cheap model handles it fine. The delegated prompt should loop:
+
+```
+lifting_status -> get_entities_for_lifting(scope="*") -> analyze batch -> submit_lift_results
+```
+
+Repeat until DONE, then call `finalize_lifting`. Return to the caller.
+
+**Runtime-specific examples:**
+
+- **Claude Code**: `Task(subagent_type="general-purpose", model="haiku", prompt=...)`
+- **Gemini CLI / Codex / Cursor / opencode / Windsurf**: use the equivalent sub-agent
+  or "dispatch to cheaper model" mechanism your client exposes.
+
+If your runtime has no sub-agent mechanism at all, lift in the foreground but expect
+context pressure — and consider telling the user to run `rpg-encoder lift --provider
+anthropic` from their terminal instead (uses a direct API key, no agent subscription).
+
+After delegation returns:
+- Call `lifting_status` to verify coverage.
+- Call `get_files_for_synthesis` + `submit_file_syntheses`.
+- Call `build_semantic_hierarchy` + `submit_hierarchy`.
+
+**You only lift directly in the foreground if the total is under 100 entities.** At
+that size, context cost is manageable and dispatching is overhead. `lifting_status`
+gives you an explicit NEXT STEP with the right guidance when delegation is warranted.
 
 ## ERROR RECOVERY
 

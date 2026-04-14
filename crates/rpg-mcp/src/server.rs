@@ -575,10 +575,34 @@ impl RpgServer {
             }
         }
 
-        // NEXT STEP — state machine guidance, staleness takes priority
+        // NEXT STEP — state machine guidance, staleness takes priority.
+        // `subagent_threshold` (100) is the entity count above which direct
+        // lifting will exhaust the caller's context — each batch returns
+        // ~12K tokens of source, so ~100 entities ≈ ~120K tokens burned.
         out.push('\n');
+        let subagent_threshold = 100usize;
+        let remaining = total.saturating_sub(lifted);
+
         if stale_detail.is_some() {
             out.push_str("NEXT STEP: Graph is stale. Call update_rpg to sync with code changes, then lift any new entities.\n");
+        } else if remaining >= subagent_threshold {
+            // Large repo — recommend delegating to a sub-agent/cheaper model
+            // so the caller doesn't exhaust its own context on grunt work.
+            out.push_str(&format!(
+                "NEXT STEP: {} entities to lift. Each batch returns ~12K tokens of source — lifting this directly in your current conversation will exhaust context before completion.\n\n\
+                 Delegate this to a fresh sub-agent / cheaper model if your runtime supports it. The worker's prompt should loop:\n\n  \
+                   lifting_status -> get_entities_for_lifting(scope=\"*\") -> analyze batch -> submit_lift_results\n\n  \
+                 Repeat until DONE, then call finalize_lifting.\n\n\
+                 Example dispatch in Claude Code (substitute your runtime's equivalent):\n\n  \
+                   Task(\n    \
+                     description: \"Lift RPG\",\n    \
+                     subagent_type: \"general-purpose\",\n    \
+                     model: \"haiku\",  // or \"sonnet\" for higher quality\n    \
+                     prompt: \"<loop described above>\"\n  \
+                   )\n\n\
+                 Gemini CLI, Codex, Cursor, opencode, Windsurf, and others have their own dispatch mechanisms — use whichever one sends the work to a fresh context window. If your runtime has no such mechanism, you can lift in the foreground but expect to run out of context partway through.\n",
+                remaining,
+            ));
         } else if lifted == 0 {
             out.push_str(
                 "NEXT STEP: Call get_entities_for_lifting(scope=\"*\") to start lifting.\n",
@@ -586,7 +610,7 @@ impl RpgServer {
         } else if lifted < total {
             out.push_str(&format!(
                 "NEXT STEP: {} entities remaining. Call get_entities_for_lifting(scope=\"*\") to continue lifting.\n",
-                total - lifted,
+                remaining,
             ));
         } else if !graph.metadata.semantic_hierarchy {
             out.push_str(

@@ -1156,6 +1156,24 @@ impl RpgServer {
 
         // Only include repo context and full instructions on batch 0 to save context space
         if batch_index == 0 {
+            // Size-aware dispatch warning — don't let the agent burn its context
+            // on 50 batches when a sub-agent or cheaper model would do the work.
+            const SUBAGENT_BATCH_THRESHOLD: usize = 10;
+            if total_batches >= SUBAGENT_BATCH_THRESHOLD {
+                output.push_str(&format!(
+                    "\nNOTE: {} batches ahead (~{}K tokens of source total). Processing \
+                     this directly will exhaust your context partway through. If your \
+                     runtime supports sub-agent dispatch or a cheaper model, delegate \
+                     this work instead — abort this call and call lifting_status for \
+                     the recommended dispatch pattern. In Claude Code that's a Task \
+                     with model=\"haiku\"; in Gemini CLI / Codex / Cursor / opencode / \
+                     Windsurf, use the equivalent mechanism. Continue directly only if \
+                     no dispatch mechanism is available.\n\n",
+                    total_batches,
+                    total_batches * 12,
+                ));
+            }
+
             if auto_lifted_count > 0 {
                 output.push_str(&format!(
                     "AUTO-LIFTED: {} trivial entities (getters/setters/constructors). Override by re-submitting features.\n\n",

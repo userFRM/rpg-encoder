@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.3] - 2026-04-14
+
+### Changed
+
+- **`lifting_status` NEXT STEP now recommends sub-agent dispatch when the
+  remaining entity count is ≥100.** The previous guidance was to call
+  `get_entities_for_lifting(scope="*")` directly in the foreground regardless
+  of size — which silently burns ~12K tokens per batch of the caller's
+  context window. On a repo with 1500 unlifted entities that's ~150 batches
+  = ~1.8M tokens of grunt work before any real help begins.
+- **`get_entities_for_lifting` batch-0 response now includes a dispatch note
+  when 10+ batches are queued**, in case the caller skipped `lifting_status`
+  and jumped straight to pulling batches.
+- **Guidance is runtime-agnostic.** Mentions Claude Code's `Task(model="haiku")`
+  as one example but calls out Gemini CLI, Codex, Cursor, opencode, and
+  Windsurf as needing their own equivalent dispatch mechanism. Falls back to
+  `rpg-encoder lift --provider anthropic` (CLI, uses external API key) when
+  the runtime has no sub-agent concept at all.
+- `server_instructions.md` large-scope guidance simplified from "parallel
+  subagents per area" to "one sub-agent drains it" — same result, simpler
+  caller reasoning.
+
 ## [0.8.2] - 2026-04-14
 
 ### Added
