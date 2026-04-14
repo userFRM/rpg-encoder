@@ -166,10 +166,13 @@ Fallbacks when no delegation mechanism is available:
   `finalize_lifting` ONCE after all scopes are complete — calling it mid-flow
   auto-routes pending entities against incomplete signals and locks the
   hierarchy in early.
-- **CLI autonomous lift**: `rpg-encoder lift --provider anthropic|openai` uses an
-  external API key directly — no agent subscription involvement. **After the CLI
+- **CLI autonomous lift** (unlifted entities only): `rpg-encoder lift --provider anthropic|openai`
+  uses an external API key directly — no agent subscription involvement. **After the CLI
   finishes, call `reload_rpg` in this session** so the server picks up the updated
   `.rpg/graph.json` — otherwise subsequent queries will still see the pre-lift state.
+  Note: the CLI lifts entities with no features; it does not re-lift stale entities
+  (features present but outdated after source edits). For stale-entity re-lifting use
+  the MCP loop above (sub-agent dispatch or foreground scoped lifting).
 
 After delegation returns, call `get_files_for_synthesis` + `submit_file_syntheses`,
 then `build_semantic_hierarchy` + `submit_hierarchy`.

@@ -738,10 +738,19 @@ impl RpgServer {
                  \nDISPATCH:\n  \
                  Use whatever sub-agent / cheaper-model mechanism your runtime provides. The MCP graph persists to disk after every submit, so the worker's writes survive. **After the worker returns, call `reload_rpg`** — some runtimes give sub-agents an isolated MCP session, in which case the caller's in-memory graph is stale until reloaded. (No-op if your runtime shares the MCP session.)\n\
                  \nFALLBACK (no sub-agent mechanism, no API key):\n  \
-                 Scope the lift to one subtree at a time — e.g. get_entities_for_lifting(scope=\"src/auth/**\") — and submit features per batch within that scope. Each scoped batch fits in foreground context. Call finalize_lifting ONCE at the very end after all scopes are complete; calling it mid-flow auto-routes pending entities against incomplete signals and locks the hierarchy in early.\n\
-                 \nFALLBACK (no sub-agent mechanism, API key available):\n  \
-                 Run `rpg-encoder lift --provider anthropic` (or `openai`) from the terminal — the CLI drives an external LLM directly with no agent involvement. After the CLI finishes, call `reload_rpg` in this session so the server picks up the updated graph from disk.\n",
+                 Scope the lift to one subtree at a time — e.g. get_entities_for_lifting(scope=\"src/auth/**\") — and submit features per batch within that scope. Each scoped batch fits in foreground context. Call finalize_lifting ONCE at the very end after all scopes are complete; calling it mid-flow auto-routes pending entities against incomplete signals and locks the hierarchy in early.\n",
             );
+            // The CLI fallback only helps when there is unlifted work.
+            // `rpg-encoder lift` resolves `scope="*"` to entities with no
+            // features, so a stale-only backlog (features present, sources
+            // modified) is a no-op for the CLI — surfacing it there would
+            // be a dead-end recipe.
+            if remaining > 0 {
+                out.push_str(
+                    "\nFALLBACK (no sub-agent mechanism, API key available, unlifted entities only):\n  \
+                     Run `rpg-encoder lift --provider anthropic` (or `openai`) from the terminal — the CLI drives an external LLM directly with no agent involvement. After the CLI finishes, call `reload_rpg` in this session so the server picks up the updated graph from disk. Note: the CLI lifts entities with no features; stale entities (features present but outdated) must be re-lifted via the MCP loop above.\n",
+                );
+            }
         } else if lifted == 0 {
             out.push_str(
                 "NEXT STEP: Call get_entities_for_lifting(scope=\"*\") to start lifting.\n",

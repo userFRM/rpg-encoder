@@ -7,173 +7,118 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.8.3] - 2026-04-14
 
-### Fixed (Codex round 5 review)
+### Added
 
-- **`lifting_status` could not see stale-feature drift.** Coverage reached
-  100% after sync but entities with modified sources still had outdated
-  features; the dashboard reported "Graph is complete" and sent callers off
-  to search. Added a persistent `stale_entity_ids: Arc<RwLock<HashSet>>` on
-  `RpgServer` populated from `summary.modified_entity_ids` on every
-  `auto_sync_if_stale`, drained by `submit_lift_results` as entities get
-  re-lifted, and cleared on `reload_rpg` / `set_project_root`. Surfaced in
-  the header as `stale_features: N entities modified since last lift` and
-  factored into the NEXT STEP state machine.
-- **`get_entities_for_lifting(scope="*")` silently skipped stale entities.**
-  `resolve_scope` filters to entities with no features, and the auto-lift
-  skip check short-circuits anything that already has features — so a
-  caller following the "re-lift stale entities" recipe would get back zero
-  entities even though the dashboard said N needed work. Now the server
-  snapshots `stale_entity_ids` before taking graph locks, augments the
-  resolved scope with stale entities when scope is `*`/`all`, and routes
-  stale entities into `needs_llm` regardless of existing features.
-- **Circular delegation flow from `lifting_status`.** The large-scope NEXT
-  STEP sent callers to `get_entities_for_lifting(scope="*")` first, whose
-  batch-0 response then said "dispatch a sub-agent" — burning the caller's
-  context on a batch payload before they ever saw the dispatch
-  recommendation. Now `lifting_status` emits the LOOP/DISPATCH/FALLBACK
-  blocks directly, so the caller delegates without first loading a batch of
-  source.
-- **NEXT STEP only branched on `remaining` (unlifted count).** When
-  `total - lifted == 0` but `stale_features_count > 0`, the old logic
-  skipped straight to hierarchy or "graph is complete" and never prompted
-  re-lift. The state machine now considers `remaining + stale_features`
-  together — dedicated branches cover "unlifted + stale mixed", "stale
-  only", and the large-scope threshold compares against the combined total.
-- **Silent config load swallow.** `set_project_root` and `reload_rpg` used
-  `unwrap_or_default()` on config loads, collapsing "missing config file"
-  (expected) and "malformed TOML" (user error) into identical behavior. Added
-  `reload_config_with_warning` helper that logs a stderr warning when parse
-  fails so misconfigurations surface instead of silently reverting to defaults.
-
-### Fixed (Codex round 4 review)
-
-- **Auto-sync notice mislabelled the unlifted count.** `total - lifted`
-  is the global backlog, not the per-update delta. Saying "N new entities
-  unlifted" against that number meant a one-line edit on a partially-lifted
-  repo could claim "50 new entities unlifted" when only 1 was actually new.
-  Now reports the per-update delta separately (`+N added unlifted, ~M stale`)
-  and notes any pre-existing backlog as `(+P pre-existing)`.
-- **`finalize_lifting` guidance was wrong for scoped fallback.** The
-  no-dispatch fallback said to call `finalize_lifting` after each scoped
-  subtree. But `finalize_lifting` auto-routes pending entities and locks
-  the hierarchy — calling it mid-flow against incomplete signals would
-  bake in bad routing decisions. Corrected to "call finalize_lifting ONCE
-  at the very end after all scopes complete" across server.rs and
-  server_instructions.md.
-- **Heuristic divergence between `LARGE_SCOPE_ENTITIES` and
-  `LARGE_SCOPE_BATCHES` is now documented explicitly.** Both constants
-  carry doc comments explaining that the batch-0 NOTE in
-  `get_entities_for_lifting` is the authoritative dispatch decision; the
-  dashboard `lifting_status` is a heuristic gate that defers to the NOTE
-  when they disagree.
-
-### Added (drift maintenance — re-lift after code changes)
-
-- **Auto-sync notice now actively recommends re-lift** when entities have
-  drifted. Previous notice was informational (`"; N need lifting"`) and
-  agents treated it as such — they read the count and moved on. New notice
-  separates new-entity drift from stale-feature drift and includes a verb
-  ("call lifting_status to refresh" or, at large scale, "...for re-lift
-  dispatch"). The change targets the specific failure mode where an agent
-  commits new code, sees the drift count, and continues to the next user
-  request without re-lifting — leaving semantic search incomplete for
-  downstream sessions.
-- **New "DRIFT MAINTENANCE" section in `server_instructions.md`** explains
-  the three notice variants (`new entities unlifted`, `stale features`,
-  both) and frames re-lift as part of "definition of done" for any task
-  that wrote code — the same way running tests is.
-- **`submit_lift_results` NEXT action is now scale-aware**: when the
-  remaining count after a batch ≥ `LARGE_SCOPE_ENTITIES`, it points the
-  caller back at `lifting_status` for the dispatch recommendation rather
-  than encouraging another foreground batch.
-
-### Fixed (Codex round 2 review)
-
-- **CLI fallback (`rpg-encoder lift --provider ...`) leaves the MCP server
-  on a stale in-memory graph.** All four surfaces that mention the CLI
-  fallback (server.rs lifting_status block, server_instructions.md,
-  README, .gemini commands) now explicitly say "after the CLI finishes,
-  call `reload_rpg` in this session" so the server picks up the new
-  `.rpg/graph.json` from disk.
-- **`set_project_root` failed to refresh `self.config`.** When switching
-  to a project with a different `.rpg/config.toml`, the server kept
-  serving the previous project's `encoding.max_batch_tokens` and other
-  settings. Now reloads `RpgConfig` from the new root atomically with the
-  root swap.
-- **`lifting_status` large-scope NEXT STEP could promise delegation work
-  the auto-lifter would actually finish locally.** The check uses raw
-  `remaining` (pre-auto-lift), so on repos with many trivial entities
-  (getters, setters, constructors) the dashboard could recommend a worker
-  for ~0 LLM calls. Reworded to "likely-large workload — call
-  get_entities_for_lifting next; if its batch-0 response includes the
-  delegation NOTE, follow the dispatch pattern below". The batch-0 NOTE
-  is the authoritative signal because it sees the post-auto-lift queue.
-- **"`rpg_info` says 'No RPG found'" was wrong.** `rpg_info` returns a
-  tool error, not a friendly status string. Changed to "any RPG tool
-  returns 'No RPG found'".
+- `lifting_status` tracks stale-feature drift across calls. A persistent
+  per-server set records entities whose source was modified after they
+  were lifted; the dashboard reports `stale_features: N entities modified
+  since last lift` and the NEXT STEP state machine prompts re-lift even
+  when coverage is 100%.
+- `get_entities_for_lifting(scope="*")` now returns stale entities
+  alongside unlifted ones, so a single call covers both "never lifted"
+  and "lifted-but-outdated" work. Stale entities bypass the auto-lift
+  skip check and flow through the normal LLM batch loop.
+- `lifting_status` emits a sub-agent dispatch recommendation when the
+  remaining work (unlifted + stale) is ≥100 entities. The response
+  contains `LOOP` / `DISPATCH` / `FALLBACK` blocks so callers delegate
+  directly without first loading a batch of source into their own context.
+- `get_entities_for_lifting` batch-0 emits a one-line dispatch hint when
+  ≥10 token-aware batches are queued, pointing back to `lifting_status`
+  for the full recommendation.
+- `submit_lift_results` NEXT action becomes scale-aware — when remaining
+  work ≥100 entities, it redirects the caller to `lifting_status` instead
+  of encouraging another foreground batch.
+- Auto-sync notice now prescribes a verb. It distinguishes per-update
+  delta from pre-existing backlog and separates new-entity drift from
+  stale-feature drift, so an agent that commits code and sees the notice
+  is told to re-lift rather than informed of a count.
+- `server_instructions.md`: new `USE RPG FIRST` top section with a
+  mapping table from shell patterns (`grep -r`, `cat`, `find`, `wc -l`,
+  chained greps) to the RPG tool that replaces them.
+- `server_instructions.md`: new `DRIFT MAINTENANCE` section explaining
+  the three auto-sync notice variants and framing re-lift as part of
+  definition-of-done for any task that wrote code.
+- Tool descriptions for `search_node`, `fetch_node`, `explore_rpg`,
+  `rpg_info`, `semantic_snapshot`, `context_pack`, `impact_radius`,
+  `plan_change`, `analyze_health`, `detect_cycles`, `find_paths`, and
+  `slice_between` now open with a `PREFER THIS OVER ...` marker naming
+  the shell command or workflow they replace.
+- `.claude/skills/rpg/SKILL.md` and `README.md` carry the same RPG-first
+  mapping table as the server prompt.
+- `reload_config_with_warning` helper (`server.rs`) distinguishes missing
+  `.rpg/config.toml` (silent default) from malformed TOML (stderr warning,
+  keeps previous in-memory config).
+- Crate-visible `LARGE_SCOPE_ENTITIES` (100) and `LARGE_SCOPE_BATCHES` (10)
+  constants replace duplicated magic numbers. Doc comments describe the
+  heuristic-vs-authoritative relationship.
 
 ### Changed
 
-- **`lifting_status` NEXT STEP now recommends sub-agent dispatch when the
-  remaining entity count is ≥`LARGE_SCOPE_ENTITIES` (100).** Previously the
-  guidance was to call `get_entities_for_lifting(scope="*")` directly in
-  the foreground regardless of size, which silently consumed the caller's
-  context window — on a 1500-entity repo, ~150 batches of source code
-  before any real user work could begin.
-- **`NEXT STEP:` is still a single parseable line.** Dispatch detail is
-  emitted in labeled blocks (`LOOP:`, `DISPATCH:`, `FALLBACK:`) immediately
-  below, so existing line-based consumers continue to work.
-- **Batch-size estimates are read from the live `max_batch_tokens` config**
-  (default 8000) instead of the previous hard-coded `~12K` figure. The
-  total-token estimate scales correctly when the user overrides the budget.
-- **Guidance is runtime-neutral.** No specific runtime's dispatch syntax
-  appears in the core response — callers use whatever sub-agent or
-  cheaper-model mechanism their runtime exposes. Two fallbacks are listed
-  explicitly: scoped lifting (`get_entities_for_lifting(scope="src/area/**")`)
-  for callers with no delegation mechanism and no API key, and
-  `rpg-encoder lift --provider anthropic|openai` for callers with an API key
-  and no sub-agent support.
-- **`get_entities_for_lifting` batch-0 response** includes a one-line
-  dispatch hint when ≥`LARGE_SCOPE_BATCHES` (10) batches are queued,
-  directing the caller back to `lifting_status` for the full delegation
-  recommendation. Kept deliberately short so it doesn't duplicate detail.
-- `server_instructions.md` LIFTING FLOW sub-section rewritten and shortened
-  (net ≤30 tokens over pre-PR baseline for that sub-section). Note: the
-  separate "USE RPG FIRST" section below adds ~500 tokens to the handshake
-  prompt — the intended intervention.
-- New workspace-visible constants `LARGE_SCOPE_ENTITIES` and
-  `LARGE_SCOPE_BATCHES` in `rpg-mcp` replace duplicated magic numbers
-  across server.rs and tools.rs.
+- `lifting_status` NEXT STEP is runtime-neutral. No specific runtime's
+  dispatch syntax appears in the response; callers use whatever sub-agent
+  or cheaper-model mechanism their runtime exposes. Explicit fallbacks:
+  scoped lifting for callers with no delegation mechanism, and
+  `rpg-encoder lift --provider anthropic|openai` for callers with an API
+  key and no sub-agent support.
+- Batch-size estimates in NEXT STEP messages read from the live
+  `encoding.max_batch_tokens` config instead of a hard-coded `~12K`
+  figure, so the estimate scales when the user overrides the budget.
+- `NEXT STEP:` remains a single parseable line; dispatch detail is
+  emitted in labeled blocks immediately below.
+- `server_instructions.md` LIFTING FLOW sub-section rewritten and
+  shortened.
+- `update_rpg` now feeds `summary.modified_entity_ids` into the
+  stale-tracking set so its `needs_relift: N` reply aligns with what
+  `lifting_status` and `get_entities_for_lifting(scope="*")` report.
+- `reload_rpg` clears the stale-tracking set only after the graph reload
+  succeeds, so a transient read error no longer wipes the drift backlog
+  while leaving the previous graph in memory.
+- `set_project_root` resets the stale-tracking set as part of the
+  project-scoped state reset.
+- CLI fallback in large-scope guidance is gated to cases with actual
+  unlifted work, with a note that `rpg-encoder lift` does not re-lift
+  stale entities (it filters to entities with no features).
 
-### Documentation
+### Fixed
 
-- README delegation guidance: added a short paragraph explaining the
-  large-repo path (sub-agent dispatch or CLI autonomous lift) so users
-  aren't surprised when `lifting_status` starts returning delegation
-  recommendations instead of direct lift instructions.
-
-### Tool-preference guidance (RPG first, grep second)
-
-Agents consistently fall back to `grep`/`cat`/`Read` for codebase questions
-even when RPG is installed, because the server's prompt and tool descriptions
-didn't actively counter the training default.
-
-- **`server_instructions.md`**: new top section "USE RPG FIRST — BEFORE
-  grep / cat / Read / find" with a concrete mapping table listing each
-  shell pattern and the RPG tool that replaces it. Placed before the
-  LIFTING FLOW so the directive is read before any workflow detail.
-- **Tool descriptions**: each of `search_node`, `fetch_node`, `explore_rpg`,
-  `rpg_info`, `semantic_snapshot`, `context_pack`, `impact_radius`,
-  `plan_change`, `analyze_health`, `detect_cycles`, `find_paths`,
-  `slice_between` now opens with a "PREFER THIS OVER ..." marker naming
-  the shell command or workflow it replaces. Description tokens are
-  what agents weigh when choosing a tool — making the displacement
-  explicit is the intervention that sticks.
-- **`.claude/skills/rpg/SKILL.md`**: same mapping table scoped to the
-  CLI surface, plus a note pointing to MCP tools when available.
-- **README**: dedicated "Use RPG before grep/cat/find" section with
-  the same mapping table as the server prompt — so human readers see
-  the same positioning the agent does.
+- `lifting_status` previously reported `Graph is complete` as soon as
+  every entity had some features, ignoring stale features from modified
+  sources. The state machine now considers `remaining + stale_features`
+  combined.
+- `get_entities_for_lifting(scope="*")` previously returned zero entities
+  when all drift was stale (features present, sources modified) because
+  `resolve_scope` filters to entities with no features.
+- Auto-sync notice previously conflated per-update delta with global
+  backlog, so a one-line edit on a partially-lifted repo could claim
+  "50 new entities unlifted" when only 1 was actually new.
+- `finalize_lifting` fallback guidance previously said to call it after
+  each scoped subtree. That auto-routes pending entities against
+  incomplete signals and locks the hierarchy early. Guidance now says
+  to call `finalize_lifting` once after all scopes complete.
+- `rpg-encoder lift --provider ...` (CLI fallback) left the MCP server
+  on a stale in-memory graph. All docs that mention the CLI fallback
+  now specify that the caller must call `reload_rpg` afterward.
+- `set_project_root` and `reload_rpg` previously used
+  `unwrap_or_default()` on config loads, collapsing missing-config and
+  malformed-TOML into identical silent behavior. Malformed TOML now
+  surfaces a stderr warning and leaves the in-memory config untouched.
+- `set_project_root` failed to refresh `self.config` on project switch;
+  the server kept serving the previous project's encoding settings.
+- `lifting_status` large-scope recommendation previously ran off raw
+  unlifted count, before auto-lift had reduced the set. On repos full
+  of trivial entities (getters, setters, constructors) it could
+  recommend delegation for ~0 LLM calls. The large-scope branch now
+  hedges — it signals likely-large and defers the authoritative check
+  to the post-auto-lift batch count in `get_entities_for_lifting`.
+- `rpg_info` error wording ("No RPG found") was miscited as a friendly
+  status string; corrected to "any RPG tool returns 'No RPG found'".
+- `submit_lift_results` previously emitted `DONE` as soon as coverage
+  reached 100%, which could terminate a stale-only re-lift loop after
+  batch 1 while later batches were still queued. The NEXT/DONE branch
+  now counts unlifted + stale remaining.
+- Auto-lifted features for entities that were previously flagged stale
+  now drain the stale-tracking set, so the count doesn't inflate when
+  the auto-lifter writes fresh features directly.
 
 ## [0.8.2] - 2026-04-14
 

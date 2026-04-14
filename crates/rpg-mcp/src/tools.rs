@@ -1625,18 +1625,36 @@ impl RpgServer {
         // NEXT action — scale-aware so the caller doesn't burn its context
         // grinding through batches when delegation would cost zero of its
         // tokens. Mirrors the threshold used in lifting_status.
-        if lifted < total {
-            let remaining = total - lifted;
-            if remaining >= crate::LARGE_SCOPE_ENTITIES {
-                result.push_str(&format!(
-                    "\nNEXT: {} entities still unlifted — call lifting_status for the recommended re-lift dispatch (likely a sub-agent / cheaper model in your runtime). Continue here only if no dispatch mechanism is available.",
-                    remaining,
-                ));
-            } else {
-                result.push_str("\nNEXT: continue with get_entities_for_lifting, then call finalize_lifting when done.");
-            }
-        } else {
+        //
+        // Work is "unlifted + stale" — stale entities still show as lifted
+        // in coverage but need re-lifting. Emitting DONE on `lifted == total`
+        // alone would tell a stale-only re-lift loop to stop after batch 1
+        // while later batches are still queued.
+        let stale_remaining = {
+            let stale = self.stale_entity_ids.read().await;
+            stale
+                .iter()
+                .filter(|id| graph.entities.contains_key(*id))
+                .count()
+        };
+        let unlifted = total.saturating_sub(lifted);
+        let work_remaining = unlifted + stale_remaining;
+        if work_remaining == 0 {
             result.push_str("\nDONE: all entities lifted. Call finalize_lifting to build the semantic hierarchy.");
+        } else if work_remaining >= crate::LARGE_SCOPE_ENTITIES {
+            let breakdown = if unlifted > 0 && stale_remaining > 0 {
+                format!("{} unlifted + {} stale", unlifted, stale_remaining)
+            } else if stale_remaining > 0 {
+                format!("{} stale", stale_remaining)
+            } else {
+                format!("{} unlifted", unlifted)
+            };
+            result.push_str(&format!(
+                "\nNEXT: {} entities still need LLM work ({}) — call lifting_status for the recommended re-lift dispatch (likely a sub-agent / cheaper model in your runtime). Continue here only if no dispatch mechanism is available.",
+                work_remaining, breakdown,
+            ));
+        } else {
+            result.push_str("\nNEXT: continue with get_entities_for_lifting, then call finalize_lifting when done.");
         }
         Ok(result)
     }
@@ -2000,6 +2018,18 @@ impl RpgServer {
             rpg_encoder::evolution::get_head_sha(&self.project_root().await).ok();
         *self.last_auto_sync_changeset.write().await = None;
 
+        // Track modified entities so lifting_status and
+        // get_entities_for_lifting(scope="*") surface them as re-lift work.
+        // Without this, the "needs_relift: N" value we report below would
+        // point the caller at a path that returns zero entities.
+        {
+            let mut stale = self.stale_entity_ids.write().await;
+            for id in &summary.modified_entity_ids {
+                stale.insert(id.clone());
+            }
+            stale.retain(|id| g.entities.contains_key(id));
+        }
+
         // Clear sessions — entity list changed
         *self.lifting_session.write().await = None;
         *self.hierarchy_session.write().await = None;
@@ -2121,12 +2151,15 @@ impl RpgServer {
         // existing config (don't clobber a working in-memory config over
         // a temporarily broken edit).
         Self::reload_config_with_warning(&self.config, &project_root).await;
-        // Reset drift tracking — the on-disk graph might already reflect
-        // submissions from an external CLI run.
-        *self.stale_entity_ids.write().await = std::collections::HashSet::new();
         match storage::load(&project_root) {
             Ok(g) => {
                 let entities = g.metadata.total_entities;
+                // Reset drift tracking only on success — the on-disk graph
+                // might already reflect submissions from an external CLI
+                // run, so the in-memory stale set no longer applies. On
+                // failure we keep the previous graph *and* its drift backlog
+                // so a transient read error doesn't silently erase state.
+                *self.stale_entity_ids.write().await = std::collections::HashSet::new();
                 *self.graph.write().await = Some(g);
                 // Sync embedding index incrementally
                 #[cfg(feature = "embeddings")]
