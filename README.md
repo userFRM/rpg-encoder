@@ -1,138 +1,131 @@
-# rpg-encoder
+<h1 align="center">rpg-encoder</h1>
 
-[![CI](https://github.com/userFRM/rpg-encoder/workflows/CI/badge.svg)](https://github.com/userFRM/rpg-encoder/actions)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
+<p align="center">
+  <strong>Give your AI agent a brain for your codebase.</strong>
+</p>
 
-**Give your AI agent a brain for your codebase.**
+<p align="center">
+  <a href="https://github.com/userFRM/rpg-encoder/actions"><img src="https://github.com/userFRM/rpg-encoder/workflows/CI/badge.svg" alt="CI"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" alt="MIT License"></a>
+  <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/rust-1.85%2B-orange.svg?style=flat-square" alt="Rust 1.85+"></a>
+  <a href="https://www.npmjs.com/package/rpg-encoder"><img src="https://img.shields.io/npm/v/rpg-encoder?style=flat-square" alt="npm"></a>
+  <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-compatible-green.svg?style=flat-square" alt="MCP"></a>
+  <a href="https://github.com/userFRM/rpg-encoder/stargazers"><img src="https://img.shields.io/github/stars/userFRM/rpg-encoder?style=flat-square" alt="Stars"></a>
+</p>
 
-rpg-encoder builds a semantic graph of your codebase — not just what calls what, but what
-every function *does* and *why it exists*. Your coding agent lifts each entity into
-intent-level features, then searches by meaning, not naming conventions.
+<br>
 
-The result: an LLM that starts every session already knowing your entire repo.
+AI coding agents waste most of their tool calls fumbling through your codebase with `grep`, `cat`, `find`, and file reads. `rpg-encoder` fixes that. It builds a **semantic graph** of your code with [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) — not just *what calls what*, but *what every function does* — and gives your AI assistant whole-repo understanding via [MCP](https://modelcontextprotocol.io/) in a single tool call.
 
-## The Problem: Your LLM Is Flying Blind
+<p align="center">
+  <img src="diagrams/hero-tool-waste.webp" alt="Without RPG: 34,000 chaotic grep/cat/find calls. With RPG: one semantic_snapshot call returns a structured map of the whole repo." width="90%" />
+</p>
 
-Without rpg-encoder, coding agents spend most of their tool calls just figuring out what
-your codebase does. In a typical session, grep, cat, find, and file reads dominate —
-the LLM is fumbling through files because it doesn't know the structure or intent.
+---
 
-**With rpg-encoder:** The LLM calls `semantic_snapshot` once, reads ~25K tokens, and
-knows every function's purpose, every dependency chain, every area of the codebase.
-Exploration tool calls drop dramatically because the LLM already has the map.
-
-## What Makes This Different
-
-**Semantic understanding, not structural graphs.** Tools like GitNexus, CodeGraphContext, and
-Serena build call graphs and import maps. rpg-encoder builds an *intent graph* — LLM-lifted
-verb-object features that capture what code does ("validate JWT tokens", "serialize config to
-disk"), not just what it's named. Search by what you mean, find code that isn't named for what
-it does.
-
-**Context injection, not tool queries.** The `semantic_snapshot` tool compresses your entire
-repo's understanding into ~25K tokens — hierarchy, features, dependencies — and injects it
-into the LLM's context window. The LLM reads it once and *knows the repo*. No tool calls
-needed for understanding, only for fetching source code when editing.
-
-**Self-maintaining graph.** The server auto-syncs when git HEAD moves (commits, merges,
-rebases). Uncommitted changes are detected and surfaced but not auto-applied — call
-`update_rpg` to sync those.
-
-**Claude Code hooks.** PreToolUse hooks auto-inject semantic context before every file edit.
-PostToolUse hooks auto-update the graph after every git commit. The LLM never has to
-remember to use RPG — it's wired into the workflow.
-
-## Install
-
-Add to your MCP config (Claude Code `~/.claude.json`, Cursor, opencode, etc.):
-
-```json
-{
-  "mcpServers": {
-    "rpg": {
-      "command": "npx",
-      "args": ["-y", "-p", "rpg-encoder", "rpg-mcp-server"]
-    }
-  }
-}
-```
-
-<details>
-<summary>Alternative: build from source</summary>
+## Quick Start
 
 ```bash
-git clone https://github.com/userFRM/rpg-encoder.git
-cd rpg-encoder && cargo build --release
+claude mcp add rpg -- npx -y -p rpg-encoder rpg-mcp-server
 ```
 
-Then use the binary path directly:
+One command. Works with Claude Code, Cursor, opencode, Windsurf, or any MCP-compatible agent. No Rust toolchain, no cloning, no building — `npx` downloads a pre-built binary for your platform.
 
-```json
-{
-  "mcpServers": {
-    "rpg": {
-      "command": "/path/to/rpg-encoder/target/release/rpg-mcp-server"
-    }
-  }
-}
-```
+Then open any repo and tell your agent:
 
-</details>
+> *"Build and lift the RPG for this repo"*
 
-<details>
-<summary><strong>Multi-repo setup</strong></summary>
+Your agent handles everything: indexes entities (seconds), reads each function and adds intent-level features (a few minutes), organizes them into a semantic hierarchy, and commits `.rpg/graph.json` for your team.
 
-The server defaults to the current working directory. MCP clients launch the server from the
-workspace directory, so no path argument is needed.
+Once lifted, try:
 
-For an explicit path override:
-
-```json
-{
-  "mcpServers": {
-    "rpg": {
-      "command": "npx",
-      "args": ["-y", "-p", "rpg-encoder", "rpg-mcp-server", "/path/to/repo"]
-    }
-  }
-}
-```
-
-</details>
-
-## Getting Started
-
-Tell your coding agent:
-
-> "Build and lift the RPG for this repo"
-
-That's it. The agent handles everything:
-
-1. **Build** — Indexes all code entities and dependencies (~5 seconds)
-2. **Lift** — Agent analyzes each function/class and adds semantic features (~2 min per 100 entities)
-3. **Organize** — Agent discovers functional domains and builds a semantic hierarchy (~30 seconds)
-4. **Save** — Graph is written to `.rpg/graph.json` — commit it so everyone benefits
-
-Once lifted:
-
-- *"What handles authentication?"* — finds code even if nothing is named "auth"
-- *"Show me everything that depends on the database connection"*
+- *"What handles authentication?"* — finds code even when nothing is named "auth"
+- *"Show everything that depends on the database connection"*
 - *"Plan a change to add rate limiting to API endpoints"*
+
+---
+
+## How It Works
+
+<p align="center">
+  <img src="diagrams/how-it-works.webp" alt="Four-stage pipeline: Parse (tree-sitter) → Lift (verb-object features) → Organize (3-level hierarchy) → Understand (LLM gets full repo knowledge)" width="95%" />
+</p>
+
+1. **Parse** — Tree-sitter extracts entities (functions, classes, methods) and dependency edges (imports, calls, inheritance) from 15 languages.
+2. **Lift** — An LLM (your agent, or a cheap API like Haiku) reads each entity and writes verb-object features: *"validate JWT tokens"*, *"serialize config to disk"*.
+3. **Organize** — Features cluster into a 3-level semantic hierarchy (Area → Category → Subcategory) that emerges from *what the code does*, not the file tree.
+4. **Understand** — `semantic_snapshot` compresses the whole graph into ~25K tokens. Your LLM reads it once and *knows the repo*.
+
+### The semantic snapshot
+
+<p align="center">
+  <img src="diagrams/semantic-snapshot.webp" alt="The whole repo — ~500K tokens of source — compressed 20x into a ~25K token snapshot containing hierarchy, features, dependencies, and hot spots" width="80%" />
+</p>
+
+Instead of grepping through files, the LLM calls `semantic_snapshot` once and receives:
+
+- **Hierarchy** — every functional area with aggregate features
+- **Entities** — every function, class, method grouped by area, with its semantic features
+- **Dependency skeleton** — condensed call graph with qualified names
+- **Hot spots** — top 10 most-connected entities (the architectural backbone)
+
+~25K tokens covers ~1000 entities. That's 2-3% of a 1M context window — the LLM starts every session already knowing your repo.
+
+### Self-maintaining graph
+
+<p align="center">
+  <img src="diagrams/auto-staleness.webp" alt="Git HEAD moves → RPG Server auto-syncs → update_rpg applies additions/modifications/removals → graph always fresh, zero agent action" width="80%" />
+</p>
+
+When git HEAD moves (commits, merges, rebases), the MCP server automatically runs a structural update before responding to the next query. No manual `update_rpg` calls, no stale warnings your agent ignores. The graph owns its own consistency.
+
+### Two ways to lift
+
+| Mode | Command | Cost | Who pays |
+|------|---------|------|----------|
+| **Agent lifting** | *"Build and lift the RPG"* | Subscription tokens | Your Claude Code / Cursor subscription |
+| **Autonomous lifting** | `auto_lift(provider="anthropic", api_key_env="ANTHROPIC_API_KEY")` | ~$0.02 per 100 entities | External API key (Haiku, GPT-4o-mini, OpenRouter, Gemini) |
+
+`auto_lift` calls a cheap external LLM directly — your coding subscription never touches the lifting work. Use `api_key_env` to resolve keys from environment variables so they never appear in tool call transcripts.
+
+---
+
+## Architecture
+
+<p align="center">
+  <img src="diagrams/architecture.webp" alt="Your codebase (15 languages) → RPG Engine (5 Rust crates: parser, encoder, nav, lift, mcp) → Clients (Claude Code, Cursor, opencode) via MCP Protocol" width="95%" />
+</p>
+
+Six Rust crates, one MCP server binary, one CLI binary:
+
+| Crate | Role |
+|-------|------|
+| `rpg-core` | Graph types (RPGraph, Entity, HierarchyNode), storage, LCA algorithm |
+| `rpg-parser` | Tree-sitter entity + dependency extraction (15 languages) |
+| `rpg-encoder` | Encoding pipeline, lifting utilities, incremental evolution |
+| `rpg-nav` | Search, fetch, explore, snapshot, TOON serialization |
+| `rpg-lift` | Autonomous LLM lifting (Anthropic, OpenAI, OpenRouter, Gemini) |
+| `rpg-cli` | CLI binary (`rpg-encoder`) |
+| `rpg-mcp` | MCP server binary (`rpg-mcp-server`) with 27 tools |
+
+---
 
 ## MCP Tools (27)
 
-**Build & Maintain**
+<details>
+<summary><strong>Build & Maintain</strong> (4 tools)</summary>
 
 | Tool | Description |
 |------|-------------|
 | `build_rpg` | Index the codebase (run once, instant) |
-| `auto_lift` | One-call autonomous lifting via cheap LLM API (Haiku, GPT-4o-mini, OpenRouter, Gemini) |
 | `update_rpg` | Incremental update from git changes |
 | `reload_rpg` | Reload graph from disk after external changes |
 | `rpg_info` | Graph statistics, hierarchy overview, per-area lifting coverage |
 
-**Navigate & Search**
+</details>
+
+<details>
+<summary><strong>Navigate & Search</strong> (5 tools)</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -140,9 +133,12 @@ Once lifted:
 | `search_node` | Search entities by intent or keywords (hybrid embedding + lexical scoring) |
 | `fetch_node` | Get entity metadata, source code, dependencies, and hierarchy context |
 | `explore_rpg` | Traverse dependency graph (upstream, downstream, or both) |
-| `context_pack` | Single-call search+fetch+explore with token budget |
+| `context_pack` | Single-call search + fetch + explore with token budget |
 
-**Plan & Analyze**
+</details>
+
+<details>
+<summary><strong>Plan & Analyze</strong> (7 tools)</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -154,10 +150,14 @@ Once lifted:
 | `detect_cycles` | Find circular dependencies and architectural cycles |
 | `reconstruct_plan` | Dependency-safe reconstruction execution plan |
 
-**Semantic Lifting** (10 tools)
+</details>
+
+<details>
+<summary><strong>Semantic Lifting</strong> (11 tools)</summary>
 
 | Tool | Description |
 |------|-------------|
+| `auto_lift` | One-call autonomous lifting via cheap LLM API (Haiku, GPT-4o-mini, OpenRouter, Gemini) |
 | `lifting_status` | Dashboard — coverage, per-area progress, NEXT STEP |
 | `get_entities_for_lifting` | Get entity source code for your agent to analyze |
 | `submit_lift_results` | Submit the agent's semantic features back to the graph |
@@ -169,48 +169,23 @@ Once lifted:
 | `get_routing_candidates` | Get entities needing semantic routing (drifted or newly lifted) |
 | `submit_routing_decisions` | Submit routing decisions (hierarchy path or "keep") |
 
-### Lifting: What It Is
+</details>
 
-Lifting is the process where an LLM reads each function, class, and method in your codebase
-and describes what it does — verb-object features like "validate user credentials" or
-"serialize config to disk". These features power semantic search: find code by what it *does*,
-not what it's named.
-
-**Two ways to lift:**
-
-| Mode | How | Cost | Speed |
-|------|-----|------|-------|
-| **Agent lifting** | Your coding agent (Claude Code, Cursor) does the analysis via MCP | Free (uses subscription) | ~2 min per 100 entities |
-| **API lifting** | `auto_lift` calls a cheap external LLM directly | ~$0.02 per 100 entities (Haiku) | ~1 min per 100 entities |
-
-API lifting supports any OpenAI-compatible endpoint:
-
-```
-auto_lift(provider="anthropic", api_key="sk-ant-...", scope="*")
-auto_lift(provider="openai", api_key="sk-...", model="gpt-4o-mini")
-auto_lift(provider="openai", api_key="sk-or-...", base_url="https://openrouter.ai/api/v1", model="anthropic/claude-haiku")
-auto_lift(provider="openai", api_key="...", base_url="https://generativelanguage.googleapis.com/v1beta/openai", model="gemini-2.0-flash")
-```
-
-Use `dry_run=true` to estimate cost before lifting.
-
-- **One-time cost** — lift once, commit `.rpg/`, and every future session starts instantly
-- **Resumable** — if interrupted, `lifting_status` picks up exactly where you left off
-- **Incremental** — after code changes, the server auto-syncs and tracks what needs re-lifting
-- **Scoped** — lift the whole repo or just a subdirectory (`"src/auth/**"`)
+---
 
 ## Supported Languages
+
+15 languages via Tree-sitter:
 
 | Language | Entity Extraction | Dependency Resolution |
 |----------|------------------|----------------------|
 | Python | Functions, classes, methods | imports, calls, inheritance |
-| Rust | Functions, structs, traits, impl methods | use statements, calls, trait impls |
+| Rust | Functions, structs, traits, impl methods | use, calls, trait impls |
 | TypeScript | Functions, classes, methods, interfaces | imports, calls, inheritance |
 | JavaScript | Functions, classes, methods | imports, calls, inheritance |
 | Go | Functions, structs, methods, interfaces | imports, calls |
 | Java | Classes, methods, interfaces | imports, calls, inheritance |
-| C | Functions, structs | includes, calls |
-| C++ | Functions, classes, methods, structs | includes, calls, inheritance |
+| C / C++ | Functions, classes, methods, structs | includes, calls, inheritance |
 | C# | Classes, methods, interfaces | using, calls, inheritance |
 | PHP | Functions, classes, methods | use, calls, inheritance |
 | Ruby | Classes, methods, modules | require, calls, inheritance |
@@ -219,18 +194,37 @@ Use `dry_run=true` to estimate cost before lifting.
 | Scala | Functions, classes, objects, traits | imports, calls, inheritance |
 | Bash | Functions | source, calls |
 
+---
+
+## Install
+
+### MCP server (recommended)
+
+```bash
+# Claude Code
+claude mcp add rpg -- npx -y -p rpg-encoder rpg-mcp-server
+
+# Cursor — add to ~/.cursor/mcp.json
+{
+  "mcpServers": {
+    "rpg": {
+      "command": "npx",
+      "args": ["-y", "-p", "rpg-encoder", "rpg-mcp-server"]
+    }
+  }
+}
+```
+
+The server auto-detects the project root from the current working directory — no path argument needed.
+
 <details>
 <summary><strong>CLI</strong></summary>
 
-The CLI provides structural operations and autonomous lifting via LLM API.
-
 ```bash
-# Install
 npm install -g rpg-encoder
 
 # Build a graph
 rpg-encoder build
-rpg-encoder build --include "src/**/*.py" --exclude "tests/**"
 
 # Query
 rpg-encoder search "parse entities from source code"
@@ -238,116 +232,55 @@ rpg-encoder fetch "src/parser.rs:extract_entities"
 rpg-encoder explore "src/parser.rs:extract_entities" --direction both --depth 2
 rpg-encoder info
 
+# Autonomous lifting via API
+rpg-encoder lift --provider anthropic --dry-run  # estimate cost
+rpg-encoder lift --provider anthropic           # lift with Haiku (~$0.02/100 entities)
+
 # Incremental update
 rpg-encoder update
 
-# Pre-commit hook (auto-updates graph on every commit)
+# Pre-commit hook (auto-updates graph on commit)
 rpg-encoder hook install
 ```
 
 </details>
 
 <details>
-<summary><strong>Configuration</strong></summary>
+<summary><strong>Build from source</strong></summary>
 
-Create `.rpg/config.toml` in your project root (all fields optional):
-
-```toml
-[encoding]
-batch_size = 50             # Entities per lifting batch
-max_batch_tokens = 8000     # Token budget per batch
-drift_threshold = 0.5       # Jaccard distance midpoint reference
-drift_ignore_threshold = 0.3  # Below: minor edit, in-place update
-drift_auto_threshold = 0.7    # Above: auto-queue for re-routing
-
-[navigation]
-search_result_limit = 10
+```bash
+git clone https://github.com/userFRM/rpg-encoder.git
+cd rpg-encoder && cargo build --release
 ```
+
+Then point your MCP config at `target/release/rpg-mcp-server`.
 
 </details>
 
-<details>
-<summary><strong>Architecture</strong></summary>
-
-```
-rpg-encoder/
-├── rpg-core        Core graph types (RPGraph, Entity, HierarchyNode), storage, LCA
-├── rpg-parser      Tree-sitter entity + dependency extraction (15 languages)
-├── rpg-encoder     Encoding pipeline, semantic lifting utilities, incremental evolution
-├── rpg-nav         Search, fetch, explore, snapshot, TOON serialization
-├── rpg-lift        Autonomous LLM-driven lifting (Anthropic, OpenAI, OpenRouter, Gemini)
-├── rpg-cli         CLI binary (rpg-encoder)
-└── rpg-mcp         MCP server binary (rpg-mcp-server)
-```
-
-</details>
-
-<details>
-<summary><strong>FAQ</strong></summary>
-
-**Do I need an API key or a local LLM?**
-
-No. Your connected coding agent (Claude Code, Cursor, etc.) *is* the LLM. rpg-encoder sends
-source code to the agent via MCP tools, the agent analyzes it and sends back semantic features.
-No API keys, no external services, no local model downloads.
-
-**How long does lifting take?**
-
-Roughly 2 minutes per 100 entities. A small project (50 files, ~200 entities) takes about
-5 minutes. A large project (500+ files) should use parallel subagents — your agent handles
-this automatically. Build and hierarchy steps are near-instant.
-
-**What happens when I change code?**
-
-The server auto-syncs the graph when git HEAD moves. Modified entities are tracked for
-re-lifting. No manual intervention needed.
-
-**Can I lift only part of the codebase?**
-
-Yes. Pass a file glob to `get_entities_for_lifting`: `"src/auth/**"`, `"crates/rpg-core/**"`,
-etc. You can also use `.rpgignore` (gitignore syntax) to permanently exclude files.
-
-**What if lifting gets interrupted?**
-
-The graph is saved to disk after every `submit_lift_results` call. Start a new session,
-call `lifting_status`, and it picks up exactly where you left off.
-
-**Should I commit `.rpg/` to the repo?**
-
-Yes. Committing `.rpg/graph.json` means collaborators and CI agents get instant semantic
-search without re-lifting.
-
-</details>
+---
 
 ## Documentation
 
 - [How RPG Compares](docs/comparison.md) — honest comparison with GitNexus, Serena, Repomix, and others
 - [Paper Fidelity](docs/paper_fidelity.md) — algorithm-by-algorithm comparison with the research paper
 - [Use Cases](use_cases.md) — practical examples of what RPG enables
+- [CHANGELOG](CHANGELOG.md) — release history
+
+---
 
 ## Inspirations & References
 
-rpg-encoder is built on the theoretical framework from the RPG-Encoder research paper, with
-original extensions inspired by tools across the code intelligence landscape:
+rpg-encoder is built on the theoretical framework from the RPG-Encoder research paper, with original extensions inspired by tools across the code intelligence landscape:
 
-- **RPG-Encoder paper** (Luo et al., 2026, Microsoft Research): The semantic lifting model,
-  3-level hierarchy construction, incremental evolution algorithms, and formal graph model
-  `G = (V_H ∪ V_L, E_dep ∪ E_feature)`.
-  [[Paper]](https://arxiv.org/abs/2602.02084)
-  [[Project Page]](https://ayanami2003.github.io/RPG-Encoder/)
+- **[RPG-Encoder paper](https://arxiv.org/abs/2602.02084)** (Luo et al., 2026, Microsoft Research) — semantic lifting model, 3-level hierarchy construction, incremental evolution algorithms, formal graph model `G = (V_H ∪ V_L, E_dep ∪ E_feature)`.
+- **[GitNexus](https://github.com/abhigyanpatwari/GitNexus)** — precomputed relational intelligence, blast radius analysis, Claude Code hooks. Showed that a code graph tool must be invisible to be essential.
+- **[Serena](https://github.com/oraios/serena)** — symbol-level precision via LSP. Demonstrated that real-time code awareness matters more than batch analysis.
+- **[TOON](https://github.com/toon-format/toon)** — Token-Oriented Object Notation for LLM-optimized output.
 
-- **GitNexus**: Precomputed relational intelligence, blast radius analysis, Claude Code hooks
-  for seamless integration. Showed that a code graph tool must be invisible to be essential.
+This is an independent implementation. All code is original work under the MIT license. Not affiliated with or endorsed by Microsoft.
 
-- **Serena**: Symbol-level precision via LSP. Demonstrated that real-time code awareness
-  matters more than batch analysis.
-
-- **TOON**: Token-Oriented Object Notation for LLM-optimized output.
-  [[Spec]](https://github.com/toon-format/toon)
-
-This is an independent implementation. All code is original work under the MIT license.
-Not affiliated with or endorsed by Microsoft.
+---
 
 ## License
 
-Licensed under the [MIT License](LICENSE).
+[MIT](LICENSE)
