@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.8.3] - 2026-04-14
 
+### Fixed (Codex round 5 review)
+
+- **`lifting_status` could not see stale-feature drift.** Coverage reached
+  100% after sync but entities with modified sources still had outdated
+  features; the dashboard reported "Graph is complete" and sent callers off
+  to search. Added a persistent `stale_entity_ids: Arc<RwLock<HashSet>>` on
+  `RpgServer` populated from `summary.modified_entity_ids` on every
+  `auto_sync_if_stale`, drained by `submit_lift_results` as entities get
+  re-lifted, and cleared on `reload_rpg` / `set_project_root`. Surfaced in
+  the header as `stale_features: N entities modified since last lift` and
+  factored into the NEXT STEP state machine.
+- **`get_entities_for_lifting(scope="*")` silently skipped stale entities.**
+  `resolve_scope` filters to entities with no features, and the auto-lift
+  skip check short-circuits anything that already has features — so a
+  caller following the "re-lift stale entities" recipe would get back zero
+  entities even though the dashboard said N needed work. Now the server
+  snapshots `stale_entity_ids` before taking graph locks, augments the
+  resolved scope with stale entities when scope is `*`/`all`, and routes
+  stale entities into `needs_llm` regardless of existing features.
+- **Circular delegation flow from `lifting_status`.** The large-scope NEXT
+  STEP sent callers to `get_entities_for_lifting(scope="*")` first, whose
+  batch-0 response then said "dispatch a sub-agent" — burning the caller's
+  context on a batch payload before they ever saw the dispatch
+  recommendation. Now `lifting_status` emits the LOOP/DISPATCH/FALLBACK
+  blocks directly, so the caller delegates without first loading a batch of
+  source.
+- **NEXT STEP only branched on `remaining` (unlifted count).** When
+  `total - lifted == 0` but `stale_features_count > 0`, the old logic
+  skipped straight to hierarchy or "graph is complete" and never prompted
+  re-lift. The state machine now considers `remaining + stale_features`
+  together — dedicated branches cover "unlifted + stale mixed", "stale
+  only", and the large-scope threshold compares against the combined total.
+- **Silent config load swallow.** `set_project_root` and `reload_rpg` used
+  `unwrap_or_default()` on config loads, collapsing "missing config file"
+  (expected) and "malformed TOML" (user error) into identical behavior. Added
+  `reload_config_with_warning` helper that logs a stderr warning when parse
+  fails so misconfigurations surface instead of silently reverting to defaults.
+
 ### Fixed (Codex round 4 review)
 
 - **Auto-sync notice mislabelled the unlifted count.** `total - lifted`

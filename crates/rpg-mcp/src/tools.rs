@@ -3,6 +3,8 @@
 //! The `#[tool_router]` proc macro requires every `#[tool]` method to live in one
 //! `impl` block, so this file cannot be split further without upstream changes.
 
+use std::collections::HashSet;
+
 use rmcp::{handler::server::wrapper::Parameters, tool, tool_router};
 use rpg_core::graph::{RPGraph, normalize_path};
 use rpg_core::storage;
@@ -445,9 +447,9 @@ impl RpgServer {
 
         // Reload the config from the new project — encoding.max_batch_tokens
         // and other project-scoped settings must follow the root or tools
-        // will operate with the previous project's configuration.
-        *self.config.write().await =
-            rpg_core::config::RpgConfig::load(&canonical).unwrap_or_default();
+        // will operate with the previous project's configuration. Logs a
+        // warning if the new project has a malformed .rpg/config.toml.
+        Self::reload_config_with_warning(&self.config, &canonical).await;
 
         // Reset all session + sync state — everything is project-scoped
         *self.lifting_session.write().await = None;
@@ -458,6 +460,7 @@ impl RpgServer {
         *self.last_auto_sync_head.write().await = None;
         *self.last_auto_sync_changeset.write().await = None;
         *self.last_auto_sync_workdir_paths.write().await = std::collections::HashSet::new();
+        *self.stale_entity_ids.write().await = std::collections::HashSet::new();
         #[cfg(feature = "embeddings")]
         {
             *self.embedding_index.write().await = None;
@@ -1011,12 +1014,49 @@ impl RpgServer {
             };
 
             if needs_rebuild {
+                // Snapshot stale entity IDs *before* taking graph/session locks so
+                // we don't deadlock on nested writes. Stale entities are ones
+                // whose source changed after they were lifted — their features
+                // still exist but are outdated, so they should be treated as
+                // "needs LLM work" alongside unlifted entities.
+                let stale_snapshot: HashSet<String> = {
+                    let stale = self.stale_entity_ids.read().await;
+                    stale.iter().cloned().collect()
+                };
+
                 // Lock order: graph first, then session (consistent with lifting_status)
                 let mut guard = self.graph.write().await;
                 let mut session = self.lifting_session.write().await;
                 let graph = guard.as_mut().ok_or("No RPG loaded")?;
 
-                let scope = rpg_encoder::lift::resolve_scope(graph, &params.scope);
+                let mut scope = rpg_encoder::lift::resolve_scope(graph, &params.scope);
+
+                // For the "*"/"all" scope, `resolve_scope` filters to entities
+                // with *no* features — which correctly captures unlifted
+                // entities but excludes stale ones (they still have their old
+                // features). Augment the scope with any tracked stale
+                // entities so a single get_entities_for_lifting(scope="*")
+                // call covers both "never lifted" and "lifted-but-outdated".
+                // For other scope kinds (glob, hierarchy path, id list),
+                // `resolve_scope` doesn't filter by lifted state, so any
+                // stale entity matching the scope is already present.
+                let params_scope_trimmed = params.scope.trim();
+                if params_scope_trimmed == "*" || params_scope_trimmed.eq_ignore_ascii_case("all") {
+                    let already: HashSet<&String> = scope.entity_ids.iter().collect();
+                    let to_add: Vec<String> = stale_snapshot
+                        .iter()
+                        .filter(|id| !already.contains(id))
+                        .filter(|id| {
+                            graph
+                                .entities
+                                .get(*id)
+                                .is_some_and(|e| e.kind != rpg_core::graph::EntityKind::Module)
+                        })
+                        .cloned()
+                        .collect();
+                    scope.entity_ids.extend(to_add);
+                }
+
                 if scope.entity_ids.is_empty() {
                     *session = None;
                     return Ok(format!(
@@ -1048,11 +1088,17 @@ impl RpgServer {
                 let mut needs_llm = Vec::new();
                 let mut review_candidates: Vec<(String, Vec<String>)> = Vec::new();
                 for raw in all_raw_entities {
-                    // Skip entities that already have curated features
-                    let already_lifted = graph
-                        .entities
-                        .get(&raw.id())
-                        .is_some_and(|e| !e.semantic_features.is_empty());
+                    let raw_id = raw.id();
+                    // Stale entities get re-lifted regardless of existing
+                    // features — their features are known-outdated because
+                    // the source was modified after the previous lift.
+                    let is_stale = stale_snapshot.contains(&raw_id);
+                    // Otherwise, skip entities that already have curated features.
+                    let already_lifted = !is_stale
+                        && graph
+                            .entities
+                            .get(&raw_id)
+                            .is_some_and(|e| !e.semantic_features.is_empty());
                     if already_lifted {
                         continue;
                     }
@@ -1434,6 +1480,15 @@ impl RpgServer {
         }
 
         graph.refresh_metadata();
+
+        // Re-lifted entities are no longer stale — drain them from the set
+        // tracked by auto-sync so lifting_status reports accurate drift.
+        if !resolved_features.is_empty() {
+            let mut stale = self.stale_entity_ids.write().await;
+            for id in resolved_features.keys() {
+                stale.remove(id);
+            }
+        }
 
         storage::save(&self.project_root().await, graph)
             .map_err(|e| format!("Failed to save RPG: {}", e))?;
@@ -2037,11 +2092,15 @@ impl RpgServer {
     )]
     async fn reload_rpg(&self) -> Result<String, String> {
         let project_root = self.project_root().await;
-        // Refresh config from disk too — if the user edited .rpg/config.toml
-        // or the lifter wrote new settings, pick them up here so subsequent
-        // tool calls operate against current values.
-        *self.config.write().await =
-            rpg_core::config::RpgConfig::load(&project_root).unwrap_or_default();
+        // Refresh config from disk — if the user edited .rpg/config.toml
+        // or the lifter wrote new settings, pick them up here. Logs a
+        // warning if the file exists but failed to parse, then keeps the
+        // existing config (don't clobber a working in-memory config over
+        // a temporarily broken edit).
+        Self::reload_config_with_warning(&self.config, &project_root).await;
+        // Reset drift tracking — the on-disk graph might already reflect
+        // submissions from an external CLI run.
+        *self.stale_entity_ids.write().await = std::collections::HashSet::new();
         match storage::load(&project_root) {
             Ok(g) => {
                 let entities = g.metadata.total_entities;
