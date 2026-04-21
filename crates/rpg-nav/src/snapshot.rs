@@ -299,7 +299,7 @@ fn build_hot_spots(graph: &RPGraph, top_n: usize) -> Vec<HotSpot> {
             (id.as_str(), connections)
         })
         .collect();
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.sort_by_key(|entry| std::cmp::Reverse(entry.1));
 
     scored
         .into_iter()

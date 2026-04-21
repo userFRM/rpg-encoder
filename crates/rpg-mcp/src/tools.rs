@@ -2061,10 +2061,10 @@ impl RpgServer {
                     } else {
                         cat_node.semantic_features.join(", ")
                     };
-                    result.push_str(&format!("  - {}/{}: {}\n", area_name, cat_name, cat_feats,));
+                    result.push_str(&format!("  - {}/{}: {}\n", area_name, cat_name, cat_feats));
                     for sub_name in cat_node.children.keys() {
                         result
-                            .push_str(&format!("    - {}/{}/{}\n", area_name, cat_name, sub_name,));
+                            .push_str(&format!("    - {}/{}/{}\n", area_name, cat_name, sub_name));
                     }
                 }
             }
