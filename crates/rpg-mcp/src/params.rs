@@ -8,6 +8,8 @@ use serde::Deserialize;
 pub(crate) struct SearchNodeParams {
     /// The search query describing what you're looking for
     pub(crate) query: String,
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
     /// Search mode: 'features', 'snippets', or 'auto' (default: 'auto')
     pub(crate) mode: Option<String>,
     /// Optional hierarchy scope to restrict search (e.g., 'Security/auth'). Comma-separated for multiple scopes.
@@ -26,7 +28,9 @@ pub(crate) struct SearchNodeParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct FetchNodeParams {
     /// The entity ID to fetch (e.g., 'src/auth.rs:validate_token')
-    pub(crate) entity_id: String,
+    pub(crate) entity_id: Option<String>,
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
     /// Multiple entity IDs to fetch in batch (overrides entity_id when provided)
     pub(crate) entity_ids: Option<Vec<String>>,
     /// Comma-separated fields to include: "features", "source", "deps", "hierarchy". Omit for all fields.
@@ -39,7 +43,9 @@ pub(crate) struct FetchNodeParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct ExploreRpgParams {
     /// The entity ID to start exploration from
-    pub(crate) entity_id: String,
+    pub(crate) entity_id: Option<String>,
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
     /// Multiple entity IDs to explore from in batch (overrides entity_id when provided)
     pub(crate) entity_ids: Option<Vec<String>>,
     /// Traversal direction: 'upstream', 'downstream', or 'both'
@@ -56,6 +62,12 @@ pub(crate) struct ExploreRpgParams {
     pub(crate) max_results: Option<usize>,
 }
 
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub(crate) struct RpgInfoParams {
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
+}
+
 /// Parameters for the `set_project_root` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct SetProjectRootParams {
@@ -66,6 +78,8 @@ pub(crate) struct SetProjectRootParams {
 /// Parameters for the `build_rpg` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct BuildRpgParams {
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
     /// Primary language override (auto-detected if not specified)
     pub(crate) language: Option<String>,
     /// Glob pattern to include files (e.g., "src/**/*.rs")
@@ -77,8 +91,24 @@ pub(crate) struct BuildRpgParams {
 /// Parameters for the `update_rpg` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct UpdateRpgParams {
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
     /// Base commit SHA to diff from (defaults to RPG's stored base_commit)
     pub(crate) since: Option<String>,
+}
+
+/// Parameters for the `reload_rpg` tool.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub(crate) struct ReloadRpgParams {
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
+}
+
+/// Parameters for the `lifting_status` tool.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub(crate) struct LiftingStatusParams {
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
 }
 
 /// Parameters for the `get_entities_for_lifting` tool.
@@ -86,6 +116,8 @@ pub(crate) struct UpdateRpgParams {
 pub(crate) struct GetEntitiesForLiftingParams {
     /// Scope specifier: file glob ("src/auth/**"), hierarchy path, entity IDs, or "*"/"all".
     pub(crate) scope: String,
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
     /// Batch index to retrieve (0-based). Omit or 0 for first batch.
     pub(crate) batch_index: Option<usize>,
 }
@@ -93,6 +125,8 @@ pub(crate) struct GetEntitiesForLiftingParams {
 /// Parameters for the `submit_lift_results` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct SubmitLiftResultsParams {
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
     /// JSON object mapping function names to feature arrays.
     /// Example: {"my_func": ["validate input", "return result"], "other": ["compute hash"]}
     pub(crate) features: String,
@@ -101,6 +135,8 @@ pub(crate) struct SubmitLiftResultsParams {
 /// Parameters for the `submit_hierarchy` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct SubmitHierarchyParams {
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
     /// JSON object mapping file paths to 3-level hierarchy paths.
     /// Example: {"src/auth/login.rs": "Authentication/manage sessions/handle login"}
     pub(crate) assignments: String,
@@ -109,30 +145,51 @@ pub(crate) struct SubmitHierarchyParams {
 /// Parameters for the `get_files_for_synthesis` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct GetFilesForSynthesisParams {
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
     /// Batch index to retrieve (0-based). Omit or 0 for first batch.
+    pub(crate) batch_index: Option<usize>,
+}
+
+/// Parameters for the `finalize_lifting` tool.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub(crate) struct FinalizeLiftingParams {
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
+}
+
+/// Parameters for the `get_routing_candidates` tool.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub(crate) struct GetRoutingCandidatesParams {
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
+    /// Batch index to retrieve (0-based). For large sets, returns paginated candidates.
     pub(crate) batch_index: Option<usize>,
 }
 
 /// Parameters for the `submit_file_syntheses` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct SubmitFileSynthesesParams {
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
     /// JSON object mapping file paths to comma-separated feature strings.
     /// Example: {"src/auth/login.rs": "handle user authentication, manage session tokens",
     ///           "src/db/query.rs": "build SQL queries, execute database operations"}
     pub(crate) syntheses: String,
 }
 
-/// Parameters for the `get_routing_candidates` tool.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct GetRoutingCandidatesParams {
-    /// Batch index to retrieve (0-based). For large sets, returns paginated candidates.
-    #[serde(default)]
-    pub(crate) batch_index: Option<usize>,
+/// Parameters for the `build_semantic_hierarchy` tool.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub(crate) struct BuildSemanticHierarchyParams {
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
 }
 
 /// Parameters for the `reconstruct_plan` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct ReconstructPlanParams {
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
     /// Maximum number of entities per execution batch (default: 8).
     pub(crate) max_batch_size: Option<usize>,
     /// Include file-level Module entities in the schedule (default: false).
@@ -144,6 +201,8 @@ pub(crate) struct ReconstructPlanParams {
 pub(crate) struct ContextPackParams {
     /// The search query describing what context you need
     pub(crate) query: String,
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
     /// Optional hierarchy scope to restrict search (e.g., 'Security/auth')
     pub(crate) scope: Option<String>,
     /// Target token budget for the packed context (default: 4000)
@@ -159,6 +218,8 @@ pub(crate) struct ContextPackParams {
 pub(crate) struct ImpactRadiusParams {
     /// The entity ID to compute impact from
     pub(crate) entity_id: String,
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
     /// Traversal direction: 'upstream' (what depends on this), 'downstream' (what this depends on), or 'both'
     pub(crate) direction: Option<String>,
     /// Maximum traversal depth (default: 3). Use -1 for unlimited.
@@ -172,6 +233,8 @@ pub(crate) struct ImpactRadiusParams {
 /// Parameters for the `submit_routing_decisions` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct SubmitRoutingDecisionsParams {
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
     /// JSON object mapping entity IDs to routing action.
     /// Value is a hierarchy path to route there, or "keep" to confirm current position.
     /// Example: {"src/auth.rs:validate_token": "Security/auth/validate", "src/db.rs:query": "keep"}
@@ -186,6 +249,8 @@ pub(crate) struct SubmitRoutingDecisionsParams {
 pub(crate) struct PlanChangeParams {
     /// The goal or intent of the change (e.g., "add rate limiting to API endpoints")
     pub(crate) goal: String,
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
     /// Optional hierarchy scope to restrict search (e.g., 'Security/auth')
     pub(crate) scope: Option<String>,
     /// Maximum number of relevant entities to include (default: 15)
@@ -197,6 +262,8 @@ pub(crate) struct PlanChangeParams {
 pub(crate) struct FindPathsParams {
     /// Source entity ID
     pub(crate) source: String,
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
     /// Target entity ID
     pub(crate) target: String,
     /// Maximum path length (default: 5). Use -1 for unlimited.
@@ -212,6 +279,8 @@ pub(crate) struct FindPathsParams {
 pub(crate) struct SliceBetweenParams {
     /// Entity IDs to connect (minimum 2)
     pub(crate) entity_ids: Vec<String>,
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
     /// Maximum path length when searching for connections (default: 3)
     pub(crate) max_depth: Option<usize>,
     /// Include entity metadata (name, file, features) in output
@@ -223,6 +292,8 @@ pub(crate) struct SliceBetweenParams {
 pub(crate) struct AnalyzeHealthParams {
     /// Instability threshold above which entities are flagged as highly unstable (default: 0.7).
     pub(crate) instability_threshold: Option<f64>,
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
     /// Minimum total degree for god object detection (default: 10).
     pub(crate) god_object_threshold: Option<usize>,
     /// Run Rabin-Karp token-based clone detection (reads source files from disk, slower). Default: false.
@@ -237,6 +308,8 @@ pub(crate) struct AnalyzeHealthParams {
 /// Parameters for the `semantic_snapshot` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct SemanticSnapshotParams {
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
     /// Target token budget (default: 30000). Controls how much detail is included.
     pub(crate) token_budget: Option<usize>,
     /// Include dependency skeleton (default: true). Set to false to save tokens.
@@ -248,6 +321,8 @@ pub(crate) struct SemanticSnapshotParams {
 pub(crate) struct DetectCyclesParams {
     /// Maximum number of cycles to return (default: all). Use to limit output.
     pub(crate) max_cycles: Option<usize>,
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
     /// Minimum cycle length to report (default: 2). Use 3+ to skip trivial 2-cycles.
     pub(crate) min_cycle_length: Option<usize>,
     /// Maximum cycle length to detect (default: 20, prevents exponential blowup)
@@ -273,6 +348,8 @@ pub(crate) struct DetectCyclesParams {
 /// Parameters for the `auto_lift` tool.
 #[derive(Deserialize, JsonSchema)]
 pub(crate) struct AutoLiftParams {
+    /// Optional project root override for this call only.
+    pub(crate) project_root: Option<String>,
     /// LLM provider: "anthropic", "openai", or any OpenAI-compatible endpoint.
     pub(crate) provider: String,
     /// API key for the provider. Use this OR api_key_env (not both). Prefer api_key_env to avoid exposing keys in tool call transcripts.
