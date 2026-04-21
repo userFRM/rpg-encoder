@@ -147,13 +147,36 @@ impl RpgServer {
     }
 
     pub(crate) fn expand_project_root_path(path: &str) -> PathBuf {
+        fn home_dir() -> Option<PathBuf> {
+            std::env::var("USERPROFILE")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .map(PathBuf::from)
+                .or_else(|| {
+                    let drive = std::env::var("HOMEDRIVE").ok()?;
+                    let home_path = std::env::var("HOMEPATH").ok()?;
+                    let joined = format!("{}{}", drive, home_path);
+                    if joined.trim().is_empty() {
+                        None
+                    } else {
+                        Some(PathBuf::from(joined))
+                    }
+                })
+                .or_else(|| {
+                    std::env::var("HOME")
+                        .ok()
+                        .filter(|s| !s.trim().is_empty())
+                        .map(PathBuf::from)
+                })
+        }
+
         if let Some(rest) = path.strip_prefix("~/") {
-            match std::env::var("HOME") {
-                Ok(home) => PathBuf::from(home).join(rest),
-                Err(_) => PathBuf::from(path),
+            match home_dir() {
+                Some(home) => home.join(rest),
+                None => PathBuf::from(path),
             }
         } else if path == "~" {
-            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()))
+            home_dir().unwrap_or_else(|| PathBuf::from(path))
         } else {
             PathBuf::from(path)
         }

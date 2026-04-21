@@ -132,21 +132,24 @@ Seven Rust crates, one MCP server binary, one CLI binary:
 | `rpg-nav` | Search, fetch, explore, snapshot, TOON serialization |
 | `rpg-lift` | Autonomous LLM lifting (Anthropic, OpenAI, OpenRouter, Gemini) |
 | `rpg-cli` | CLI binary (`rpg-encoder`) |
-| `rpg-mcp` | MCP server binary (`rpg-mcp-server`) with 27 tools |
+| `rpg-mcp` | MCP server binary (`rpg-mcp-server`) with 28 tools |
 
 ---
 
-## MCP Tools (27)
+## MCP Tools (28)
+
+Per-call `project_root` overrides target another repository without changing the active root. Semantic or embedding-backed queries may refresh the target root's `.rpg/embeddings.*` cache files to keep results up to date.
 
 <details>
-<summary><strong>Build & Maintain</strong> (4 tools)</summary>
+<summary><strong>Build & Maintain</strong> (5 tools)</summary>
 
 | Tool | Description |
 |------|-------------|
+| `set_project_root` | Switch the active repository root at runtime without restarting the MCP server |
 | `build_rpg` | Index the codebase (run once, instant) |
 | `update_rpg` | Incremental update from git changes |
 | `reload_rpg` | Reload graph from disk after external changes |
-| `rpg_info` | Graph statistics, hierarchy overview, per-area lifting coverage |
+| `rpg_info` | Graph statistics, hierarchy overview, per-area lifting coverage. Supports optional per-call `project_root` override |
 
 </details>
 
@@ -155,11 +158,11 @@ Seven Rust crates, one MCP server binary, one CLI binary:
 
 | Tool | Description |
 |------|-------------|
-| `semantic_snapshot` | Whole-repo semantic understanding in one call (~25K tokens for 1000 entities) |
-| `search_node` | Search entities by intent or keywords (hybrid embedding + lexical scoring) |
-| `fetch_node` | Get entity metadata, source code, dependencies, and hierarchy context |
-| `explore_rpg` | Traverse dependency graph (upstream, downstream, or both) |
-| `context_pack` | Single-call search + fetch + explore with token budget |
+| `semantic_snapshot` | Whole-repo semantic understanding in one call (~25K tokens for 1000 entities). Supports optional per-call `project_root` override |
+| `search_node` | Search entities by intent or keywords (hybrid embedding + lexical scoring). Supports optional per-call `project_root` override |
+| `fetch_node` | Get entity metadata, source code, dependencies, and hierarchy context. Supports optional per-call `project_root` override |
+| `explore_rpg` | Traverse dependency graph (upstream, downstream, or both). Supports optional per-call `project_root` override |
+| `context_pack` | Single-call search + fetch + explore with token budget. Supports optional per-call `project_root` override |
 
 </details>
 
@@ -168,13 +171,13 @@ Seven Rust crates, one MCP server binary, one CLI binary:
 
 | Tool | Description |
 |------|-------------|
-| `impact_radius` | BFS reachability analysis — "what depends on X?" |
-| `plan_change` | Change planning — find relevant entities, modification order, blast radius |
-| `find_paths` | K-shortest dependency paths between two entities |
-| `slice_between` | Extract minimal connecting subgraph between entities |
-| `analyze_health` | Code health: coupling, instability, god objects, clone detection |
-| `detect_cycles` | Find circular dependencies and architectural cycles |
-| `reconstruct_plan` | Dependency-safe reconstruction execution plan |
+| `impact_radius` | BFS reachability analysis — "what depends on X?" Supports optional per-call `project_root` override |
+| `plan_change` | Change planning — find relevant entities, modification order, blast radius. Supports optional per-call `project_root` override |
+| `find_paths` | K-shortest dependency paths between two entities. Supports optional per-call `project_root` override |
+| `slice_between` | Extract minimal connecting subgraph between entities. Supports optional per-call `project_root` override |
+| `analyze_health` | Code health: coupling, instability, god objects, clone detection. Supports optional per-call `project_root` override |
+| `detect_cycles` | Find circular dependencies and architectural cycles. Supports optional per-call `project_root` override |
+| `reconstruct_plan` | Dependency-safe reconstruction execution plan. Supports optional per-call `project_root` override |
 
 </details>
 
@@ -183,17 +186,17 @@ Seven Rust crates, one MCP server binary, one CLI binary:
 
 | Tool | Description |
 |------|-------------|
-| `auto_lift` | One-call autonomous lifting via cheap LLM API (Haiku, GPT-4o-mini, OpenRouter, Gemini) |
-| `lifting_status` | Dashboard — coverage, per-area progress, NEXT STEP |
-| `get_entities_for_lifting` | Get entity source code for your agent to analyze |
-| `submit_lift_results` | Submit the agent's semantic features back to the graph |
-| `finalize_lifting` | Aggregate file-level features, rebuild hierarchy metadata |
-| `get_files_for_synthesis` | Get file-level entity features for holistic synthesis |
-| `submit_file_syntheses` | Submit holistic file-level summaries |
-| `build_semantic_hierarchy` | Get domain discovery + hierarchy assignment prompts |
-| `submit_hierarchy` | Apply hierarchy assignments to the graph |
-| `get_routing_candidates` | Get entities needing semantic routing (drifted or newly lifted) |
-| `submit_routing_decisions` | Submit routing decisions (hierarchy path or "keep") |
+| `auto_lift` | One-call autonomous lifting via cheap LLM API (Haiku, GPT-4o-mini, OpenRouter, Gemini). Supports optional per-call `project_root` override |
+| `lifting_status` | Dashboard — coverage, per-area progress, NEXT STEP. Supports optional per-call `project_root` override |
+| `get_entities_for_lifting` | Get entity source code for your agent to analyze. Supports optional per-call `project_root` override |
+| `submit_lift_results` | Submit the agent's semantic features back to the graph. Supports optional per-call `project_root` override |
+| `finalize_lifting` | Aggregate file-level features, rebuild hierarchy metadata. Supports optional per-call `project_root` override |
+| `get_files_for_synthesis` | Get file-level entity features for holistic synthesis. Supports optional per-call `project_root` override |
+| `submit_file_syntheses` | Submit holistic file-level summaries. Supports optional per-call `project_root` override |
+| `build_semantic_hierarchy` | Get domain discovery + hierarchy assignment prompts. Supports optional per-call `project_root` override |
+| `submit_hierarchy` | Apply hierarchy assignments to the graph. Supports optional per-call `project_root` override |
+| `get_routing_candidates` | Get entities needing semantic routing (drifted or newly lifted). Supports optional per-call `project_root` override |
+| `submit_routing_decisions` | Submit routing decisions (hierarchy path or "keep"). Supports optional per-call `project_root` override |
 
 </details>
 
