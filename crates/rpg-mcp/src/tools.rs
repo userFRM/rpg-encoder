@@ -2329,7 +2329,8 @@ impl RpgServer {
 
         // Default: sync from current working tree (committed + staged + unstaged).
         // If `since` is provided, fall back to committed-only diff from that commit.
-        let summary = if let Some(since) = params.since.as_deref() {
+        let since = params.since.as_deref().filter(|s| !s.trim().is_empty());
+        let summary = if let Some(since) = since {
             rpg_encoder::evolution::run_update(
                 g,
                 &project_root,
