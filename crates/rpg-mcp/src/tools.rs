@@ -3095,15 +3095,10 @@ impl RpgServer {
 
         // Handle sharded workflow
         if needs_sharding {
-            // Lock order invariant (see RpgServer doc): graph before
-            // hierarchy_session. A concurrent build_rpg/update_rpg/
-            // reload_rpg/set_project_root can clear the session at any
-            // moment before we hold its write lock, so decide whether to
-            // initialize only while holding the write lock — never by
-            // re-trusting an earlier peek. We take graph.read() FIRST
-            // (ordering) so that if we need to initialize, we can compute
-            // clusters from a stable graph and install under the
-            // session.write() that's about to follow.
+            // Avoid holding a root-state read lock while acquiring the write
+            // lock on the same RwLock. Sharded rendering only needs immutable
+            // snapshots, so compute any graph-derived data in a short read
+            // section, then release it before mutating hierarchy_session.
             enum Action {
                 EmitBatch0(Vec<rpg_encoder::hierarchy::FileCluster>),
                 EmitBatchN {
@@ -3117,24 +3112,24 @@ impl RpgServer {
                 },
             }
 
-            let graph_guard = state.read().await;
-            let graph = graph_guard.graph.as_ref().unwrap();
+            let initial_clusters = {
+                let graph_guard = state.read().await;
+                let graph = graph_guard.graph.as_ref().unwrap();
+                rpg_encoder::hierarchy::cluster_files_for_hierarchy(graph, 70)
+            };
 
             let action = {
                 let mut session_guard = state.write().await;
 
                 // Initialize if absent — fresh or cleared-out-from-under-us.
                 if session_guard.hierarchy_session.is_none() {
-                    let new_clusters =
-                        rpg_encoder::hierarchy::cluster_files_for_hierarchy(graph, 70);
-                    let snapshot = new_clusters.clone();
                     session_guard.hierarchy_session = Some(HierarchySession {
-                        clusters: new_clusters,
+                        clusters: initial_clusters.clone(),
                         functional_areas: None,
                         assignments: std::collections::HashMap::new(),
                         batches_completed: 0,
                     });
-                    Action::EmitBatch0(snapshot)
+                    Action::EmitBatch0(initial_clusters)
                 } else {
                     let session = session_guard.hierarchy_session.as_mut().unwrap();
                     let total_batches = session.clusters.len() + 1;
@@ -3156,10 +3151,11 @@ impl RpgServer {
                 }
             };
 
-            // Keep `graph_guard` held across rendering. Both helpers now
-            // take `&RPGraph` so they don't re-read `self.graph`, which
-            // would otherwise expose us to a concurrent `set_project_root`
-            // that could swap the graph to `None` mid-render.
+            let graph_guard = state.read().await;
+            let graph = graph_guard.graph.as_ref().unwrap();
+
+            // Hold the read guard only while rendering so the helpers never
+            // re-read mutable compatibility state during batch emission.
             match action {
                 Action::EmitBatch0(clusters) => {
                     return self.build_batch_0_domain_discovery(graph, &clusters).await;
