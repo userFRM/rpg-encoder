@@ -32,16 +32,14 @@ pub(crate) const LARGE_SCOPE_BATCHES: usize = 10;
 use anyhow::Result;
 use rmcp::ServiceExt;
 use rpg_core::storage;
-use std::path::PathBuf;
-
 use server::RpgServer;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let project_root = std::env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().expect("failed to get current directory"));
+    let cli_args: Vec<String> = std::env::args().collect();
+    let cli_root = RpgServer::startup_project_root_arg(cli_args.iter().map(String::as_str));
+    let cwd = std::env::current_dir().expect("failed to get current directory");
+    let project_root = RpgServer::resolve_startup_project_root(cli_root.as_deref(), cwd);
 
     eprintln!("RPG MCP server starting for: {}", project_root.display());
 

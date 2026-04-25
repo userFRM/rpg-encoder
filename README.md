@@ -244,7 +244,7 @@ claude mcp add rpg -- npx -y -p rpg-encoder rpg-mcp-server
 }
 ```
 
-The server auto-detects the project root from the current working directory — no path argument needed.
+The server auto-detects the project root from the startup directory by default. When no positional project path is provided, the binary falls back to its current working directory.
 
 <details>
 <summary><strong>CLI</strong></summary>

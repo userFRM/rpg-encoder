@@ -133,6 +133,49 @@ impl std::fmt::Debug for RpgServer {
 }
 
 impl RpgServer {
+    fn canonicalize_startup_root_candidate(path: PathBuf) -> PathBuf {
+        path.canonicalize().unwrap_or(path)
+    }
+
+    pub(crate) fn startup_project_root_arg<I>(args: I) -> Option<String>
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        let mut iter = args.into_iter().map(|arg| arg.as_ref().to_string());
+        let _program = iter.next();
+
+        while let Some(arg) = iter.next() {
+            if arg == "--log" || arg == "--log-append" {
+                continue;
+            }
+
+            if arg == "--log-level" {
+                let _ = iter.next();
+                continue;
+            }
+
+            if arg.starts_with("--") {
+                continue;
+            }
+
+            return Some(arg);
+        }
+
+        None
+    }
+
+    pub(crate) fn resolve_startup_project_root(
+        explicit_arg: Option<&str>,
+        current_dir: PathBuf,
+    ) -> PathBuf {
+        if let Some(path) = Self::normalize_optional_project_root(explicit_arg) {
+            return Self::canonicalize_startup_root_candidate(Self::expand_project_root_path(path));
+        }
+
+        Self::canonicalize_startup_root_candidate(current_dir)
+    }
+
     pub(crate) fn cross_root_notice(
         active_root: &std::path::Path,
         project_root: &std::path::Path,
@@ -1290,6 +1333,58 @@ mod tests {
             h1, h2,
             "same path + different size/mtime must yield different hashes"
         );
+    }
+
+    #[test]
+    fn test_resolve_startup_project_root_prefers_explicit_arg() {
+        let cwd = tempfile::tempdir().unwrap();
+        let explicit_root = tempfile::tempdir().unwrap();
+
+        let resolved = RpgServer::resolve_startup_project_root(
+            Some(explicit_root.path().to_str().unwrap()),
+            cwd.path().to_path_buf(),
+        );
+
+        assert_eq!(resolved, explicit_root.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn test_resolve_startup_project_root_falls_back_to_current_dir() {
+        let cwd = tempfile::tempdir().unwrap();
+
+        let resolved = RpgServer::resolve_startup_project_root(None, cwd.path().to_path_buf());
+
+        assert_eq!(resolved, cwd.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn test_startup_project_root_arg_skips_logging_flags() {
+        let root = tempfile::tempdir().unwrap();
+        let root_str = root.path().to_str().unwrap().to_string();
+
+        let parsed = RpgServer::startup_project_root_arg([
+            "rpg-mcp-server",
+            "--log",
+            "--log-append",
+            "--log-level",
+            "debug",
+            root_str.as_str(),
+        ]);
+
+        assert_eq!(parsed.as_deref(), Some(root_str.as_str()));
+    }
+
+    #[test]
+    fn test_startup_project_root_arg_none_for_flags_only() {
+        let parsed = RpgServer::startup_project_root_arg([
+            "rpg-mcp-server",
+            "--log",
+            "--log-append",
+            "--log-level",
+            "debug",
+        ]);
+
+        assert!(parsed.is_none());
     }
 
     #[tokio::test]
