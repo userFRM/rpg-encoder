@@ -143,7 +143,7 @@ zstd = "0.13.3"
 ureq = "3"
 
 # Embeddings
-fastembed = "5.8.1"
+fastembed = { version = "5.13.3", default-features = false, features = ["ort-load-dynamic", "hf-hub-native-tls"] }
 
 # TOON format
 toon-format = { version = "0.4.1", default-features = false }
