@@ -423,7 +423,7 @@ pub fn detect_cycles(graph: &RPGraph, config: &CycleConfig) -> CycleReport {
             stats
         })
         .collect();
-    area_breakdown.sort_by(|a, b| b.cycle_count.cmp(&a.cycle_count));
+    area_breakdown.sort_by_key(|entry| std::cmp::Reverse(entry.cycle_count));
 
     let areas_in_cycles = area_breakdown.len();
 

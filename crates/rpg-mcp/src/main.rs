@@ -32,16 +32,14 @@ pub(crate) const LARGE_SCOPE_BATCHES: usize = 10;
 use anyhow::Result;
 use rmcp::ServiceExt;
 use rpg_core::storage;
-use std::path::PathBuf;
-
 use server::RpgServer;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let project_root = std::env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().expect("failed to get current directory"));
+    let cli_args: Vec<String> = std::env::args().collect();
+    let cli_root = RpgServer::startup_project_root_arg(cli_args.iter().map(String::as_str));
+    let cwd = std::env::current_dir().expect("failed to get current directory");
+    let project_root = RpgServer::resolve_startup_project_root(cli_root.as_deref(), cwd);
 
     eprintln!("RPG MCP server starting for: {}", project_root.display());
 
@@ -51,11 +49,13 @@ async fn main() -> Result<()> {
 
     // Auto-update graph on startup if stale (structural-only, no LLM)
     {
-        let mut lock = server.graph.write().await;
-        if let Some(ref mut graph) = *lock
+        let project_root = server.project_root().await;
+        let root_state = server.root_state(&project_root).await;
+        let mut root_state = root_state.write().await;
+        if let Some(ref mut graph) = root_state.graph
             && let (Some(base), Ok(head)) = (
                 &graph.base_commit.clone(),
-                rpg_encoder::evolution::get_head_sha(&server.project_root().await),
+                rpg_encoder::evolution::get_head_sha(&project_root),
             )
         {
             if *base != head {
@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
                 let qcache_result =
                     rpg_parser::paradigms::query_engine::QueryCache::compile_all(&paradigm_defs);
                 let active_defs = rpg_parser::paradigms::detect_paradigms_toml(
-                    &server.project_root().await,
+                    &project_root,
                     &detected_langs,
                     &paradigm_defs,
                 );
@@ -86,27 +86,21 @@ async fn main() -> Result<()> {
                 });
                 match rpg_encoder::evolution::run_update(
                     graph,
-                    &server.project_root().await,
+                    &project_root,
                     None,
                     pipeline.as_ref(),
                 ) {
                     Ok(s) => {
                         graph.metadata.paradigms = paradigm_names;
-                        let _ = storage::save(&server.project_root().await, graph);
-                        // Persist stale entity IDs from the startup sync so
-                        // lifting_status sees them on the first query. Every
-                        // other path that produces a summary feeds
-                        // `modified_entity_ids` into `stale_entity_ids`
-                        // (`auto_sync_if_stale`, `update_rpg`). The startup
-                        // path is the one exception — without this, modified
-                        // entities from between the last lift and this startup
-                        // are silently dropped across the session boundary.
+                        let _ = storage::save(&project_root, graph);
+                        let existing_ids: std::collections::HashSet<String> =
+                            graph.entities.keys().cloned().collect();
                         {
-                            let mut stale = server.stale_entity_ids.write().await;
+                            let stale = &mut root_state.stale_entity_ids;
                             for id in &s.modified_entity_ids {
                                 stale.insert(id.clone());
                             }
-                            stale.retain(|id| graph.entities.contains_key(id));
+                            stale.retain(|id| existing_ids.contains(id));
                         }
                         eprintln!(
                             "  Auto-update complete: +{} -{} ~{}",
@@ -123,12 +117,15 @@ async fn main() -> Result<()> {
             // changeset) match instead of redundantly re-running the
             // workdir diff. Must use the real empty-workdir changeset
             // hash (not an empty string) for the match to fire.
-            let project_root = server.project_root().await;
-            *server.last_auto_sync_head.write().await =
+            root_state.last_auto_sync_head =
                 rpg_encoder::evolution::get_head_sha(&project_root).ok();
-            *server.last_auto_sync_changeset.write().await =
+            root_state.last_auto_sync_changeset =
                 Some(RpgServer::compute_changeset_hash(&[], &project_root));
-            *server.last_auto_sync_workdir_paths.write().await = std::collections::HashSet::new();
+            root_state.last_auto_sync_workdir_paths = std::collections::HashSet::new();
+            drop(root_state);
+            server
+                .sync_default_root_compat_from_state(&project_root)
+                .await;
         }
     }
 

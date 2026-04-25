@@ -119,8 +119,8 @@ pub fn apply_features(
 pub fn aggregate_module_features(graph: &mut RPGraph) -> usize {
     let module_data: Vec<(String, Vec<String>)> = graph
         .file_index
-        .iter()
-        .filter_map(|(_, ids)| {
+        .values()
+        .filter_map(|ids| {
             let module_id = ids.iter().find(|id| {
                 graph
                     .entities

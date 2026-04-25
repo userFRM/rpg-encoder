@@ -360,25 +360,24 @@ fn collect_rust_calls(
                     }
                 }
             }
-            "method_call_expression" | "field_expression" => {
+            "method_call_expression" => {
                 // obj.method() — tree-sitter-rust uses "method_call_expression" for x.foo()
                 // but some versions nest it differently
-                if child.kind() == "method_call_expression" {
-                    // The method name is in the "name" field
-                    if let Some(method_node) = child.child_by_field_name("name") {
-                        let callee = source[method_node.byte_range()].to_string();
-                        if !callee.is_empty() {
-                            let call_row = child.start_position().row;
-                            let caller = find_enclosing_scope(scopes, call_row)
-                                .unwrap_or_else(|| "<module>".to_string());
-                            calls.push(CallDep {
-                                caller_entity: caller,
-                                callee,
-                            });
-                        }
+                // The method name is in the "name" field
+                if let Some(method_node) = child.child_by_field_name("name") {
+                    let callee = source[method_node.byte_range()].to_string();
+                    if !callee.is_empty() {
+                        let call_row = child.start_position().row;
+                        let caller = find_enclosing_scope(scopes, call_row)
+                            .unwrap_or_else(|| "<module>".to_string());
+                        calls.push(CallDep {
+                            caller_entity: caller,
+                            callee,
+                        });
                     }
                 }
             }
+            "field_expression" => {}
             _ => {}
         }
         collect_rust_calls(&child, source, scopes, calls);

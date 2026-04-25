@@ -10,6 +10,34 @@ use tokio::sync::RwLock;
 
 use crate::types::{HierarchySession, LiftingSession, PendingRouting, load_pending_routing};
 
+type RootKey = PathBuf;
+
+#[derive(Default)]
+#[allow(dead_code)]
+pub(crate) struct RootRuntimeState {
+    pub(crate) graph: Option<RPGraph>,
+    pub(crate) config: RpgConfig,
+    pub(crate) lifting_session: Option<LiftingSession>,
+    pub(crate) hierarchy_session: Option<HierarchySession>,
+    pub(crate) pending_routing: Vec<PendingRouting>,
+    pub(crate) stale_entity_ids: std::collections::HashSet<String>,
+    #[cfg(feature = "embeddings")]
+    pub(crate) embedding_index: Option<rpg_nav::embeddings::EmbeddingIndex>,
+    #[cfg(feature = "embeddings")]
+    pub(crate) embedding_init_failed: bool,
+    pub(crate) last_auto_sync_head: Option<String>,
+    pub(crate) last_auto_sync_changeset: Option<String>,
+    pub(crate) last_auto_sync_workdir_paths: std::collections::HashSet<std::path::PathBuf>,
+}
+
+#[derive(Clone)]
+#[allow(dead_code)]
+pub(crate) struct EffectiveContext {
+    pub(crate) root: RootKey,
+    pub(crate) state: Arc<RwLock<RootRuntimeState>>,
+    pub(crate) cross_root_notice: String,
+}
+
 /// Cached protocol prompt versions (SHA256 hashes) for deduplication.
 #[derive(Clone)]
 pub(crate) struct PromptVersions {
@@ -65,10 +93,15 @@ impl PromptVersions {
 /// cycle on the inner locks.
 #[derive(Clone)]
 pub(crate) struct RpgServer {
-    /// Active project root. Mutable at runtime via the `set_project_root` tool
-    /// so a single long-lived session can switch between projects without
-    /// restart. Tools acquire a snapshot via [`RpgServer::project_root`].
-    pub(crate) project_root_cell: Arc<RwLock<PathBuf>>,
+    /// Default project root. Mutable at runtime via the `set_project_root` tool
+    /// so a single long-lived session can switch the default project without
+    /// restart. Tools may override it per-call via `project_root`.
+    pub(crate) default_root: Arc<RwLock<PathBuf>>,
+    /// Root-scoped runtime state keyed by canonical project root.
+    pub(crate) roots:
+        Arc<RwLock<std::collections::HashMap<RootKey, Arc<RwLock<RootRuntimeState>>>>>,
+    /// Compatibility fields used by the current tool implementation while the
+    /// tool surface is migrated incrementally to root-scoped state.
     pub(crate) graph: Arc<RwLock<Option<RPGraph>>>,
     pub(crate) config: Arc<RwLock<RpgConfig>>,
     pub(crate) lifting_session: Arc<RwLock<Option<LiftingSession>>>,
@@ -76,27 +109,14 @@ pub(crate) struct RpgServer {
     pub(crate) pending_routing: Arc<RwLock<Vec<PendingRouting>>>,
     #[cfg(feature = "embeddings")]
     pub(crate) embedding_index: Arc<RwLock<Option<rpg_nav::embeddings::EmbeddingIndex>>>,
-    /// Set to true after first failed init to avoid retrying every search.
     #[cfg(feature = "embeddings")]
     pub(crate) embedding_init_failed: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) tool_router: rmcp::handler::server::router::tool::ToolRouter<Self>,
     /// Protocol prompt versions for deduplication.
     pub(crate) prompt_versions: PromptVersions,
-    /// Last git HEAD SHA at which auto-sync ran. Prevents redundant updates.
     pub(crate) last_auto_sync_head: Arc<RwLock<Option<String>>>,
-    /// Entity IDs whose source was modified after their features were lifted.
-    /// Populated by `auto_sync_if_stale` (from `summary.modified_entity_ids`),
-    /// drained by `submit_lift_results` as entities get re-lifted. Lets
-    /// `lifting_status` surface stale-feature drift even though those entities
-    /// still appear "lifted" in the coverage count.
     pub(crate) stale_entity_ids: Arc<RwLock<std::collections::HashSet<String>>>,
-    /// Hash of the last-synced workdir changeset (dirty files + their stat).
-    /// Combined with `last_auto_sync_head` to detect when a re-sync is needed
-    /// for uncommitted/staged/unstaged changes.
     pub(crate) last_auto_sync_changeset: Arc<RwLock<Option<String>>>,
-    /// Paths that were dirty at the last successful auto-sync. Lets us detect
-    /// reverts: when a previously-dirty file returns to clean, the workdir
-    /// diff no longer lists it — we must re-parse it to restore HEAD content.
     pub(crate) last_auto_sync_workdir_paths:
         Arc<RwLock<std::collections::HashSet<std::path::PathBuf>>>,
     /// Guard: true while auto_lift is running. Rejects concurrent lift calls.
@@ -106,16 +126,322 @@ pub(crate) struct RpgServer {
 impl std::fmt::Debug for RpgServer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RpgServer")
-            .field("project_root", &"<lock>")
-            .field("lifting_session", &"...")
+            .field("default_root", &"<lock>")
+            .field("roots", &"<map>")
             .finish()
     }
 }
 
 impl RpgServer {
+    fn canonicalize_startup_root_candidate(path: PathBuf) -> PathBuf {
+        path.canonicalize().unwrap_or(path)
+    }
+
+    pub(crate) fn startup_project_root_arg<I>(args: I) -> Option<String>
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        let mut iter = args.into_iter().map(|arg| arg.as_ref().to_string());
+        let _program = iter.next();
+
+        while let Some(arg) = iter.next() {
+            if arg == "--log" || arg == "--log-append" {
+                continue;
+            }
+
+            if arg == "--log-level" {
+                let _ = iter.next();
+                continue;
+            }
+
+            if arg.starts_with("--") {
+                continue;
+            }
+
+            return Some(arg);
+        }
+
+        None
+    }
+
+    pub(crate) fn resolve_startup_project_root(
+        explicit_arg: Option<&str>,
+        current_dir: PathBuf,
+    ) -> PathBuf {
+        if let Some(path) = Self::normalize_optional_project_root(explicit_arg) {
+            return Self::canonicalize_startup_root_candidate(Self::expand_project_root_path(path));
+        }
+
+        Self::canonicalize_startup_root_candidate(current_dir)
+    }
+
+    pub(crate) fn cross_root_notice(
+        active_root: &std::path::Path,
+        project_root: &std::path::Path,
+    ) -> String {
+        if active_root == project_root {
+            return String::new();
+        }
+        format!(
+            "[cross-root: queried {}; active root unchanged]\n\n",
+            project_root.display()
+        )
+    }
+
+    pub(crate) fn expand_project_root_path(path: &str) -> PathBuf {
+        fn home_dir() -> Option<PathBuf> {
+            std::env::var("USERPROFILE")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .map(PathBuf::from)
+                .or_else(|| {
+                    let drive = std::env::var("HOMEDRIVE").ok()?;
+                    let home_path = std::env::var("HOMEPATH").ok()?;
+                    let joined = format!("{}{}", drive, home_path);
+                    if joined.trim().is_empty() {
+                        None
+                    } else {
+                        Some(PathBuf::from(joined))
+                    }
+                })
+                .or_else(|| {
+                    std::env::var("HOME")
+                        .ok()
+                        .filter(|s| !s.trim().is_empty())
+                        .map(PathBuf::from)
+                })
+        }
+
+        if let Some(rest) = path.strip_prefix("~/") {
+            match home_dir() {
+                Some(home) => home.join(rest),
+                None => PathBuf::from(path),
+            }
+        } else if path == "~" {
+            home_dir().unwrap_or_else(|| PathBuf::from(path))
+        } else {
+            PathBuf::from(path)
+        }
+    }
+
+    pub(crate) fn canonicalize_project_root_path(path: &str) -> Result<PathBuf, String> {
+        let expanded = Self::expand_project_root_path(path);
+        let canonical = expanded.canonicalize().map_err(|e| {
+            format!(
+                "Path does not exist or is not accessible: {}: {}",
+                expanded.display(),
+                e
+            )
+        })?;
+
+        if !canonical.is_dir() {
+            return Err(format!("Path is not a directory: {}", canonical.display()));
+        }
+
+        Ok(canonical)
+    }
+
     /// Snapshot of the active project root. Cheap — locks for a single clone.
     pub(crate) async fn project_root(&self) -> PathBuf {
-        self.project_root_cell.read().await.clone()
+        self.default_root.read().await.clone()
+    }
+
+    pub(crate) fn normalize_optional_project_root(input: Option<&str>) -> Option<&str> {
+        input.and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        })
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn effective_root(
+        &self,
+        override_root: Option<&str>,
+    ) -> Result<RootKey, String> {
+        match Self::normalize_optional_project_root(override_root) {
+            Some(path) => Self::canonicalize_project_root_path(path),
+            None => Ok(self.project_root().await),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn root_state(&self, root: &std::path::Path) -> Arc<RwLock<RootRuntimeState>> {
+        if let Some(existing) = self.roots.read().await.get(root).cloned() {
+            return existing;
+        }
+
+        let graph = storage::load(root).ok();
+        let initial_head = graph.as_ref().and_then(|g| g.base_commit.clone());
+        let config = Self::load_request_config(root);
+        let pending_routing = load_pending_routing(root)
+            .map(|s| s.entries)
+            .unwrap_or_default();
+
+        let state = Arc::new(RwLock::new(RootRuntimeState {
+            graph,
+            config,
+            lifting_session: None,
+            hierarchy_session: None,
+            pending_routing,
+            stale_entity_ids: std::collections::HashSet::new(),
+            #[cfg(feature = "embeddings")]
+            embedding_index: None,
+            #[cfg(feature = "embeddings")]
+            embedding_init_failed: false,
+            last_auto_sync_head: initial_head,
+            last_auto_sync_changeset: None,
+            last_auto_sync_workdir_paths: std::collections::HashSet::new(),
+        }));
+
+        let mut roots = self.roots.write().await;
+        roots
+            .entry(root.to_path_buf())
+            .or_insert_with(|| state.clone())
+            .clone()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn effective_context(
+        &self,
+        override_root: Option<&str>,
+    ) -> Result<EffectiveContext, String> {
+        let active_root = self.project_root().await;
+        let root = self.effective_root(override_root).await?;
+        let state = self.root_state(&root).await;
+        Ok(EffectiveContext {
+            cross_root_notice: Self::cross_root_notice(&active_root, &root),
+            root,
+            state,
+        })
+    }
+
+    pub(crate) async fn sync_default_root_compat_from_state(&self, root: &std::path::Path) {
+        let active_root = self.project_root().await;
+        if root != active_root {
+            return;
+        }
+
+        let state = self.root_state(root).await;
+        let state = state.read().await;
+
+        *self.graph.write().await = state.graph.clone();
+        *self.config.write().await = state.config.clone();
+        *self.pending_routing.write().await = state.pending_routing.clone();
+        *self.last_auto_sync_head.write().await = state.last_auto_sync_head.clone();
+        *self.last_auto_sync_changeset.write().await = state.last_auto_sync_changeset.clone();
+        *self.last_auto_sync_workdir_paths.write().await =
+            state.last_auto_sync_workdir_paths.clone();
+        *self.stale_entity_ids.write().await = state.stale_entity_ids.clone();
+    }
+
+    pub(crate) fn reset_transient_runtime_state(
+        state: &mut RootRuntimeState,
+        root: &std::path::Path,
+    ) {
+        state.lifting_session = None;
+        state.hierarchy_session = None;
+        state.pending_routing = load_pending_routing(root)
+            .map(|s| s.entries)
+            .unwrap_or_default();
+        state.last_auto_sync_head = state.graph.as_ref().and_then(|g| g.base_commit.clone());
+        state.last_auto_sync_changeset = None;
+        state.last_auto_sync_workdir_paths = std::collections::HashSet::new();
+        state.stale_entity_ids = std::collections::HashSet::new();
+
+        #[cfg(feature = "embeddings")]
+        {
+            state.embedding_index = None;
+            state.embedding_init_failed = false;
+        }
+    }
+
+    pub(crate) fn staleness_detail_for_root(
+        project_root: &std::path::Path,
+        graph: &RPGraph,
+    ) -> Option<String> {
+        let changes = rpg_encoder::evolution::detect_workdir_changes(project_root, graph).ok()?;
+        let changes = rpg_encoder::evolution::filter_rpgignore_changes(project_root, changes);
+        let languages = Self::resolve_languages(&graph.metadata);
+        let changes = rpg_encoder::evolution::filter_source_changes(changes, &languages);
+
+        if changes.is_empty() {
+            return None;
+        }
+
+        let graph_commit = graph.base_commit.as_deref().unwrap_or("unknown");
+        let mut out = format!(
+            "STALE ({} source file(s) changed since {})\n",
+            changes.len(),
+            &graph_commit[..8.min(graph_commit.len())],
+        );
+        for change in changes.iter().take(10) {
+            let (label, path) = match change {
+                rpg_encoder::evolution::FileChange::Added(p) => ("added", p.display().to_string()),
+                rpg_encoder::evolution::FileChange::Modified(p) => {
+                    ("modified", p.display().to_string())
+                }
+                rpg_encoder::evolution::FileChange::Deleted(p) => {
+                    ("deleted", p.display().to_string())
+                }
+                rpg_encoder::evolution::FileChange::Renamed { from, to } => {
+                    ("renamed", format!("{} -> {}", from.display(), to.display()))
+                }
+            };
+            out.push_str(&format!("  {}: {}\n", label, path));
+        }
+        if changes.len() > 10 {
+            out.push_str(&format!("  ... and {} more\n", changes.len() - 10));
+        }
+        Some(out)
+    }
+
+    pub(crate) fn load_request_config(project_root: &std::path::Path) -> RpgConfig {
+        match RpgConfig::load(project_root) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                eprintln!(
+                    "rpg: failed to parse {} ({}); using defaults for this request",
+                    project_root.join(".rpg/config.toml").display(),
+                    e
+                );
+                RpgConfig::default()
+            }
+        }
+    }
+
+    pub(crate) fn load_graph_from_root(project_root: &std::path::Path) -> Result<RPGraph, String> {
+        storage::load(project_root).map_err(|_| {
+            format!(
+                "No RPG found at {}. Use the build_rpg tool to index this repository first.",
+                project_root.display()
+            )
+        })
+    }
+
+    pub(crate) fn staleness_notice_for(project_root: &std::path::Path, graph: &RPGraph) -> String {
+        let Ok(changes) = rpg_encoder::evolution::detect_workdir_changes(project_root, graph)
+        else {
+            return String::new();
+        };
+        let changes = rpg_encoder::evolution::filter_rpgignore_changes(project_root, changes);
+        let languages = Self::resolve_languages(&graph.metadata);
+        let source_changes = if languages.is_empty() {
+            changes
+        } else {
+            rpg_encoder::evolution::filter_source_changes(changes, &languages)
+        };
+        if source_changes.is_empty() {
+            return String::new();
+        }
+        format!(
+            "[stale: {} source file(s) changed since graph was built — call update_rpg to sync]\n\n",
+            source_changes.len(),
+        )
     }
 
     /// Reload `.rpg/config.toml` into the given config slot.
@@ -149,27 +475,52 @@ impl RpgServer {
 
     /// Create a new server, loading graph and config from `project_root` if present.
     pub(crate) fn new(project_root: PathBuf) -> Self {
+        let project_root = project_root.canonicalize().unwrap_or(project_root);
         let graph = storage::load(&project_root).ok();
         let initial_head = graph.as_ref().and_then(|g| g.base_commit.clone());
-        let config = RpgConfig::load(&project_root).unwrap_or_default();
+        let config = Self::load_request_config(&project_root);
         // Restore pending routing from disk if present
         let pending = load_pending_routing(&project_root)
             .map(|s| s.entries)
             .unwrap_or_default();
+        let root_key = project_root.clone();
+        let compat_graph = graph.clone();
+        let compat_config = config.clone();
+        let compat_pending = pending.clone();
+        let compat_head = initial_head.clone();
+        let root_state = RootRuntimeState {
+            graph,
+            config,
+            lifting_session: None,
+            hierarchy_session: None,
+            pending_routing: pending,
+            stale_entity_ids: std::collections::HashSet::new(),
+            #[cfg(feature = "embeddings")]
+            embedding_index: None,
+            #[cfg(feature = "embeddings")]
+            embedding_init_failed: false,
+            last_auto_sync_head: initial_head,
+            last_auto_sync_changeset: None,
+            last_auto_sync_workdir_paths: std::collections::HashSet::new(),
+        };
+        let mut roots = std::collections::HashMap::new();
+        roots.insert(root_key, Arc::new(RwLock::new(root_state)));
+
         Self {
-            project_root_cell: Arc::new(RwLock::new(project_root)),
-            graph: Arc::new(RwLock::new(graph)),
-            config: Arc::new(RwLock::new(config)),
+            default_root: Arc::new(RwLock::new(project_root)),
+            roots: Arc::new(RwLock::new(roots)),
+            graph: Arc::new(RwLock::new(compat_graph)),
+            config: Arc::new(RwLock::new(compat_config)),
             lifting_session: Arc::new(RwLock::new(None)),
             hierarchy_session: Arc::new(RwLock::new(None)),
-            pending_routing: Arc::new(RwLock::new(pending)),
+            pending_routing: Arc::new(RwLock::new(compat_pending)),
             #[cfg(feature = "embeddings")]
             embedding_index: Arc::new(RwLock::new(None)),
             #[cfg(feature = "embeddings")]
             embedding_init_failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             tool_router: Self::create_tool_router(),
             prompt_versions: PromptVersions::new(),
-            last_auto_sync_head: Arc::new(RwLock::new(initial_head)),
+            last_auto_sync_head: Arc::new(RwLock::new(compat_head)),
             stale_entity_ids: Arc::new(RwLock::new(std::collections::HashSet::new())),
             last_auto_sync_changeset: Arc::new(RwLock::new(None)),
             last_auto_sync_workdir_paths: Arc::new(RwLock::new(std::collections::HashSet::new())),
@@ -184,25 +535,7 @@ impl RpgServer {
         let Some(graph) = guard.as_ref() else {
             return String::new();
         };
-        // Detect workdir changes (committed + staged + unstaged)
-        let Ok(changes) = rpg_encoder::evolution::detect_workdir_changes(&project_root, graph)
-        else {
-            return String::new();
-        };
-        let changes = rpg_encoder::evolution::filter_rpgignore_changes(&project_root, changes);
-        let languages = Self::resolve_languages(&graph.metadata);
-        let source_changes = if languages.is_empty() {
-            changes
-        } else {
-            rpg_encoder::evolution::filter_source_changes(changes, &languages)
-        };
-        if source_changes.is_empty() {
-            return String::new();
-        }
-        format!(
-            "[stale: {} source file(s) changed since graph was built — call update_rpg to sync]\n\n",
-            source_changes.len(),
-        )
+        Self::staleness_notice_for(&project_root, graph)
     }
 
     /// Auto-sync the graph if stale, returning a notice string.
@@ -532,58 +865,29 @@ impl RpgServer {
         drop(read);
 
         let project_root = self.project_root().await;
-        match storage::load(&project_root) {
+        match Self::load_graph_from_root(&project_root) {
             Ok(g) => {
                 *self.graph.write().await = Some(g);
                 Ok(())
             }
-            Err(_) => {
-                Err("No RPG found. Use the build_rpg tool to index this repository first.".into())
-            }
+            Err(e) => Err(e),
         }
     }
 
     /// Detailed staleness info: which source files changed (committed + staged + unstaged).
+    #[allow(dead_code)]
     pub(crate) async fn staleness_detail(&self, graph: &RPGraph) -> Option<String> {
         let project_root = self.project_root().await;
-        let changes = rpg_encoder::evolution::detect_workdir_changes(&project_root, graph).ok()?;
-        let changes = rpg_encoder::evolution::filter_rpgignore_changes(&project_root, changes);
-        let languages = Self::resolve_languages(&graph.metadata);
-        let changes = rpg_encoder::evolution::filter_source_changes(changes, &languages);
-
-        if changes.is_empty() {
-            return None;
-        }
-
-        let graph_commit = graph.base_commit.as_deref().unwrap_or("unknown");
-        let mut out = format!(
-            "STALE ({} source file(s) changed since {})\n",
-            changes.len(),
-            &graph_commit[..8.min(graph_commit.len())],
-        );
-        for change in changes.iter().take(10) {
-            let (label, path) = match change {
-                rpg_encoder::evolution::FileChange::Added(p) => ("added", p.display().to_string()),
-                rpg_encoder::evolution::FileChange::Modified(p) => {
-                    ("modified", p.display().to_string())
-                }
-                rpg_encoder::evolution::FileChange::Deleted(p) => {
-                    ("deleted", p.display().to_string())
-                }
-                rpg_encoder::evolution::FileChange::Renamed { from, to } => {
-                    ("renamed", format!("{} -> {}", from.display(), to.display()))
-                }
-            };
-            out.push_str(&format!("  {}: {}\n", label, path));
-        }
-        if changes.len() > 10 {
-            out.push_str(&format!("  ... and {} more\n", changes.len() - 10));
-        }
-        Some(out)
+        Self::staleness_detail_for_root(&project_root, graph)
     }
 
     /// Format the full lifting status dashboard (coverage, areas, session, next step).
-    pub(crate) async fn format_lifting_status(&self, graph: &RPGraph) -> Result<String, String> {
+    pub(crate) async fn format_lifting_status(
+        &self,
+        graph: &RPGraph,
+        project_root: &std::path::Path,
+        root_state: &RootRuntimeState,
+    ) -> Result<String, String> {
         let (lifted, total) = graph.lifting_coverage();
         let coverage_pct = if total > 0 {
             lifted as f64 / total as f64 * 100.0
@@ -598,7 +902,7 @@ impl RpgServer {
         };
 
         // Check staleness
-        let stale_detail = self.staleness_detail(graph).await;
+        let stale_detail = Self::staleness_detail_for_root(project_root, graph);
         let graph_line = match &stale_detail {
             Some(detail) => format!(
                 "graph: {} ({} entities, {} files)",
@@ -617,9 +921,8 @@ impl RpgServer {
         // the source was modified after lifting. Tracked across syncs by
         // auto_sync_if_stale.
         let stale_features_count = {
-            let stale = self.stale_entity_ids.read().await;
-            // Filter to entities still present in the graph
-            stale
+            root_state
+                .stale_entity_ids
                 .iter()
                 .filter(|id| graph.entities.contains_key(*id))
                 .count()
@@ -662,8 +965,7 @@ impl RpgServer {
         }
 
         // Lifting session info
-        let session = self.lifting_session.read().await;
-        match session.as_ref() {
+        match root_state.lifting_session.as_ref() {
             Some(s) => {
                 out.push_str(&format!(
                     "\nLifting session: active (scope=\"{}\", {} batches, {} entities cached)\n",
@@ -676,7 +978,6 @@ impl RpgServer {
                 out.push_str("\nLifting session: inactive\n");
             }
         }
-        drop(session);
 
         // Unlifted file breakdown (if any)
         if lifted < total {
@@ -819,10 +1120,66 @@ impl RpgServer {
         Ok(out)
     }
 
-    /// Load the RPG config for the active project.
-    pub(crate) async fn load_config(&self) -> RpgConfig {
-        let project_root = self.project_root().await;
-        RpgConfig::load(&project_root).unwrap_or_default()
+    #[cfg(feature = "embeddings")]
+    pub(crate) async fn query_embedding_scores(
+        &self,
+        graph: &RPGraph,
+        project_root: &std::path::Path,
+        query: &str,
+        use_session_cache: bool,
+    ) -> (
+        Option<std::collections::HashMap<String, f64>>,
+        Option<String>,
+    ) {
+        if use_session_cache {
+            self.try_init_embeddings(graph).await;
+            let mut emb_guard = self.embedding_index.write().await;
+            return if let Some(ref mut idx) = *emb_guard {
+                (
+                    idx.score_all(query)
+                        .ok()
+                        .filter(|scores| !scores.is_empty()),
+                    None,
+                )
+            } else {
+                (None, None)
+            };
+        }
+
+        let updated_at = graph.updated_at.to_rfc3339();
+        match rpg_nav::embeddings::EmbeddingIndex::load_or_init(project_root, &updated_at) {
+            Ok(mut idx) => {
+                let sync_notice = match idx.sync(graph) {
+                    Ok(stats) if stats.added > 0 || stats.changed > 0 || stats.pruned > 0 => {
+                        Some(format!(
+                            "[cross-root: refreshed target embedding cache in {} (.rpg/embeddings.*) for semantic search quality]\n\n",
+                            project_root.display()
+                        ))
+                    }
+                    Ok(_) => None,
+                    Err(e) => {
+                        eprintln!(
+                            "rpg: embedding sync failed for {}: {e}",
+                            project_root.display()
+                        );
+                        None
+                    }
+                };
+                (
+                    idx.score_all(query)
+                        .ok()
+                        .filter(|scores| !scores.is_empty()),
+                    sync_notice,
+                )
+            }
+            Err(e) => {
+                eprintln!(
+                    "rpg: embedding init failed for {}: {e} — using lexical search",
+                    project_root.display()
+                );
+                (None, None)
+            }
+        }
     }
 
     /// Lazy-initialize the embedding index on first semantic search.
@@ -976,5 +1333,86 @@ mod tests {
             h1, h2,
             "same path + different size/mtime must yield different hashes"
         );
+    }
+
+    #[test]
+    fn test_resolve_startup_project_root_prefers_explicit_arg() {
+        let cwd = tempfile::tempdir().unwrap();
+        let explicit_root = tempfile::tempdir().unwrap();
+
+        let resolved = RpgServer::resolve_startup_project_root(
+            Some(explicit_root.path().to_str().unwrap()),
+            cwd.path().to_path_buf(),
+        );
+
+        assert_eq!(resolved, explicit_root.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn test_resolve_startup_project_root_falls_back_to_current_dir() {
+        let cwd = tempfile::tempdir().unwrap();
+
+        let resolved = RpgServer::resolve_startup_project_root(None, cwd.path().to_path_buf());
+
+        assert_eq!(resolved, cwd.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn test_startup_project_root_arg_skips_logging_flags() {
+        let root = tempfile::tempdir().unwrap();
+        let root_str = root.path().to_str().unwrap().to_string();
+
+        let parsed = RpgServer::startup_project_root_arg([
+            "rpg-mcp-server",
+            "--log",
+            "--log-append",
+            "--log-level",
+            "debug",
+            root_str.as_str(),
+        ]);
+
+        assert_eq!(parsed.as_deref(), Some(root_str.as_str()));
+    }
+
+    #[test]
+    fn test_startup_project_root_arg_none_for_flags_only() {
+        let parsed = RpgServer::startup_project_root_arg([
+            "rpg-mcp-server",
+            "--log",
+            "--log-append",
+            "--log-level",
+            "debug",
+        ]);
+
+        assert!(parsed.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_effective_context_initializes_root_state() {
+        let root_a = tempfile::tempdir().unwrap();
+        let root_b = tempfile::tempdir().unwrap();
+        let root_a_canonical = root_a.path().canonicalize().unwrap();
+        let root_b_canonical = root_b.path().canonicalize().unwrap();
+
+        let server = RpgServer::new(root_a.path().to_path_buf());
+
+        let default_ctx = server.effective_context(None).await.unwrap();
+        assert_eq!(default_ctx.root, root_a_canonical);
+        assert!(default_ctx.cross_root_notice.is_empty());
+
+        let override_ctx = server
+            .effective_context(Some(root_b.path().to_str().unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(override_ctx.root, root_b_canonical);
+        assert!(
+            override_ctx
+                .cross_root_notice
+                .contains("active root unchanged")
+        );
+
+        let roots = server.roots.read().await;
+        assert!(roots.contains_key(&root_a_canonical));
+        assert!(roots.contains_key(&root_b_canonical));
     }
 }
