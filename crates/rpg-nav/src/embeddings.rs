@@ -330,14 +330,25 @@ fn compute_fingerprint(features: &[String]) -> String {
 
 fn resolve_shared_model_cache_dir_from_env(
     rpg_model_cache_dir: Option<&std::ffi::OsStr>,
+    hf_hub_cache: Option<&std::ffi::OsStr>,
+    hf_home: Option<&std::ffi::OsStr>,
     xdg_cache_home: Option<&std::ffi::OsStr>,
     home: Option<&std::ffi::OsStr>,
     userprofile: Option<&std::ffi::OsStr>,
 ) -> Result<PathBuf> {
+    // Priority 1: explicit RPG override
     if let Some(path) = rpg_model_cache_dir {
         return Ok(PathBuf::from(path));
     }
-
+    // Priority 2: HuggingFace Hub cache (points directly at hub cache root)
+    if let Some(path) = hf_hub_cache {
+        return Ok(PathBuf::from(path));
+    }
+    // Priority 3: HF_HOME (model repos live directly under this directory)
+    if let Some(path) = hf_home {
+        return Ok(PathBuf::from(path));
+    }
+    // Priority 4: default ~/.cache/rpg-encoder/models/fastembed
     let home_dir = home
         .map(PathBuf::from)
         .or_else(|| userprofile.map(PathBuf::from))
@@ -357,6 +368,8 @@ fn resolve_shared_model_cache_dir_from_env(
 fn shared_model_cache_dir() -> Result<PathBuf> {
     let cache_dir = resolve_shared_model_cache_dir_from_env(
         std::env::var_os("RPG_MODEL_CACHE_DIR").as_deref(),
+        std::env::var_os("HUGGINGFACE_HUB_CACHE").as_deref(),
+        std::env::var_os("HF_HOME").as_deref(),
         std::env::var_os("XDG_CACHE_HOME").as_deref(),
         std::env::var_os("HOME").as_deref(),
         std::env::var_os("USERPROFILE").as_deref(),
@@ -366,11 +379,15 @@ fn shared_model_cache_dir() -> Result<PathBuf> {
 }
 
 /// Initialize the fastembed model with a shared machine-level cache.
+///
+/// IMPORTANT: Do NOT add `.with_show_download_progress(true)` — the MCP server
+/// uses stdio for JSON-RPC transport and any stdout/stderr noise from progress
+/// bars can corrupt the protocol stream, causing deadlocks and zombie processes.
 fn init_model() -> Result<TextEmbedding> {
     let cache_dir = shared_model_cache_dir()?;
-    let options = fastembed::TextInitOptions::new(EmbeddingModel::BGESmallENV15)
-        .with_show_download_progress(true)
-        .with_cache_dir(cache_dir);
+
+    let options =
+        fastembed::TextInitOptions::new(EmbeddingModel::BGESmallENV15).with_cache_dir(cache_dir);
 
     let model = TextEmbedding::try_new(options)
         .context("failed to initialize embedding model (BGE-small-en-v1.5)")?;
@@ -569,6 +586,8 @@ mod tests {
     fn test_resolve_shared_model_cache_dir_prefers_explicit_override() {
         let path = resolve_shared_model_cache_dir_from_env(
             Some(std::ffi::OsStr::new("D:/cache/rpg-models")),
+            Some(std::ffi::OsStr::new("C:/hf-hub-cache")),
+            Some(std::ffi::OsStr::new("C:/hf-home")),
             Some(std::ffi::OsStr::new("/tmp/xdg-cache")),
             Some(std::ffi::OsStr::new("/home/tester")),
             Some(std::ffi::OsStr::new("C:/Users/tester")),
@@ -580,6 +599,8 @@ mod tests {
     #[test]
     fn test_resolve_shared_model_cache_dir_uses_xdg_on_linux() {
         let path = resolve_shared_model_cache_dir_from_env(
+            None,
+            None,
             None,
             Some(std::ffi::OsStr::new("/tmp/xdg-cache")),
             Some(std::ffi::OsStr::new("/home/tester")),
@@ -605,6 +626,8 @@ mod tests {
         let path = resolve_shared_model_cache_dir_from_env(
             None,
             None,
+            None,
+            None,
             Some(std::ffi::OsStr::new("/home/tester")),
             None,
         )
@@ -621,6 +644,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
             Some(std::ffi::OsStr::new("C:/Users/tester")),
         )
         .unwrap();
@@ -632,7 +657,8 @@ mod tests {
 
     #[test]
     fn test_resolve_shared_model_cache_dir_errors_without_home_or_override() {
-        let err = resolve_shared_model_cache_dir_from_env(None, None, None, None).unwrap_err();
+        let err = resolve_shared_model_cache_dir_from_env(None, None, None, None, None, None)
+            .unwrap_err();
         assert!(
             err.to_string()
                 .contains("could not determine home directory")
