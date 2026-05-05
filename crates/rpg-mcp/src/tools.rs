@@ -12,8 +12,86 @@ use rpg_core::storage;
 use crate::server::RpgServer;
 use crate::types::*;
 
+fn non_empty_str(value: Option<&str>) -> Option<&str> {
+    value.and_then(|s| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
+fn non_empty_string(value: Option<&String>) -> Option<&str> {
+    non_empty_str(value.map(String::as_str))
+}
+
+fn normalized_entity_ids<'a>(
+    batch: Option<&'a Vec<String>>,
+    fallback: Option<&'a String>,
+) -> Vec<&'a str> {
+    let batch_ids: Vec<&'a str> = batch
+        .filter(|items| !items.is_empty())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|s| non_empty_str(Some(s.as_str())))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if !batch_ids.is_empty() {
+        return batch_ids;
+    }
+
+    non_empty_string(fallback).into_iter().collect()
+}
+
 #[tool_router]
 impl RpgServer {
+    async fn resolve_query_context(
+        &self,
+        override_root: Option<&str>,
+    ) -> Result<
+        (
+            std::path::PathBuf,
+            RPGraph,
+            rpg_core::config::RpgConfig,
+            String,
+            bool,
+        ),
+        String,
+    > {
+        let active_root = self.project_root().await;
+        if let Some(path) = non_empty_str(override_root) {
+            let project_root = Self::canonicalize_project_root_path(path)?;
+            if project_root == active_root {
+                self.ensure_graph().await?;
+                let notice = self.auto_sync_if_stale().await;
+                let graph = self.graph.read().await.as_ref().cloned().unwrap();
+                let config = self.config.read().await.clone();
+                return Ok((project_root, graph, config, notice, true));
+            }
+
+            let graph = Self::load_graph_from_root(&project_root)?;
+            let config = Self::load_request_config(&project_root);
+            let notice = format!(
+                "{}{}",
+                Self::cross_root_notice(&active_root, &project_root),
+                Self::staleness_notice_for(&project_root, &graph)
+            );
+            return Ok((project_root, graph, config, notice, false));
+        }
+
+        let project_root = active_root;
+        self.ensure_graph().await?;
+        let notice = self.auto_sync_if_stale().await;
+        let graph = self.graph.read().await.as_ref().cloned().unwrap();
+        let config = self.config.read().await.clone();
+        Ok((project_root, graph, config, notice, true))
+    }
+
     #[tool(
         description = "PREFER THIS OVER grep/rg FOR ANY QUESTION ABOUT CODE BEHAVIOR OR NAMES. Search for code entities by intent or keywords. Returns entities with file paths, line numbers, and relevance scores. Use mode='features' for semantic intent search (e.g., 'validate user input') — finds code by what it DOES even when names don't match. Use mode='snippets' for name/path matching (e.g., 'FilterGroupManager' or 'src/auth/'). Use mode='auto' (default) to try both. This replaces grep/rg for every structural query.",
         annotations(read_only_hint = true, open_world_hint = false)
@@ -22,13 +100,11 @@ impl RpgServer {
         &self,
         Parameters(params): Parameters<SearchNodeParams>,
     ) -> Result<String, String> {
-        self.ensure_graph().await?;
-        let notice = self.auto_sync_if_stale().await;
-        let guard = self.graph.read().await;
-        let graph = guard.as_ref().unwrap();
-        let config = self.config.read().await;
+        let (project_root, graph, config, notice, use_session_cache) = self
+            .resolve_query_context(non_empty_string(params.project_root.as_ref()))
+            .await?;
 
-        let search_mode = match params.mode.as_deref() {
+        let search_mode = match non_empty_string(params.mode.as_ref()) {
             Some("features") => rpg_nav::search::SearchMode::Features,
             Some("snippets") => rpg_nav::search::SearchMode::Snippets,
             _ => rpg_nav::search::SearchMode::Auto,
@@ -45,6 +121,7 @@ impl RpgServer {
         let entity_type_filter = params
             .entity_type_filter
             .as_deref()
+            .and_then(|value| non_empty_str(Some(value)))
             .map(parse_entity_type_filter)
             .filter(|v| !v.is_empty());
 
@@ -57,37 +134,33 @@ impl RpgServer {
         let mut search_mode_label = "lexical";
 
         #[cfg(feature = "embeddings")]
-        let embedding_scores = if use_embeddings {
-            self.try_init_embeddings(graph).await;
-            let mut emb_guard = self.embedding_index.write().await;
-            if let Some(ref mut idx) = *emb_guard {
-                match idx.score_all(&params.query) {
-                    Ok(scores) if !scores.is_empty() => {
-                        search_mode_label = "hybrid";
-                        Some(scores)
-                    }
-                    _ => None,
+        let (embedding_scores, embedding_notice) = if use_embeddings {
+            match self
+                .query_embedding_scores(&graph, &project_root, &params.query, use_session_cache)
+                .await
+            {
+                (Some(scores), notice) => {
+                    search_mode_label = "hybrid";
+                    (Some(scores), notice)
                 }
-            } else {
-                None
+                (None, notice) => (None, notice),
             }
         } else {
-            None
+            (None, None)
         };
         #[cfg(not(feature = "embeddings"))]
-        let embedding_scores: Option<std::collections::HashMap<String, f64>> = {
+        let (embedding_scores, embedding_notice): (
+            Option<std::collections::HashMap<String, f64>>,
+            Option<String>,
+        ) = {
             let _ = use_embeddings;
-            None
+            (None, None)
         };
 
         // Compute diff-aware search context if since_commit is provided
         let mut diff_warning = String::new();
-        let diff_context = if let Some(ref commit) = params.since_commit {
-            match rpg_encoder::evolution::detect_changes(
-                &self.project_root().await,
-                graph,
-                Some(commit),
-            ) {
+        let diff_context = if let Some(commit) = non_empty_string(params.since_commit.as_ref()) {
+            match rpg_encoder::evolution::detect_changes(&project_root, &graph, Some(commit)) {
                 Ok(changes) => {
                     let mut changed_entities = std::collections::HashSet::new();
                     for change in &changes {
@@ -103,7 +176,7 @@ impl RpgServer {
                     }
                     if !changed_entities.is_empty() {
                         Some(rpg_nav::diff::compute_change_proximity(
-                            graph,
+                            &graph,
                             changed_entities,
                         ))
                     } else {
@@ -127,14 +200,14 @@ impl RpgServer {
         };
 
         let results = rpg_nav::search::search_with_params(
-            graph,
+            &graph,
             &rpg_nav::search::SearchParams {
                 query: &params.query,
                 mode: search_mode,
-                scope: params.scope.as_deref(),
+                scope: non_empty_string(params.scope.as_ref()),
                 limit: config.navigation.search_result_limit,
                 line_nums,
-                file_pattern: params.file_pattern.as_deref(),
+                file_pattern: non_empty_string(params.file_pattern.as_ref()),
                 entity_type_filter,
                 embedding_scores: embedding_scores.as_ref(),
                 diff_context: diff_context.as_ref(),
@@ -143,14 +216,19 @@ impl RpgServer {
 
         if results.is_empty() {
             return Ok(format!(
-                "{}{}No results found for: {} (search_mode: {})",
-                notice, diff_warning, params.query, search_mode_label,
+                "{}{}{}No results found for: {} (search_mode: {})",
+                notice,
+                embedding_notice.unwrap_or_default(),
+                diff_warning,
+                params.query,
+                search_mode_label,
             ));
         }
 
         Ok(format!(
-            "{}{}{}\n\nsearch_mode: {}",
+            "{}{}{}{}\n\nsearch_mode: {}",
             notice,
+            embedding_notice.unwrap_or_default(),
             diff_warning,
             rpg_nav::toon::format_search_results(&results),
             search_mode_label,
@@ -165,25 +243,23 @@ impl RpgServer {
         &self,
         Parameters(params): Parameters<FetchNodeParams>,
     ) -> Result<String, String> {
-        self.ensure_graph().await?;
-        let notice = self.auto_sync_if_stale().await;
-        let guard = self.graph.read().await;
-        let graph = guard.as_ref().unwrap();
+        let (project_root, graph, _config, notice, _use_session_cache) = self
+            .resolve_query_context(non_empty_string(params.project_root.as_ref()))
+            .await?;
 
-        let ids: Vec<&str> = if let Some(ref batch) = params.entity_ids {
-            batch.iter().map(|s| s.as_str()).collect()
-        } else {
-            vec![params.entity_id.as_str()]
-        };
+        let ids = normalized_entity_ids(params.entity_ids.as_ref(), params.entity_id.as_ref());
+        if ids.is_empty() {
+            return Err("Provide entity_id or at least one non-blank entity_ids entry.".into());
+        }
 
         let projection = rpg_nav::toon::FetchProjection::from_params(
-            params.fields.as_deref(),
+            non_empty_string(params.fields.as_ref()),
             params.source_max_lines,
         )?;
 
         let mut outputs = Vec::new();
         for id in &ids {
-            match rpg_nav::fetch::fetch(graph, id, &self.project_root().await) {
+            match rpg_nav::fetch::fetch(&graph, id, &project_root) {
                 Ok(output) => outputs.push(rpg_nav::toon::format_fetch_output_projected(
                     &output,
                     &projection,
@@ -203,12 +279,11 @@ impl RpgServer {
         &self,
         Parameters(params): Parameters<ExploreRpgParams>,
     ) -> Result<String, String> {
-        self.ensure_graph().await?;
-        let notice = self.auto_sync_if_stale().await;
-        let guard = self.graph.read().await;
-        let graph = guard.as_ref().unwrap();
+        let (_project_root, graph, _config, notice, _use_session_cache) = self
+            .resolve_query_context(non_empty_string(params.project_root.as_ref()))
+            .await?;
 
-        let dir = match params.direction.as_deref() {
+        let dir = match non_empty_string(params.direction.as_ref()) {
             Some("upstream" | "up") => rpg_nav::explore::Direction::Upstream,
             Some("both") => rpg_nav::explore::Direction::Both,
             _ => rpg_nav::explore::Direction::Downstream,
@@ -220,26 +295,26 @@ impl RpgServer {
             _ => 2, // Default
         };
 
-        let edge_filter = params.edge_filter.as_deref().and_then(parse_edge_filter);
+        let edge_filter = non_empty_string(params.edge_filter.as_ref()).and_then(parse_edge_filter);
 
         let entity_type_filter = params
             .entity_type_filter
             .as_deref()
+            .and_then(|value| non_empty_str(Some(value)))
             .map(parse_entity_type_filter)
             .filter(|v| !v.is_empty());
 
-        let ids: Vec<&str> = if let Some(ref batch) = params.entity_ids {
-            batch.iter().map(|s| s.as_str()).collect()
-        } else {
-            vec![params.entity_id.as_str()]
-        };
+        let ids = normalized_entity_ids(params.entity_ids.as_ref(), params.entity_id.as_ref());
+        if ids.is_empty() {
+            return Err("Provide entity_id or at least one non-blank entity_ids entry.".into());
+        }
 
-        let use_compact = matches!(params.format.as_deref(), Some("compact"));
+        let use_compact = matches!(non_empty_string(params.format.as_ref()), Some("compact"));
 
         let mut outputs = Vec::new();
         for id in &ids {
             match rpg_nav::explore::explore_filtered(
-                graph,
+                &graph,
                 id,
                 dir,
                 max_depth,
@@ -284,32 +359,54 @@ impl RpgServer {
         description = "PREFER THIS OVER wc/find/tree FOR CODEBASE OVERVIEW. RPG statistics: entity count, file count, functional areas, dependency edges, containment edges, inter-area connectivity, hierarchy overview. Call this first on any new codebase to orient yourself before searching.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
-    async fn rpg_info(&self) -> Result<String, String> {
-        self.ensure_graph().await?;
-        let notice = self.auto_sync_if_stale().await;
-        let guard = self.graph.read().await;
-        let graph = guard.as_ref().unwrap();
+    async fn rpg_info(
+        &self,
+        Parameters(params): Parameters<RpgInfoParams>,
+    ) -> Result<String, String> {
+        let (project_root, graph, _config, notice, use_session_cache) = self
+            .resolve_query_context(params.project_root.as_deref())
+            .await?;
         #[cfg(feature = "embeddings")]
         let emb_status = {
-            let emb_guard = self.embedding_index.read().await;
-            if let Some(ref idx) = *emb_guard {
-                format!(
-                    "\nembedding_index: {} entities indexed (BGE-small-en-v1.5)",
-                    idx.entity_count()
-                )
-            } else if self
-                .embedding_init_failed
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
-                "\nembedding_index: init failed (lexical-only search)".to_string()
+            if use_session_cache {
+                let emb_guard = self.embedding_index.read().await;
+                if let Some(ref idx) = *emb_guard {
+                    format!(
+                        "\nembedding_index: {} entities indexed (BGE-small-en-v1.5)",
+                        idx.entity_count()
+                    )
+                } else if self
+                    .embedding_init_failed
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    "\nembedding_index: init failed (lexical-only search)".to_string()
+                } else {
+                    "\nembedding_index: not initialized (will load on first semantic search)"
+                        .to_string()
+                }
             } else {
-                "\nembedding_index: not initialized (will load on first semantic search)"
-                    .to_string()
+                let updated_at = graph.updated_at.to_rfc3339();
+                match rpg_nav::embeddings::EmbeddingIndex::load_or_init(&project_root, &updated_at)
+                {
+                    Ok(mut idx) => {
+                        if let Err(e) = idx.sync(&graph) {
+                            eprintln!(
+                                "rpg: embedding sync failed for {}: {e}",
+                                project_root.display()
+                            );
+                        }
+                        format!(
+                            "\nembedding_index: {} entities indexed (BGE-small-en-v1.5)",
+                            idx.entity_count()
+                        )
+                    }
+                    Err(_) => "\nembedding_index: init failed (lexical-only search)".to_string(),
+                }
             }
         };
         #[cfg(not(feature = "embeddings"))]
         let emb_status = "\nembedding_index: disabled (compiled without embeddings feature)";
-        let area_invocations = rpg_nav::dataflow::compute_area_invocations(graph);
+        let area_invocations = rpg_nav::dataflow::compute_area_invocations(&graph);
         let area_text = rpg_nav::dataflow::format_area_invocations(&area_invocations);
         let area_section = if area_text.is_empty() {
             String::new()
@@ -319,7 +416,7 @@ impl RpgServer {
         Ok(format!(
             "{}{}{}{}",
             notice,
-            rpg_nav::toon::format_rpg_info(graph),
+            rpg_nav::toon::format_rpg_info(&graph),
             emb_status,
             area_section,
         ))
@@ -333,10 +430,9 @@ impl RpgServer {
         &self,
         Parameters(params): Parameters<SemanticSnapshotParams>,
     ) -> Result<String, String> {
-        self.ensure_graph().await?;
-        let notice = self.auto_sync_if_stale().await;
-        let guard = self.graph.read().await;
-        let graph = guard.as_ref().unwrap();
+        let (_project_root, graph, _config, notice, _use_session_cache) = self
+            .resolve_query_context(params.project_root.as_deref())
+            .await?;
 
         let request = rpg_nav::snapshot::SnapshotRequest {
             token_budget: params.token_budget.unwrap_or(30_000),
@@ -345,7 +441,7 @@ impl RpgServer {
         };
 
         let token_budget = params.token_budget.unwrap_or(30_000);
-        let result = rpg_nav::snapshot::build_semantic_snapshot(graph, &request);
+        let result = rpg_nav::snapshot::build_semantic_snapshot(&graph, &request);
 
         let (lifted, total) = graph.lifting_coverage();
         let mut output = format!(
@@ -378,9 +474,9 @@ impl RpgServer {
         &self,
         Parameters(params): Parameters<ReconstructPlanParams>,
     ) -> Result<String, String> {
-        self.ensure_graph().await?;
-        let guard = self.graph.read().await;
-        let graph = guard.as_ref().unwrap();
+        let (_project_root, graph, _config, notice, _use_session_cache) = self
+            .resolve_query_context(params.project_root.as_deref())
+            .await?;
 
         if !graph.metadata.semantic_hierarchy {
             return Err(
@@ -392,13 +488,14 @@ impl RpgServer {
             max_batch_size: params.max_batch_size.unwrap_or(8).max(1),
             include_modules: params.include_modules.unwrap_or(false),
         };
-        let plan = rpg_encoder::reconstruction::schedule_reconstruction(graph, options);
+        let plan = rpg_encoder::reconstruction::schedule_reconstruction(&graph, options);
 
         let json = serde_json::to_string_pretty(&plan)
             .map_err(|e| format!("Failed to serialize plan: {}", e))?;
 
         Ok(format!(
-            "Reconstruction plan: {} entities, {} batches (max_batch_size: {})\n\n{}",
+            "{}Reconstruction plan: {} entities, {} batches (max_batch_size: {})\n\n{}",
+            notice,
             plan.topological_order.len(),
             plan.batches.len(),
             options.max_batch_size,
@@ -418,43 +515,18 @@ impl RpgServer {
         &self,
         Parameters(params): Parameters<SetProjectRootParams>,
     ) -> Result<String, String> {
-        // Expand ~ and canonicalize
-        let expanded = if let Some(rest) = params.path.strip_prefix("~/") {
-            match std::env::var("HOME") {
-                Ok(home) => std::path::PathBuf::from(home).join(rest),
-                Err(_) => std::path::PathBuf::from(&params.path),
-            }
-        } else if params.path == "~" {
-            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()))
-        } else {
-            std::path::PathBuf::from(&params.path)
-        };
-
-        let canonical = expanded.canonicalize().map_err(|e| {
-            format!(
-                "Path does not exist or is not accessible: {}: {}",
-                expanded.display(),
-                e
-            )
-        })?;
-
-        if !canonical.is_dir() {
-            return Err(format!("Path is not a directory: {}", canonical.display()));
-        }
+        let canonical = Self::canonicalize_project_root_path(&params.path)?;
 
         // Swap the root
-        *self.project_root_cell.write().await = canonical.clone();
+        *self.default_root.write().await = canonical.clone();
 
-        // Load the NEW project's config. Unlike `reload_rpg` (same-project
-        // reload, where keeping the previous in-memory config on parse
-        // error is the right call because the old config was project-
-        // valid), a project switch must *not* inherit the old project's
-        // config — that would silently cross-contaminate encoding/batch
-        // settings across unrelated codebases. So on parse failure we
-        // fall back to `RpgConfig::default()` and emit a warning, and on
-        // "file absent" we likewise use defaults.
-        {
-            let new_config = match rpg_core::config::RpgConfig::load(&canonical) {
+        // Root-scoped state is authoritative. Refresh persisted state for the
+        // new default root, then reset transient runtime/session state.
+        let state = self.root_state(&canonical).await;
+        let graph_note = {
+            let mut root_state = state.write().await;
+
+            root_state.config = match rpg_core::config::RpgConfig::load(&canonical) {
                 Ok(cfg) => cfg,
                 Err(e) => {
                     eprintln!(
@@ -464,42 +536,33 @@ impl RpgServer {
                     rpg_core::config::RpgConfig::default()
                 }
             };
-            *self.config.write().await = new_config;
-        }
+            root_state.graph = rpg_core::storage::load(&canonical).ok();
+            Self::reset_transient_runtime_state(&mut root_state, &canonical);
 
-        // Reset all session + sync state — everything is project-scoped
+            match &root_state.graph {
+                Some(g) => format!(
+                    "Loaded existing graph: {} entities, {} files, {}",
+                    g.metadata.total_entities,
+                    g.metadata.total_files,
+                    if g.metadata.semantic_hierarchy {
+                        "semantic hierarchy"
+                    } else {
+                        "structural hierarchy"
+                    }
+                ),
+                None => "No .rpg/graph.json at this root — call build_rpg to index it.".to_string(),
+            }
+        };
+
+        self.sync_default_root_compat_from_state(&canonical).await;
         *self.lifting_session.write().await = None;
         *self.hierarchy_session.write().await = None;
-        *self.pending_routing.write().await = load_pending_routing(&canonical)
-            .map(|s| s.entries)
-            .unwrap_or_default();
-        *self.last_auto_sync_head.write().await = None;
-        *self.last_auto_sync_changeset.write().await = None;
-        *self.last_auto_sync_workdir_paths.write().await = std::collections::HashSet::new();
-        *self.stale_entity_ids.write().await = std::collections::HashSet::new();
         #[cfg(feature = "embeddings")]
         {
             *self.embedding_index.write().await = None;
             self.embedding_init_failed
                 .store(false, std::sync::atomic::Ordering::Relaxed);
         }
-
-        // Load graph from the new root (if one exists there)
-        let loaded = rpg_core::storage::load(&canonical).ok();
-        let graph_note = match &loaded {
-            Some(g) => format!(
-                "Loaded existing graph: {} entities, {} files, {}",
-                g.metadata.total_entities,
-                g.metadata.total_files,
-                if g.metadata.semantic_hierarchy {
-                    "semantic hierarchy"
-                } else {
-                    "structural hierarchy"
-                }
-            ),
-            None => "No .rpg/graph.json at this root — call build_rpg to index it.".to_string(),
-        };
-        *self.graph.write().await = loaded;
 
         Ok(format!(
             "Project root set to: {}\n{}",
@@ -522,17 +585,25 @@ impl RpgServer {
     ) -> Result<String, String> {
         use rpg_parser::languages::Language;
 
-        let project_root = &self.project_root().await;
+        let ctx = self
+            .effective_context(non_empty_string(params.project_root.as_ref()))
+            .await?;
+        let project_root = ctx.root.clone();
+        let is_default_root = project_root == self.project_root().await;
+        let state = ctx.state.clone();
+        let language_override = non_empty_string(params.language.as_ref());
+        let include_pattern = non_empty_string(params.include.as_ref());
+        let exclude_pattern = non_empty_string(params.exclude.as_ref());
 
         // Detect languages (multi-language support)
-        let languages: Vec<Language> = if let Some(ref l) = params.language {
+        let languages: Vec<Language> = if let Some(l) = language_override {
             // User specified a single language override
             let lang = Language::from_name(l)
                 .or_else(|| Language::from_extension(l))
                 .ok_or_else(|| format!("unsupported language: {}", l))?;
             vec![lang]
         } else {
-            let detected = Language::detect_all(project_root);
+            let detected = Language::detect_all(&project_root);
             if detected.is_empty() {
                 return Err(
                     "could not detect any supported language; specify the 'language' parameter"
@@ -544,11 +615,11 @@ impl RpgServer {
 
         // Auto-preserve: load existing graph if it has lifted features
         let mut backup_failed = false;
-        let old_graph: Option<RPGraph> = if storage::rpg_exists(project_root) {
-            match storage::load(project_root) {
+        let old_graph: Option<RPGraph> = if storage::rpg_exists(&project_root) {
+            match storage::load(&project_root) {
                 Ok(g) if g.metadata.lifted_entities > 0 => {
                     // Backup before overwriting
-                    if let Err(e) = storage::create_backup(project_root) {
+                    if let Err(e) = storage::create_backup(&project_root) {
                         eprintln!("rpg: WARNING: backup failed: {e}");
                         backup_failed = true;
                     }
@@ -579,20 +650,16 @@ impl RpgServer {
 
         // Detect paradigms using TOML-driven engine
         let active_defs =
-            rpg_parser::paradigms::detect_paradigms_toml(project_root, &languages, &paradigm_defs);
+            rpg_parser::paradigms::detect_paradigms_toml(&project_root, &languages, &paradigm_defs);
         graph.metadata.paradigms = active_defs.iter().map(|d| d.name.clone()).collect();
 
         // Parse code entities (all detected languages)
-        let include_glob = params
-            .include
-            .as_deref()
-            .and_then(|p| globset::Glob::new(p).ok().map(|g| g.compile_matcher()));
-        let exclude_glob = params
-            .exclude
-            .as_deref()
-            .and_then(|p| globset::Glob::new(p).ok().map(|g| g.compile_matcher()));
+        let include_glob =
+            include_pattern.and_then(|p| globset::Glob::new(p).ok().map(|g| g.compile_matcher()));
+        let exclude_glob =
+            exclude_pattern.and_then(|p| globset::Glob::new(p).ok().map(|g| g.compile_matcher()));
 
-        let walker = ignore::WalkBuilder::new(project_root)
+        let walker = ignore::WalkBuilder::new(&project_root)
             .hidden(true)
             .git_ignore(true)
             .add_custom_ignore_filename(".rpgignore")
@@ -610,7 +677,7 @@ impl RpgServer {
             if !languages.contains(&file_lang) {
                 continue;
             }
-            let rel_path_for_glob = path.strip_prefix(project_root).unwrap_or(path);
+            let rel_path_for_glob = path.strip_prefix(&project_root).unwrap_or(path);
             if let Some(ref inc) = include_glob
                 && !inc.is_match(rel_path_for_glob)
             {
@@ -626,7 +693,7 @@ impl RpgServer {
                 continue;
             };
 
-            let rel_path = path.strip_prefix(project_root).unwrap_or(path);
+            let rel_path = path.strip_prefix(&project_root).unwrap_or(path);
             let mut raw_entities =
                 rpg_parser::entities::extract_entities(rel_path, &source, file_lang);
 
@@ -670,14 +737,14 @@ impl RpgServer {
         graph.materialize_containment_edges();
 
         // Artifact grounding + dependency resolution
-        let cfg = self.load_config().await;
+        let cfg = state.read().await.config.clone();
         let paradigm_ctx = rpg_encoder::grounding::ParadigmContext {
             active_defs: active_defs.clone(),
             qcache: &qcache,
         };
         rpg_encoder::grounding::populate_entity_deps(
             &mut graph,
-            project_root,
+            &project_root,
             cfg.encoding.broadcast_imports,
             None,
             Some(&paradigm_ctx),
@@ -686,7 +753,7 @@ impl RpgServer {
         rpg_encoder::grounding::resolve_dependencies(&mut graph);
 
         // Set git commit
-        if let Ok(sha) = rpg_encoder::evolution::get_head_sha(project_root) {
+        if let Ok(sha) = rpg_encoder::evolution::get_head_sha(&project_root) {
             graph.base_commit = Some(sha);
         }
 
@@ -713,8 +780,8 @@ impl RpgServer {
 
         // Refresh metadata and save
         graph.refresh_metadata();
-        storage::save(project_root, &graph).map_err(|e| format!("Failed to save RPG: {}", e))?;
-        let _ = storage::ensure_gitignore(project_root);
+        storage::save(&project_root, &graph).map_err(|e| format!("Failed to save RPG: {}", e))?;
+        let _ = storage::ensure_gitignore(&project_root);
 
         // Capture lifting coverage BEFORE the graph moves into `self.graph`.
         // `lifting_coverage()` excludes `Module` entities (they get features
@@ -726,32 +793,35 @@ impl RpgServer {
 
         // Update in-memory state
         let meta = graph.metadata.clone();
-        *self.graph.write().await = Some(graph);
-
-        // Clear sessions — graph structure changed
-        *self.lifting_session.write().await = None;
-        *self.hierarchy_session.write().await = None;
+        {
+            let mut root_state = state.write().await;
+            root_state.graph = Some(graph.clone());
+            root_state.lifting_session = None;
+            root_state.hierarchy_session = None;
+        }
+        if is_default_root {
+            self.sync_default_root_compat_from_state(&project_root)
+                .await;
+        }
 
         // Sync embedding index incrementally (fingerprints detect what changed)
         #[cfg(feature = "embeddings")]
         {
-            let graph_guard = self.graph.read().await;
-            if let Some(ref graph) = *graph_guard {
-                let mut emb_guard = self.embedding_index.write().await;
-                if let Some(ref mut idx) = *emb_guard
-                    && let Err(e) = idx.sync(graph)
-                {
-                    eprintln!("rpg: embedding sync failed: {e}");
-                    *emb_guard = None;
-                }
+            let mut root_state = state.write().await;
+            if let Some(ref mut idx) = root_state.embedding_index
+                && let Err(e) = idx.sync(&graph)
+            {
+                eprintln!("rpg: embedding sync failed: {e}");
+                root_state.embedding_index = None;
             }
+            root_state.embedding_init_failed = false;
         }
-        #[cfg(feature = "embeddings")]
-        self.embedding_init_failed
-            .store(false, std::sync::atomic::Ordering::Relaxed);
         // Clear stale pending routing (graph was fully replaced)
-        self.pending_routing.write().await.clear();
-        clear_pending_routing(&self.project_root().await);
+        {
+            let mut root_state = state.write().await;
+            root_state.pending_routing.clear();
+        }
+        clear_pending_routing(&project_root);
 
         // Prune the drift-tracking set against the new graph. build_rpg
         // preserves features for entities whose IDs survive the rebuild,
@@ -759,11 +829,14 @@ impl RpgServer {
         // But IDs removed in the rebuild should drop out of the set so it
         // doesn't accumulate dead references over many rebuilds.
         {
-            let graph_guard = self.graph.read().await;
-            if let Some(ref g) = *graph_guard {
-                let mut stale = self.stale_entity_ids.write().await;
-                stale.retain(|id| g.entities.contains_key(id));
-            }
+            let mut root_state = state.write().await;
+            root_state
+                .stale_entity_ids
+                .retain(|id| graph.entities.contains_key(id));
+        }
+        if is_default_root {
+            self.sync_default_root_compat_from_state(&project_root)
+                .await;
         }
 
         let lang_display = if languages.len() == 1 {
@@ -845,7 +918,7 @@ impl RpgServer {
                 "\n\nNEXT STEP: Graph is fully lifted. Semantic tools (search_node, context_pack, plan_change, explore_rpg) are ready — prefer them over grep/cat/find for any structural question.",
             );
         } else if unlifted >= crate::LARGE_SCOPE_ENTITIES {
-            let batch_tokens = self.config.read().await.encoding.max_batch_tokens;
+            let batch_tokens = state.read().await.config.encoding.max_batch_tokens;
             result.push_str(&format!(
                 "\n\nNEXT STEP: {} entities unlifted (of {}). Dispatch a sub-agent now to run the lift loop — don't wait for the user to ask. Each batch is ~{}K tokens of source, so running the loop here would exhaust caller context before any real work begins.\n\
                  \nLOOP (sub-agent runs this in its own context):\n  \
@@ -858,6 +931,9 @@ impl RpgServer {
                 "\n\nNEXT STEP: {} entities unlifted (of {}). Lift now — don't wait for the user to ask; semantic search/fetch won't find unlifted entities by intent. Call get_entities_for_lifting(scope=\"*\"), analyze the batch, submit via submit_lift_results, repeat until DONE, then finalize_lifting.",
                 unlifted, total_non_module,
             ));
+        }
+        if !ctx.cross_root_notice.is_empty() {
+            result = format!("{}{}", ctx.cross_root_notice, result);
         }
         Ok(result)
     }
@@ -889,7 +965,22 @@ impl RpgServer {
                 }
             }
 
-            self.ensure_graph().await?;
+            let ctx = self
+                .effective_context(params.project_root.as_deref())
+                .await?;
+            let project_root = ctx.root.clone();
+            let is_default_root = project_root == self.project_root().await;
+            let state = ctx.state.clone();
+            {
+                let needs_graph = state.read().await.graph.is_none();
+                if needs_graph {
+                    let loaded = Self::load_graph_from_root(&project_root)?;
+                    state.write().await.graph = Some(loaded.clone());
+                    if is_default_root {
+                        *self.graph.write().await = Some(loaded);
+                    }
+                }
+            }
 
             // Reject concurrent lift calls
             if self
@@ -938,24 +1029,26 @@ impl RpgServer {
 
             // Dry run: estimate cost without lifting
             if dry_run {
-                let project_root = self.project_root().await;
-                let guard = self.graph.read().await;
-                let graph = guard.as_ref().unwrap();
+                let guard = state.read().await;
+                let graph = guard.graph.as_ref().unwrap();
                 let estimate = rpg_lift::estimate_cost(graph, provider.as_ref(), &project_root);
-                return Ok(format!(
+                let mut out = format!(
                     "Cost estimate for lifting with {} ({}):\n\n{}",
                     params.provider,
                     provider.model_name(),
                     estimate,
-                ));
+                );
+                if !ctx.cross_root_notice.is_empty() {
+                    out = format!("{}{}", ctx.cross_root_notice, out);
+                }
+                return Ok(out);
             }
 
             // Hold the write lock for the entire pipeline. The graph never leaves
             // shared state, so cancellation or concurrent tools can't corrupt it.
-            let mut guard = self.graph.write().await;
-            let graph = guard.as_mut().ok_or("No RPG loaded")?;
-
-            let project_root = self.project_root().await.clone();
+            let mut state_guard = state.write().await;
+            let mut graph_slot = state_guard.graph.take();
+            let graph = graph_slot.as_mut().ok_or("No RPG loaded")?;
             let scope_owned = scope.to_string();
 
             // Compute the in-scope entity IDs up front so we can drain
@@ -994,24 +1087,51 @@ impl RpgServer {
             })
             .map_err(|e| format!("Lift failed: {}", e))?;
 
-            drop(guard);
+            let final_graph = graph_slot.take().unwrap();
+            state_guard.graph = Some(final_graph.clone());
+            drop(state_guard);
+            if is_default_root {
+                *self.graph.write().await = Some(final_graph);
+            }
 
             // Drain stale tracking for every in-scope ID. After the
             // pipeline, those entities have authoritative features (LLM
             // or auto-lift), regardless of whether the features changed.
             if !in_scope_ids.is_empty() {
+                let mut state_guard = state.write().await;
+                state_guard
+                    .stale_entity_ids
+                    .retain(|id| !in_scope_ids.contains(id));
+            }
+            if is_default_root && !in_scope_ids.is_empty() {
                 let mut stale = self.stale_entity_ids.write().await;
                 stale.retain(|id| !in_scope_ids.contains(id));
             }
 
             // Clear sessions — entity list changed
-            *self.lifting_session.write().await = None;
-            *self.hierarchy_session.write().await = None;
+            {
+                let mut state_guard = state.write().await;
+                state_guard.lifting_session = None;
+                state_guard.hierarchy_session = None;
+            }
+            if is_default_root {
+                *self.lifting_session.write().await = None;
+                *self.hierarchy_session.write().await = None;
+            }
 
             // Update auto-sync markers — force re-evaluation on next query
-            *self.last_auto_sync_head.write().await =
-                rpg_encoder::evolution::get_head_sha(&self.project_root().await).ok();
-            *self.last_auto_sync_changeset.write().await = None;
+            let new_head = rpg_encoder::evolution::get_head_sha(&project_root).ok();
+            {
+                let mut state_guard = state.write().await;
+                state_guard.last_auto_sync_head = new_head.clone();
+                state_guard.last_auto_sync_changeset = None;
+                state_guard.last_auto_sync_workdir_paths = std::collections::HashSet::new();
+            }
+            if is_default_root {
+                *self.last_auto_sync_head.write().await = new_head;
+                *self.last_auto_sync_changeset.write().await = None;
+                *self.last_auto_sync_workdir_paths.write().await = std::collections::HashSet::new();
+            }
 
             let mut out = format!(
                 "Lifting complete ({}, {}).\n\
@@ -1047,6 +1167,9 @@ impl RpgServer {
             out.push_str(
                 "\n\nNEXT STEP: Call semantic_snapshot to see the full repo understanding.",
             );
+            if !ctx.cross_root_notice.is_empty() {
+                out = format!("{}{}", ctx.cross_root_notice, out);
+            }
             Ok(out)
         } // #[cfg(feature = "auto-lift")]
     }
@@ -1054,21 +1177,36 @@ impl RpgServer {
     #[tool(
         description = "Check lifting progress: coverage per area, unlifted files, active session, and NEXT STEP. Call this at any point to see where you are in the lifting flow. Reads state from the persisted graph — works across sessions."
     )]
-    async fn lifting_status(&self) -> Result<String, String> {
-        // Check if graph is loaded
-        let guard = self.graph.read().await;
-        if guard.is_some() {
-            let graph = guard.as_ref().unwrap();
-            return self.format_lifting_status(graph).await;
-        }
-        drop(guard);
+    async fn lifting_status(
+        &self,
+        Parameters(params): Parameters<LiftingStatusParams>,
+    ) -> Result<String, String> {
+        let ctx = self
+            .effective_context(params.project_root.as_deref())
+            .await?;
+        let project_root = ctx.root.clone();
+        let state = ctx.state.clone();
 
-        // Try loading from disk
-        if storage::rpg_exists(&self.project_root().await) {
-            self.ensure_graph().await?;
-            let guard = self.graph.read().await;
-            let graph = guard.as_ref().unwrap();
-            return self.format_lifting_status(graph).await;
+        {
+            let needs_graph = state.read().await.graph.is_none();
+            if needs_graph && storage::rpg_exists(&project_root) {
+                let loaded = Self::load_graph_from_root(&project_root)?;
+                state.write().await.graph = Some(loaded.clone());
+                if project_root == self.project_root().await {
+                    *self.graph.write().await = Some(loaded);
+                }
+            }
+        }
+
+        let state_guard = state.read().await;
+        if let Some(ref graph) = state_guard.graph {
+            let mut out = self
+                .format_lifting_status(graph, &project_root, &state_guard)
+                .await?;
+            if !ctx.cross_root_notice.is_empty() {
+                out = format!("{}{}", ctx.cross_root_notice, out);
+            }
+            return Ok(out);
         }
 
         Ok(
@@ -1084,7 +1222,21 @@ impl RpgServer {
         &self,
         Parameters(params): Parameters<GetEntitiesForLiftingParams>,
     ) -> Result<String, String> {
-        self.ensure_graph().await?;
+        let ctx = self
+            .effective_context(params.project_root.as_deref())
+            .await?;
+        let project_root = ctx.root.clone();
+        let state = ctx.state.clone();
+        {
+            let needs_graph = state.read().await.graph.is_none();
+            if needs_graph {
+                let loaded = Self::load_graph_from_root(&project_root)?;
+                state.write().await.graph = Some(loaded.clone());
+                if project_root == self.project_root().await {
+                    *self.graph.write().await = Some(loaded);
+                }
+            }
+        }
 
         let batch_index = params.batch_index.unwrap_or(0);
 
@@ -1095,8 +1247,8 @@ impl RpgServer {
         {
             // Check rebuild need with a brief read (no graph lock held)
             let needs_rebuild = {
-                let session = self.lifting_session.read().await;
-                match session.as_ref() {
+                let state_guard = state.read().await;
+                match state_guard.lifting_session.as_ref() {
                     None => true,
                     Some(s) => s.scope_key != params.scope || batch_index == 0,
                 }
@@ -1109,14 +1261,13 @@ impl RpgServer {
                 // still exist but are outdated, so they should be treated as
                 // "needs LLM work" alongside unlifted entities.
                 let stale_snapshot: HashSet<String> = {
-                    let stale = self.stale_entity_ids.read().await;
-                    stale.iter().cloned().collect()
+                    let state_guard = state.read().await;
+                    state_guard.stale_entity_ids.iter().cloned().collect()
                 };
 
-                // Lock order: graph first, then session (consistent with lifting_status)
-                let mut guard = self.graph.write().await;
-                let mut session = self.lifting_session.write().await;
-                let graph = guard.as_mut().ok_or("No RPG loaded")?;
+                // Lock the root state while we inspect and update the graph.
+                let mut state_guard = state.write().await;
+                let graph = state_guard.graph.as_mut().ok_or("No RPG loaded")?;
 
                 let mut scope = rpg_encoder::lift::resolve_scope(graph, &params.scope);
 
@@ -1147,22 +1298,19 @@ impl RpgServer {
                 }
 
                 if scope.entity_ids.is_empty() {
-                    *session = None;
+                    state_guard.lifting_session = None;
                     return Ok(format!(
                         "No entities matched scope: {}\nTry a file glob like 'src/**' or '*' for all.",
                         params.scope
                     ));
                 }
 
-                let all_raw_entities = rpg_encoder::lift::collect_raw_entities(
-                    graph,
-                    &scope,
-                    &self.project_root().await,
-                )
-                .map_err(|e| format!("Failed to collect entities: {}", e))?;
+                let all_raw_entities =
+                    rpg_encoder::lift::collect_raw_entities(graph, &scope, &project_root)
+                        .map_err(|e| format!("Failed to collect entities: {}", e))?;
 
                 if all_raw_entities.is_empty() {
-                    *session = None;
+                    state_guard.lifting_session = None;
                     return Ok("No source code found for matched entities.".into());
                 }
 
@@ -1231,7 +1379,7 @@ impl RpgServer {
                 // Save if we auto-lifted anything
                 if auto_lifted > 0 {
                     graph.refresh_metadata();
-                    if let Err(e) = rpg_core::storage::save(&self.project_root().await, graph) {
+                    if let Err(e) = rpg_core::storage::save(&project_root, graph) {
                         eprintln!("Warning: failed to persist auto-lifted features: {e}");
                     }
                 }
@@ -1241,25 +1389,24 @@ impl RpgServer {
                 // counting them as stale forever because the auto-lift path
                 // skips submit_lift_results entirely.
                 if !auto_relifted_stale.is_empty() {
-                    let mut stale = self.stale_entity_ids.write().await;
+                    let mut state_guard = state.write().await;
+                    let stale = &mut state_guard.stale_entity_ids;
                     for id in &auto_relifted_stale {
                         stale.remove(id);
                     }
                 }
 
                 if needs_llm.is_empty() {
-                    *session = None;
                     let (lifted, total) = graph.lifting_coverage();
+                    state_guard.lifting_session = None;
                     return Ok(format!(
                         "AUTO-LIFTED: {} trivial entities. No entities need LLM analysis.\ncoverage: {}/{}\nNEXT: Call finalize_lifting.",
                         auto_lifted, lifted, total,
                     ));
                 }
 
-                let config = self.config.read().await;
-                let batch_size = config.encoding.batch_size;
-                let max_batch_tokens = config.encoding.max_batch_tokens;
-                drop(config);
+                let batch_size = state_guard.config.encoding.batch_size;
+                let max_batch_tokens = state_guard.config.encoding.max_batch_tokens;
 
                 let mcp_batch_size = batch_size.min(25);
                 let batch_ranges = rpg_encoder::lift::build_token_aware_batches(
@@ -1271,7 +1418,7 @@ impl RpgServer {
                 // Store auto-lift count for batch 0 output
                 let auto_lift_count = auto_lifted;
 
-                *session = Some(LiftingSession {
+                state_guard.lifting_session = Some(LiftingSession {
                     scope_key: params.scope.clone(),
                     raw_entities: needs_llm,
                     batch_ranges,
@@ -1282,10 +1429,9 @@ impl RpgServer {
         }
 
         // Lock order: graph first, then session (consistent with rebuild block above)
-        let guard = self.graph.read().await;
-        let graph = guard.as_ref().ok_or("No RPG loaded")?;
-        let session = self.lifting_session.read().await;
-        let Some(session) = session.as_ref() else {
+        let state_guard = state.read().await;
+        let graph = state_guard.graph.as_ref().ok_or("No RPG loaded")?;
+        let Some(session) = state_guard.lifting_session.as_ref() else {
             return Err("Lifting session expired. Call get_entities_for_lifting with batch_index=0 to restart.".into());
         };
 
@@ -1325,7 +1471,7 @@ impl RpgServer {
             // lives (kept there to avoid duplicating detail in the per-batch
             // response, which ships with every batch's source payload).
             if total_batches >= crate::LARGE_SCOPE_BATCHES {
-                let batch_tokens = self.config.read().await.encoding.max_batch_tokens;
+                let batch_tokens = state_guard.config.encoding.max_batch_tokens;
                 let approx_total_k = (total_batches * batch_tokens).div_ceil(1000);
                 output.push_str(&format!(
                     "\nNOTE: {} batches queued (~{}K tokens of source total). If your runtime supports sub-agent dispatch or a cheaper model, stop here — do not request further batches in this context — and invoke `lifting_status` for the delegation pattern. Continue the sequential loop only if no dispatch is available.\n\n",
@@ -1344,8 +1490,7 @@ impl RpgServer {
             output.push_str(&crate::types::format_review_candidates(
                 &session.review_candidates,
             ));
-            let root = self.project_root().await;
-            let project_name = root
+            let project_name = project_root
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
@@ -1411,7 +1556,22 @@ impl RpgServer {
         &self,
         Parameters(params): Parameters<SubmitLiftResultsParams>,
     ) -> Result<String, String> {
-        self.ensure_graph().await?;
+        let ctx = self
+            .effective_context(params.project_root.as_deref())
+            .await?;
+        let project_root = ctx.root.clone();
+        let is_default_root = project_root == self.project_root().await;
+        let state = ctx.state.clone();
+        {
+            let needs_graph = state.read().await.graph.is_none();
+            if needs_graph {
+                let loaded = Self::load_graph_from_root(&project_root)?;
+                state.write().await.graph = Some(loaded.clone());
+                if is_default_root {
+                    *self.graph.write().await = Some(loaded);
+                }
+            }
+        }
 
         let mut features: std::collections::HashMap<String, Vec<String>> =
             serde_json::from_str(&params.features)
@@ -1420,12 +1580,12 @@ impl RpgServer {
         // Normalize per paper: trim, lowercase, dedup
         rpg_encoder::semantic_lifting::normalize_features(&mut features);
 
-        let mut guard = self.graph.write().await;
-        let graph = guard.as_mut().ok_or("No RPG loaded")?;
+        let mut state_guard = state.write().await;
+        let mut graph_slot = state_guard.graph.take();
+        let graph = graph_slot.as_mut().ok_or("No RPG loaded")?;
 
-        let config = self.load_config().await;
-        let drift_ignore = config.encoding.drift_ignore_threshold;
-        let drift_auto = config.encoding.drift_auto_threshold;
+        let drift_ignore = state_guard.config.encoding.drift_ignore_threshold;
+        let drift_auto = state_guard.config.encoding.drift_auto_threshold;
 
         let mut updated = 0usize;
         let mut unmatched = 0usize;
@@ -1517,7 +1677,7 @@ impl RpgServer {
 
         let routing_count;
         if needs_routing {
-            let mut pending = self.pending_routing.write().await;
+            let pending = &mut state_guard.pending_routing;
 
             for eid in &auto_route_ids {
                 let original_path = graph
@@ -1584,7 +1744,7 @@ impl RpgServer {
                 graph_revision: revision,
                 entries: pending.clone(),
             };
-            if let Err(e) = save_pending_routing(&self.project_root().await, &state) {
+            if let Err(e) = save_pending_routing(&project_root, &state) {
                 eprintln!("rpg: failed to persist pending routing: {e}");
             }
         } else {
@@ -1596,27 +1756,44 @@ impl RpgServer {
         // Re-lifted entities are no longer stale — drain them from the set
         // tracked by auto-sync so lifting_status reports accurate drift.
         if !resolved_features.is_empty() {
+            let stale = &mut state_guard.stale_entity_ids;
+            for id in resolved_features.keys() {
+                stale.remove(id);
+            }
+        }
+        if is_default_root && !resolved_features.is_empty() {
             let mut stale = self.stale_entity_ids.write().await;
             for id in resolved_features.keys() {
                 stale.remove(id);
             }
         }
 
-        storage::save(&self.project_root().await, graph)
-            .map_err(|e| format!("Failed to save RPG: {}", e))?;
+        storage::save(&project_root, graph).map_err(|e| format!("Failed to save RPG: {}", e))?;
 
         // Update embedding index for newly-lifted entities (non-blocking on failure)
         #[cfg(feature = "embeddings")]
         {
             let graph_ts = graph.updated_at.to_rfc3339();
-            drop(guard); // Release graph write lock before async embedding update
-            self.update_embeddings(&resolved_features, &graph_ts).await;
+            drop(state_guard); // Release graph write lock before async embedding update
+            if is_default_root {
+                self.update_embeddings(&resolved_features, &graph_ts).await;
+            }
         }
         #[cfg(not(feature = "embeddings"))]
-        drop(guard);
+        drop(state_guard);
 
-        let guard = self.graph.read().await;
-        let graph = guard.as_ref().unwrap();
+        let final_graph = graph_slot.take().unwrap();
+        {
+            let mut state_guard = state.write().await;
+            state_guard.graph = Some(final_graph.clone());
+        }
+        if is_default_root {
+            *self.graph.write().await = Some(final_graph.clone());
+            *self.pending_routing.write().await = state.read().await.pending_routing.clone();
+        }
+
+        let graph_guard = state.read().await;
+        let graph = graph_guard.graph.as_ref().unwrap();
         let (lifted, total) = graph.lifting_coverage();
         let coverage_pct = if total > 0 {
             lifted as f64 / total as f64 * 100.0
@@ -1720,8 +1897,8 @@ impl RpgServer {
         // alone would tell a stale-only re-lift loop to stop after batch 1
         // while later batches are still queued.
         let stale_remaining = {
-            let stale = self.stale_entity_ids.read().await;
-            stale
+            graph_guard
+                .stale_entity_ids
                 .iter()
                 .filter(|id| graph.entities.contains_key(*id))
                 .count()
@@ -1745,6 +1922,9 @@ impl RpgServer {
         } else {
             result.push_str("\nNEXT: continue with get_entities_for_lifting, then call finalize_lifting when done.");
         }
+        if !ctx.cross_root_notice.is_empty() {
+            result = format!("{}{}", ctx.cross_root_notice, result);
+        }
         Ok(result)
     }
 
@@ -1755,13 +1935,27 @@ impl RpgServer {
         &self,
         Parameters(params): Parameters<GetRoutingCandidatesParams>,
     ) -> Result<String, String> {
-        self.ensure_graph().await?;
+        let ctx = self
+            .effective_context(params.project_root.as_deref())
+            .await?;
+        let project_root = ctx.root.clone();
+        let state = ctx.state.clone();
+        {
+            let needs_graph = state.read().await.graph.is_none();
+            if needs_graph {
+                let loaded = Self::load_graph_from_root(&project_root)?;
+                state.write().await.graph = Some(loaded.clone());
+                if project_root == self.project_root().await {
+                    *self.graph.write().await = Some(loaded);
+                }
+            }
+        }
 
-        let guard = self.graph.read().await;
-        let graph = guard.as_ref().ok_or("No RPG loaded")?;
+        let state_guard = state.read().await;
+        let graph = state_guard.graph.as_ref().ok_or("No RPG loaded")?;
         let revision = graph_revision(graph);
 
-        let pending = self.pending_routing.read().await;
+        let pending = &state_guard.pending_routing;
         if pending.is_empty() {
             return Ok("No entities pending routing.".into());
         }
@@ -1867,10 +2061,10 @@ impl RpgServer {
                     } else {
                         cat_node.semantic_features.join(", ")
                     };
-                    result.push_str(&format!("  - {}/{}: {}\n", area_name, cat_name, cat_feats,));
+                    result.push_str(&format!("  - {}/{}: {}\n", area_name, cat_name, cat_feats));
                     for sub_name in cat_node.children.keys() {
                         result
-                            .push_str(&format!("    - {}/{}/{}\n", area_name, cat_name, sub_name,));
+                            .push_str(&format!("    - {}/{}/{}\n", area_name, cat_name, sub_name));
                     }
                 }
             }
@@ -1890,6 +2084,10 @@ impl RpgServer {
             revision,
         ));
 
+        if !ctx.cross_root_notice.is_empty() {
+            result = format!("{}{}", ctx.cross_root_notice, result);
+        }
+
         Ok(result)
     }
 
@@ -1900,14 +2098,30 @@ impl RpgServer {
         &self,
         Parameters(params): Parameters<SubmitRoutingDecisionsParams>,
     ) -> Result<String, String> {
-        self.ensure_graph().await?;
+        let ctx = self
+            .effective_context(params.project_root.as_deref())
+            .await?;
+        let project_root = ctx.root.clone();
+        let is_default_root = project_root == self.project_root().await;
+        let state = ctx.state.clone();
+        {
+            let needs_graph = state.read().await.graph.is_none();
+            if needs_graph {
+                let loaded = Self::load_graph_from_root(&project_root)?;
+                state.write().await.graph = Some(loaded.clone());
+                if is_default_root {
+                    *self.graph.write().await = Some(loaded);
+                }
+            }
+        }
 
         let decisions: std::collections::HashMap<String, String> =
             serde_json::from_str(&params.decisions)
                 .map_err(|e| format!("Invalid decisions JSON: {}", e))?;
 
-        let mut guard = self.graph.write().await;
-        let graph = guard.as_mut().ok_or("No RPG loaded")?;
+        let mut state_guard = state.write().await;
+        let mut graph_slot = state_guard.graph.take();
+        let graph = graph_slot.as_mut().ok_or("No RPG loaded")?;
 
         // Validate graph revision
         let current_revision = graph_revision(graph);
@@ -1918,7 +2132,7 @@ impl RpgServer {
             ));
         }
 
-        let mut pending = self.pending_routing.write().await;
+        let pending = &mut state_guard.pending_routing;
         let mut routed = 0usize;
         let mut kept = 0usize;
         let mut reports: Vec<String> = Vec::new();
@@ -2020,23 +2234,30 @@ impl RpgServer {
         }
         graph.refresh_metadata();
 
-        storage::save(&self.project_root().await, graph)
-            .map_err(|e| format!("Failed to save RPG: {}", e))?;
+        storage::save(&project_root, graph).map_err(|e| format!("Failed to save RPG: {}", e))?;
 
         // Update or clear persisted pending state
         if pending.is_empty() {
-            clear_pending_routing(&self.project_root().await);
+            clear_pending_routing(&project_root);
         } else {
             let state = PendingRoutingState {
                 graph_revision: current_revision,
                 entries: pending.clone(),
             };
-            if let Err(e) = save_pending_routing(&self.project_root().await, &state) {
+            if let Err(e) = save_pending_routing(&project_root, &state) {
                 eprintln!("rpg: failed to persist pending routing: {e}");
             }
         }
 
         let remaining = pending.len();
+        let final_graph = graph_slot.take().unwrap();
+        state_guard.graph = Some(final_graph.clone());
+        let pending_clone = state_guard.pending_routing.clone();
+        drop(state_guard);
+        if is_default_root {
+            *self.graph.write().await = Some(final_graph);
+            *self.pending_routing.write().await = pending_clone;
+        }
         let mut result = format!("Routed {} entities, kept {} in place.\n", routed, kept);
         for report in &reports {
             result.push_str(report);
@@ -2052,6 +2273,10 @@ impl RpgServer {
             result.push_str("\nAll routing complete.\n");
         }
 
+        if !ctx.cross_root_notice.is_empty() {
+            result = format!("{}{}", ctx.cross_root_notice, result);
+        }
+
         Ok(result)
     }
 
@@ -2063,9 +2288,25 @@ impl RpgServer {
         &self,
         Parameters(params): Parameters<UpdateRpgParams>,
     ) -> Result<String, String> {
-        self.ensure_graph().await?;
+        let ctx = self
+            .effective_context(params.project_root.as_deref())
+            .await?;
+        let project_root = ctx.root.clone();
+        let is_default_root = project_root == self.project_root().await;
+        let state = ctx.state.clone();
+        {
+            let needs_graph = state.read().await.graph.is_none();
+            if needs_graph {
+                let loaded = Self::load_graph_from_root(&project_root)?;
+                state.write().await.graph = Some(loaded.clone());
+                if is_default_root {
+                    *self.graph.write().await = Some(loaded);
+                }
+            }
+        }
 
-        let mut graph = self.graph.write().await;
+        let mut root_state = state.write().await;
+        let mut graph = root_state.graph.take();
         let g = graph.as_mut().ok_or("No RPG loaded")?;
 
         // Detect paradigms BEFORE running update so entities get classified
@@ -2075,7 +2316,7 @@ impl RpgServer {
         let qcache = rpg_parser::paradigms::query_engine::QueryCache::compile_all(&paradigm_defs)
             .map_err(|errs| format!("query compile errors: {}", errs.join("; ")))?;
         let active_defs = rpg_parser::paradigms::detect_paradigms_toml(
-            &self.project_root().await,
+            &project_root,
             &detected_langs,
             &paradigm_defs,
         );
@@ -2088,36 +2329,32 @@ impl RpgServer {
 
         // Default: sync from current working tree (committed + staged + unstaged).
         // If `since` is provided, fall back to committed-only diff from that commit.
-        let summary = if let Some(since) = params.since.as_deref() {
+        let since = params.since.as_deref().filter(|s| !s.trim().is_empty());
+        let summary = if let Some(since) = since {
             rpg_encoder::evolution::run_update(
                 g,
-                &self.project_root().await,
+                &project_root,
                 Some(since),
                 Some(&paradigm_pipeline),
             )
         } else {
-            rpg_encoder::evolution::run_update_workdir(
-                g,
-                &self.project_root().await,
-                Some(&paradigm_pipeline),
-            )
+            rpg_encoder::evolution::run_update_workdir(g, &project_root, Some(&paradigm_pipeline))
         }
         .map_err(|e| format!("Update failed: {}", e))?;
 
-        storage::save(&self.project_root().await, g)
-            .map_err(|e| format!("Failed to save RPG: {}", e))?;
+        storage::save(&project_root, g).map_err(|e| format!("Failed to save RPG: {}", e))?;
 
         // Update auto-sync markers — force re-evaluation on next query
-        *self.last_auto_sync_head.write().await =
-            rpg_encoder::evolution::get_head_sha(&self.project_root().await).ok();
-        *self.last_auto_sync_changeset.write().await = None;
+        root_state.last_auto_sync_head = rpg_encoder::evolution::get_head_sha(&project_root).ok();
+        root_state.last_auto_sync_changeset = None;
+        root_state.last_auto_sync_workdir_paths = std::collections::HashSet::new();
 
         // Track modified entities so lifting_status and
         // get_entities_for_lifting(scope="*") surface them as re-lift work.
         // Without this, the "needs_relift: N" value we report below would
         // point the caller at a path that returns zero entities.
         {
-            let mut stale = self.stale_entity_ids.write().await;
+            let stale = &mut root_state.stale_entity_ids;
             for id in &summary.modified_entity_ids {
                 stale.insert(id.clone());
             }
@@ -2125,12 +2362,22 @@ impl RpgServer {
         }
 
         // Clear sessions — entity list changed
-        *self.lifting_session.write().await = None;
-        *self.hierarchy_session.write().await = None;
+        root_state.lifting_session = None;
+        root_state.hierarchy_session = None;
 
         // Sync embedding index incrementally — entities changed
         #[cfg(feature = "embeddings")]
         {
+            if let Some(ref mut idx) = root_state.embedding_index
+                && let Err(e) = idx.sync(g)
+            {
+                eprintln!("rpg: embedding sync failed: {e}");
+                root_state.embedding_index = None;
+            }
+            root_state.embedding_init_failed = false;
+        }
+        #[cfg(feature = "embeddings")]
+        if is_default_root {
             let mut emb_guard = self.embedding_index.write().await;
             if let Some(ref mut idx) = *emb_guard
                 && let Err(e) = idx.sync(g)
@@ -2138,17 +2385,15 @@ impl RpgServer {
                 eprintln!("rpg: embedding sync failed: {e}");
                 *emb_guard = None;
             }
+            self.embedding_init_failed
+                .store(false, std::sync::atomic::Ordering::Relaxed);
         }
-        #[cfg(feature = "embeddings")]
-        self.embedding_init_failed
-            .store(false, std::sync::atomic::Ordering::Relaxed);
         // Reconcile pending routing against the updated graph:
         // preserve entries whose entities still exist and have features, drop the rest.
         let mut pending_preserved = 0usize;
         let mut pending_dropped = 0usize;
         {
-            let mut pending = self.pending_routing.write().await;
-            let previous = std::mem::take(&mut *pending);
+            let previous = std::mem::take(&mut root_state.pending_routing);
             if g.metadata.semantic_hierarchy {
                 let mut preserved = Vec::new();
                 for mut entry in previous {
@@ -2165,29 +2410,32 @@ impl RpgServer {
                     }
                 }
                 pending_preserved = preserved.len();
-                *pending = preserved.clone();
-                if pending.is_empty() {
-                    clear_pending_routing(&self.project_root().await);
+                root_state.pending_routing = preserved.clone();
+                if root_state.pending_routing.is_empty() {
+                    clear_pending_routing(&project_root);
                 } else {
                     let state = PendingRoutingState {
                         graph_revision: graph_revision(g),
                         entries: preserved,
                     };
-                    if let Err(e) = save_pending_routing(&self.project_root().await, &state) {
+                    if let Err(e) = save_pending_routing(&project_root, &state) {
                         eprintln!("rpg: failed to persist pending routing: {e}");
                     }
                 }
             } else {
                 pending_dropped = previous.len();
-                clear_pending_routing(&self.project_root().await);
+                clear_pending_routing(&project_root);
             }
         }
 
-        if summary.entities_added == 0
+        let result = if summary.entities_added == 0
             && summary.entities_modified == 0
             && summary.entities_removed == 0
         {
-            Ok("RPG is up to date. No source changes detected.".into())
+            format!(
+                "{}RPG is up to date. No source changes detected.",
+                ctx.cross_root_notice
+            )
         } else {
             // Count entities needing lifting (new/modified with empty features)
             let (lifted, total) = g.lifting_coverage();
@@ -2230,21 +2478,48 @@ impl RpgServer {
                 ));
             }
 
-            Ok(result)
+            if !ctx.cross_root_notice.is_empty() {
+                result = format!("{}{}", ctx.cross_root_notice, result);
+            }
+            result
+        };
+
+        let final_graph = graph.take().unwrap();
+        root_state.graph = Some(final_graph.clone());
+        drop(root_state);
+        if is_default_root {
+            self.sync_default_root_compat_from_state(&project_root)
+                .await;
         }
+
+        Ok(result)
     }
 
     #[tool(
         description = "Reload the RPG graph and config from disk. Use after external changes to .rpg/graph.json or .rpg/config.toml — for example, after the CLI ran `rpg-encoder lift` or after editing batch-size settings."
     )]
-    async fn reload_rpg(&self) -> Result<String, String> {
-        let project_root = self.project_root().await;
+    async fn reload_rpg(
+        &self,
+        Parameters(params): Parameters<ReloadRpgParams>,
+    ) -> Result<String, String> {
+        let ctx = self
+            .effective_context(params.project_root.as_deref())
+            .await?;
+        let project_root = ctx.root.clone();
         // Refresh config from disk — if the user edited .rpg/config.toml
         // or the lifter wrote new settings, pick them up here. Logs a
         // warning if the file exists but failed to parse, then keeps the
         // existing config (don't clobber a working in-memory config over
         // a temporarily broken edit).
-        Self::reload_config_with_warning(&self.config, &project_root).await;
+        let is_default_root = project_root == self.project_root().await;
+        let state = ctx.state.clone();
+        {
+            let config_slot =
+                std::sync::Arc::new(tokio::sync::RwLock::new(state.read().await.config.clone()));
+            Self::reload_config_with_warning(&config_slot, &project_root).await;
+            let new_config = config_slot.read().await.clone();
+            state.write().await.config = new_config.clone();
+        }
         match storage::load(&project_root) {
             Ok(g) => {
                 let entities = g.metadata.total_entities;
@@ -2258,38 +2533,44 @@ impl RpgServer {
                 // keeps that backlog visible while dropping IDs that were
                 // removed in the new graph.
                 {
-                    let mut stale = self.stale_entity_ids.write().await;
-                    stale.retain(|id| g.entities.contains_key(id));
+                    let mut root_state = state.write().await;
+                    root_state
+                        .stale_entity_ids
+                        .retain(|id| g.entities.contains_key(id));
+                    root_state.graph = Some(g.clone());
                 }
-                *self.graph.write().await = Some(g);
                 // Sync embedding index incrementally
                 #[cfg(feature = "embeddings")]
                 {
-                    let graph_guard = self.graph.read().await;
-                    if let Some(ref graph) = *graph_guard {
-                        let mut emb_guard = self.embedding_index.write().await;
-                        if let Some(ref mut idx) = *emb_guard
-                            && let Err(e) = idx.sync(graph)
-                        {
-                            eprintln!("rpg: embedding sync failed: {e}");
-                            *emb_guard = None;
-                        }
+                    let mut root_state = state.write().await;
+                    if let Some(ref mut idx) = root_state.embedding_index
+                        && let Err(e) = idx.sync(&g)
+                    {
+                        eprintln!("rpg: embedding sync failed: {e}");
+                        root_state.embedding_index = None;
                     }
+                    root_state.embedding_init_failed = false;
                 }
-                #[cfg(feature = "embeddings")]
-                self.embedding_init_failed
-                    .store(false, std::sync::atomic::Ordering::Relaxed);
-
                 // Clear sessions — graph reloaded
-                *self.lifting_session.write().await = None;
-                *self.hierarchy_session.write().await = None;
+                {
+                    let mut root_state = state.write().await;
+                    root_state.lifting_session = None;
+                    root_state.hierarchy_session = None;
 
-                // Reload pending routing from disk (may have changed externally)
-                let pending = load_pending_routing(&self.project_root().await)
-                    .map(|s| s.entries)
-                    .unwrap_or_default();
-                *self.pending_routing.write().await = pending;
-                Ok(format!("RPG reloaded. {} entities loaded.", entities))
+                    // Reload pending routing from disk (may have changed externally)
+                    root_state.pending_routing = load_pending_routing(&project_root)
+                        .map(|s| s.entries)
+                        .unwrap_or_default();
+                }
+                if is_default_root {
+                    self.sync_default_root_compat_from_state(&project_root)
+                        .await;
+                }
+
+                Ok(format!(
+                    "{}RPG reloaded. {} entities loaded.",
+                    ctx.cross_root_notice, entities
+                ))
             }
             Err(e) => Err(format!("Failed to reload RPG: {}", e)),
         }
@@ -2298,11 +2579,30 @@ impl RpgServer {
     #[tool(
         description = "Finalize the lifting process: aggregate file-level features onto Module entities and re-ground artifacts. Call this AFTER all entities have been lifted via submit_lift_results. No LLM needed — uses dedup-aggregation of already-lifted entity features. After finalizing, proceed to get_files_for_synthesis for holistic file-level features, then build_semantic_hierarchy + submit_hierarchy."
     )]
-    async fn finalize_lifting(&self) -> Result<String, String> {
-        self.ensure_graph().await?;
+    async fn finalize_lifting(
+        &self,
+        Parameters(params): Parameters<FinalizeLiftingParams>,
+    ) -> Result<String, String> {
+        let ctx = self
+            .effective_context(params.project_root.as_deref())
+            .await?;
+        let project_root = ctx.root.clone();
+        let is_default_root = project_root == self.project_root().await;
+        let state = ctx.state.clone();
+        {
+            let needs_graph = state.read().await.graph.is_none();
+            if needs_graph {
+                let loaded = Self::load_graph_from_root(&project_root)?;
+                state.write().await.graph = Some(loaded.clone());
+                if is_default_root {
+                    *self.graph.write().await = Some(loaded);
+                }
+            }
+        }
 
-        let mut guard = self.graph.write().await;
-        let graph = guard.as_mut().ok_or("No RPG loaded")?;
+        let mut state_guard = state.write().await;
+        let mut graph_slot = state_guard.graph.take();
+        let graph = graph_slot.as_mut().ok_or("No RPG loaded")?;
 
         let (lifted, _total) = graph.lifting_coverage();
         if lifted == 0 {
@@ -2312,7 +2612,7 @@ impl RpgServer {
         // Drain pending routing via Jaccard fallback if agent didn't route explicitly
         let mut fallback_routed = 0usize;
         {
-            let mut pending = self.pending_routing.write().await;
+            let pending = &mut state_guard.pending_routing;
             if !pending.is_empty() && graph.metadata.semantic_hierarchy {
                 for p in pending.drain(..) {
                     let feats = graph
@@ -2348,11 +2648,11 @@ impl RpgServer {
                 graph.assign_hierarchy_ids();
                 graph.materialize_containment_edges();
             }
-            clear_pending_routing(&self.project_root().await);
+            clear_pending_routing(&project_root);
         }
 
         // Clear lifting session cache
-        *self.lifting_session.write().await = None;
+        state_guard.lifting_session = None;
 
         let mut steps: Vec<String> = Vec::new();
 
@@ -2376,8 +2676,7 @@ impl RpgServer {
         graph.refresh_metadata();
 
         // Save
-        storage::save(&self.project_root().await, graph)
-            .map_err(|e| format!("Failed to save RPG: {}", e))?;
+        storage::save(&project_root, graph).map_err(|e| format!("Failed to save RPG: {}", e))?;
 
         let (final_lifted, final_total) = graph.lifting_coverage();
         let coverage_pct = if final_total > 0 {
@@ -2432,6 +2731,20 @@ impl RpgServer {
             );
         }
 
+        if !ctx.cross_root_notice.is_empty() {
+            result = format!("{}{}", ctx.cross_root_notice, result);
+        }
+
+        let final_graph = graph_slot.take().unwrap();
+        state_guard.graph = Some(final_graph.clone());
+        let pending_clone = state_guard.pending_routing.clone();
+        drop(state_guard);
+        if is_default_root {
+            *self.graph.write().await = Some(final_graph);
+            *self.lifting_session.write().await = None;
+            *self.pending_routing.write().await = pending_clone;
+        }
+
         Ok(result)
     }
 
@@ -2442,10 +2755,24 @@ impl RpgServer {
         &self,
         Parameters(params): Parameters<GetFilesForSynthesisParams>,
     ) -> Result<String, String> {
-        self.ensure_graph().await?;
+        let ctx = self
+            .effective_context(params.project_root.as_deref())
+            .await?;
+        let project_root = ctx.root.clone();
+        let state = ctx.state.clone();
+        {
+            let needs_graph = state.read().await.graph.is_none();
+            if needs_graph {
+                let loaded = Self::load_graph_from_root(&project_root)?;
+                state.write().await.graph = Some(loaded.clone());
+                if project_root == self.project_root().await {
+                    *self.graph.write().await = Some(loaded);
+                }
+            }
+        }
 
-        let guard = self.graph.read().await;
-        let graph = guard.as_ref().unwrap();
+        let guard = state.read().await;
+        let graph = guard.graph.as_ref().unwrap();
 
         // Collect files that have lifted child entities
         #[allow(clippy::type_complexity)]
@@ -2538,6 +2865,10 @@ impl RpgServer {
             output.push_str("DONE — last batch. After submitting, call `build_semantic_hierarchy` to construct domain areas.\n");
         }
 
+        if !ctx.cross_root_notice.is_empty() {
+            output = format!("{}{}", ctx.cross_root_notice, output);
+        }
+
         Ok(output)
     }
 
@@ -2548,14 +2879,30 @@ impl RpgServer {
         &self,
         Parameters(params): Parameters<SubmitFileSynthesesParams>,
     ) -> Result<String, String> {
-        self.ensure_graph().await?;
+        let ctx = self
+            .effective_context(params.project_root.as_deref())
+            .await?;
+        let project_root = ctx.root.clone();
+        let is_default_root = project_root == self.project_root().await;
+        let state = ctx.state.clone();
+        {
+            let needs_graph = state.read().await.graph.is_none();
+            if needs_graph {
+                let loaded = Self::load_graph_from_root(&project_root)?;
+                state.write().await.graph = Some(loaded.clone());
+                if is_default_root {
+                    *self.graph.write().await = Some(loaded);
+                }
+            }
+        }
 
         let syntheses: std::collections::HashMap<String, String> =
             serde_json::from_str(&params.syntheses)
                 .map_err(|e| format!("Invalid syntheses JSON: {}", e))?;
 
-        let mut guard = self.graph.write().await;
-        let graph = guard.as_mut().ok_or("No RPG loaded")?;
+        let mut state_guard = state.write().await;
+        let mut graph_slot = state_guard.graph.take();
+        let graph = graph_slot.as_mut().ok_or("No RPG loaded")?;
 
         let mut updated = 0usize;
         let mut unmatched = Vec::new();
@@ -2609,8 +2956,7 @@ impl RpgServer {
         graph.aggregate_hierarchy_features();
         graph.refresh_metadata();
 
-        storage::save(&self.project_root().await, graph)
-            .map_err(|e| format!("Failed to save RPG: {}", e))?;
+        storage::save(&project_root, graph).map_err(|e| format!("Failed to save RPG: {}", e))?;
 
         let total_modules = graph
             .entities
@@ -2642,17 +2988,45 @@ impl RpgServer {
 
         result.push_str("\nNEXT STEP: Call build_semantic_hierarchy to construct domain areas, then submit_hierarchy to apply them.\n");
 
+        if !ctx.cross_root_notice.is_empty() {
+            result = format!("{}{}", ctx.cross_root_notice, result);
+        }
+
+        let final_graph = graph_slot.take().unwrap();
+        state_guard.graph = Some(final_graph.clone());
+        drop(state_guard);
+        if is_default_root {
+            *self.graph.write().await = Some(final_graph);
+        }
+
         Ok(result)
     }
 
     #[tool(
         description = "Get file-level features and instructions for building a semantic hierarchy. Returns Module (file) entities with their aggregated features, plus the domain discovery and hierarchy assignment prompts. YOU (the LLM) analyze the features, identify functional domains, and assign each file to a 3-level hierarchy path. Then call submit_hierarchy with your assignments."
     )]
-    async fn build_semantic_hierarchy(&self) -> Result<String, String> {
-        self.ensure_graph().await?;
+    async fn build_semantic_hierarchy(
+        &self,
+        Parameters(params): Parameters<BuildSemanticHierarchyParams>,
+    ) -> Result<String, String> {
+        let ctx = self
+            .effective_context(params.project_root.as_deref())
+            .await?;
+        let project_root = ctx.root.clone();
+        let state = ctx.state.clone();
+        {
+            let needs_graph = state.read().await.graph.is_none();
+            if needs_graph {
+                let loaded = Self::load_graph_from_root(&project_root)?;
+                state.write().await.graph = Some(loaded.clone());
+                if project_root == self.project_root().await {
+                    *self.graph.write().await = Some(loaded);
+                }
+            }
+        }
 
-        let guard = self.graph.read().await;
-        let graph = guard.as_ref().unwrap();
+        let guard = state.read().await;
+        let graph = guard.graph.as_ref().unwrap();
 
         let (lifted, total) = graph.lifting_coverage();
         let coverage_pct = if total > 0 {
@@ -2721,15 +3095,10 @@ impl RpgServer {
 
         // Handle sharded workflow
         if needs_sharding {
-            // Lock order invariant (see RpgServer doc): graph before
-            // hierarchy_session. A concurrent build_rpg/update_rpg/
-            // reload_rpg/set_project_root can clear the session at any
-            // moment before we hold its write lock, so decide whether to
-            // initialize only while holding the write lock — never by
-            // re-trusting an earlier peek. We take graph.read() FIRST
-            // (ordering) so that if we need to initialize, we can compute
-            // clusters from a stable graph and install under the
-            // session.write() that's about to follow.
+            // Avoid holding a root-state read lock while acquiring the write
+            // lock on the same RwLock. Sharded rendering only needs immutable
+            // snapshots, so compute any graph-derived data in a short read
+            // section, then release it before mutating hierarchy_session.
             enum Action {
                 EmitBatch0(Vec<rpg_encoder::hierarchy::FileCluster>),
                 EmitBatchN {
@@ -2743,32 +3112,32 @@ impl RpgServer {
                 },
             }
 
-            let graph_guard = self.graph.read().await;
-            let graph = graph_guard.as_ref().unwrap();
+            let initial_clusters = {
+                let graph_guard = state.read().await;
+                let graph = graph_guard.graph.as_ref().unwrap();
+                rpg_encoder::hierarchy::cluster_files_for_hierarchy(graph, 70)
+            };
 
             let action = {
-                let mut session_guard = self.hierarchy_session.write().await;
+                let mut session_guard = state.write().await;
 
                 // Initialize if absent — fresh or cleared-out-from-under-us.
-                if session_guard.is_none() {
-                    let new_clusters =
-                        rpg_encoder::hierarchy::cluster_files_for_hierarchy(graph, 70);
-                    let snapshot = new_clusters.clone();
-                    *session_guard = Some(HierarchySession {
-                        clusters: new_clusters,
+                if session_guard.hierarchy_session.is_none() {
+                    session_guard.hierarchy_session = Some(HierarchySession {
+                        clusters: initial_clusters.clone(),
                         functional_areas: None,
                         assignments: std::collections::HashMap::new(),
                         batches_completed: 0,
                     });
-                    Action::EmitBatch0(snapshot)
+                    Action::EmitBatch0(initial_clusters)
                 } else {
-                    let session = session_guard.as_mut().unwrap();
+                    let session = session_guard.hierarchy_session.as_mut().unwrap();
                     let total_batches = session.clusters.len() + 1;
 
                     if session.batches_completed == 0 {
                         Action::EmitBatch0(session.clusters.clone())
                     } else if session.batches_completed > session.clusters.len() {
-                        *session_guard = None;
+                        session_guard.hierarchy_session = None;
                         Action::AllDone { total_batches }
                     } else {
                         let batch_idx = session.batches_completed - 1;
@@ -2782,10 +3151,11 @@ impl RpgServer {
                 }
             };
 
-            // Keep `graph_guard` held across rendering. Both helpers now
-            // take `&RPGraph` so they don't re-read `self.graph`, which
-            // would otherwise expose us to a concurrent `set_project_root`
-            // that could swap the graph to `None` mid-render.
+            let graph_guard = state.read().await;
+            let graph = graph_guard.graph.as_ref().unwrap();
+
+            // Hold the read guard only while rendering so the helpers never
+            // re-read mutable compatibility state during batch emission.
             match action {
                 Action::EmitBatch0(clusters) => {
                     return self.build_batch_0_domain_discovery(graph, &clusters).await;
@@ -2816,16 +3186,15 @@ impl RpgServer {
         }
 
         // Non-sharded workflow (≤100 files) - original single-shot behavior
-        let guard = self.graph.read().await;
-        let graph = guard.as_ref().unwrap();
+        let guard = state.read().await;
+        let graph = guard.graph.as_ref().unwrap();
 
         let domain_prompt =
             include_str!("../../../crates/rpg-encoder/src/prompts/domain_discovery.md");
         let hierarchy_prompt =
             include_str!("../../../crates/rpg-encoder/src/prompts/hierarchy_construction.md");
 
-        let root = self.project_root().await;
-        let repo_name = root
+        let repo_name = project_root
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
@@ -2868,6 +3237,10 @@ impl RpgServer {
         output.push_str("\n\n");
         output.push_str(include_str!("prompts/hierarchy_instructions.md"));
 
+        if !ctx.cross_root_notice.is_empty() {
+            output = format!("{}{}", ctx.cross_root_notice, output);
+        }
+
         Ok(output)
     }
 
@@ -2879,24 +3252,21 @@ impl RpgServer {
         &self,
         Parameters(params): Parameters<ContextPackParams>,
     ) -> Result<String, String> {
-        self.ensure_graph().await?;
-        let notice = self.auto_sync_if_stale().await;
-        let guard = self.graph.read().await;
-        let graph = guard.as_ref().unwrap();
+        let (project_root, graph, _config, notice, use_session_cache) = self
+            .resolve_query_context(params.project_root.as_deref())
+            .await?;
 
         // Attempt hybrid embedding search
         #[cfg(feature = "embeddings")]
-        let embedding_scores = {
-            self.try_init_embeddings(graph).await;
-            let mut emb_guard = self.embedding_index.write().await;
-            if let Some(ref mut idx) = *emb_guard {
-                idx.score_all(&params.query).ok().filter(|s| !s.is_empty())
-            } else {
-                None
-            }
+        let (embedding_scores, embedding_notice) = {
+            self.query_embedding_scores(&graph, &project_root, &params.query, use_session_cache)
+                .await
         };
         #[cfg(not(feature = "embeddings"))]
-        let embedding_scores: Option<std::collections::HashMap<String, f64>> = None;
+        let (embedding_scores, embedding_notice): (
+            Option<std::collections::HashMap<String, f64>>,
+            Option<String>,
+        ) = (None, None);
 
         let request = rpg_nav::context::ContextPackRequest {
             query: &params.query,
@@ -2907,19 +3277,25 @@ impl RpgServer {
         };
 
         let result = rpg_nav::context::build_context_pack(
-            graph,
-            &self.project_root().await,
+            &graph,
+            &project_root,
             &request,
             embedding_scores.as_ref(),
         );
 
         if result.primary_entities.is_empty() {
-            return Ok(format!("{}No entities found for: {}", notice, params.query,));
+            return Ok(format!(
+                "{}{}No entities found for: {}",
+                notice,
+                embedding_notice.unwrap_or_default(),
+                params.query,
+            ));
         }
 
         Ok(format!(
-            "{}{}",
+            "{}{}{}",
             notice,
+            embedding_notice.unwrap_or_default(),
             rpg_nav::toon::format_context_pack(&result),
         ))
     }
@@ -2931,10 +3307,9 @@ impl RpgServer {
         &self,
         Parameters(params): Parameters<ImpactRadiusParams>,
     ) -> Result<String, String> {
-        self.ensure_graph().await?;
-        let notice = self.auto_sync_if_stale().await;
-        let guard = self.graph.read().await;
-        let graph = guard.as_ref().unwrap();
+        let (_project_root, graph, _config, notice, _use_session_cache) = self
+            .resolve_query_context(params.project_root.as_deref())
+            .await?;
 
         let dir = match params.direction.as_deref() {
             Some("downstream" | "down") => rpg_nav::explore::Direction::Downstream,
@@ -2953,7 +3328,7 @@ impl RpgServer {
         let max_results = params.max_results.or(Some(100));
 
         match rpg_nav::impact::compute_impact_radius(
-            graph,
+            &graph,
             &params.entity_id,
             dir,
             max_depth,
@@ -2976,10 +3351,9 @@ impl RpgServer {
         &self,
         Parameters(params): Parameters<FindPathsParams>,
     ) -> Result<String, String> {
-        self.ensure_graph().await?;
-        let notice = self.auto_sync_if_stale().await;
-        let guard = self.graph.read().await;
-        let graph = guard.as_ref().unwrap();
+        let (_project_root, graph, _config, notice, _use_session_cache) = self
+            .resolve_query_context(params.project_root.as_deref())
+            .await?;
 
         // Parse max_hops (default: 5, use -1 for unlimited)
         let max_hops = match params.max_hops {
@@ -3006,7 +3380,7 @@ impl RpgServer {
         let max_paths = params.max_paths.unwrap_or(3);
 
         let paths = rpg_nav::paths::find_paths(
-            graph,
+            &graph,
             &params.source,
             &params.target,
             max_hops,
@@ -3055,16 +3429,15 @@ impl RpgServer {
         &self,
         Parameters(params): Parameters<SliceBetweenParams>,
     ) -> Result<String, String> {
-        self.ensure_graph().await?;
-        let notice = self.auto_sync_if_stale().await;
-        let guard = self.graph.read().await;
-        let graph = guard.as_ref().unwrap();
+        let (_project_root, graph, _config, notice, _use_session_cache) = self
+            .resolve_query_context(params.project_root.as_deref())
+            .await?;
 
         let max_depth = params.max_depth.unwrap_or(3);
         let include_metadata = params.include_metadata.unwrap_or(false);
 
         let result =
-            rpg_nav::slice::slice_between(graph, &params.entity_ids, max_depth, include_metadata)?;
+            rpg_nav::slice::slice_between(&graph, &params.entity_ids, max_depth, include_metadata)?;
 
         let mut output = format!(
             "{}Minimal subgraph connecting {} entities:\n\n",
@@ -3115,24 +3488,21 @@ impl RpgServer {
         &self,
         Parameters(params): Parameters<PlanChangeParams>,
     ) -> Result<String, String> {
-        self.ensure_graph().await?;
-        let notice = self.auto_sync_if_stale().await;
-        let guard = self.graph.read().await;
-        let graph = guard.as_ref().unwrap();
+        let (project_root, graph, _config, notice, use_session_cache) = self
+            .resolve_query_context(params.project_root.as_deref())
+            .await?;
 
         // Attempt hybrid embedding search
         #[cfg(feature = "embeddings")]
-        let embedding_scores = {
-            self.try_init_embeddings(graph).await;
-            let mut emb_guard = self.embedding_index.write().await;
-            if let Some(ref mut idx) = *emb_guard {
-                idx.score_all(&params.goal).ok().filter(|s| !s.is_empty())
-            } else {
-                None
-            }
+        let (embedding_scores, embedding_notice) = {
+            self.query_embedding_scores(&graph, &project_root, &params.goal, use_session_cache)
+                .await
         };
         #[cfg(not(feature = "embeddings"))]
-        let embedding_scores: Option<std::collections::HashMap<String, f64>> = None;
+        let (embedding_scores, embedding_notice): (
+            Option<std::collections::HashMap<String, f64>>,
+            Option<String>,
+        ) = (None, None);
 
         let request = rpg_nav::planner::PlanChangeRequest {
             goal: &params.goal,
@@ -3140,18 +3510,21 @@ impl RpgServer {
             max_entities: params.max_entities.unwrap_or(15),
         };
 
-        let plan = rpg_nav::planner::plan_change(graph, &request, embedding_scores.as_ref());
+        let plan = rpg_nav::planner::plan_change(&graph, &request, embedding_scores.as_ref());
 
         if plan.relevant_entities.is_empty() {
             return Ok(format!(
-                "{}No relevant entities found for: {}",
-                notice, params.goal
+                "{}{}No relevant entities found for: {}",
+                notice,
+                embedding_notice.unwrap_or_default(),
+                params.goal
             ));
         }
 
         Ok(format!(
-            "{}{}",
+            "{}{}{}",
             notice,
+            embedding_notice.unwrap_or_default(),
             rpg_nav::planner::format_change_plan(&plan),
         ))
     }
@@ -3163,12 +3536,27 @@ impl RpgServer {
         &self,
         Parameters(params): Parameters<SubmitHierarchyParams>,
     ) -> Result<String, String> {
-        self.ensure_graph().await?;
+        let ctx = self
+            .effective_context(params.project_root.as_deref())
+            .await?;
+        let project_root = ctx.root.clone();
+        let is_default_root = project_root == self.project_root().await;
+        let state = ctx.state.clone();
+        {
+            let needs_graph = state.read().await.graph.is_none();
+            if needs_graph {
+                let loaded = Self::load_graph_from_root(&project_root)?;
+                state.write().await.graph = Some(loaded.clone());
+                if is_default_root {
+                    *self.graph.write().await = Some(loaded);
+                }
+            }
+        }
 
         // Check if we have an active hierarchy session
-        let mut session_guard = self.hierarchy_session.write().await;
+        let mut session_guard = state.write().await;
 
-        if let Some(session) = session_guard.as_mut() {
+        if let Some(session) = session_guard.hierarchy_session.as_mut() {
             // BATCHED WORKFLOW
 
             // Batch 0: Domain discovery (functional areas registration)
@@ -3191,10 +3579,14 @@ impl RpgServer {
                 session.functional_areas = Some(payload.areas.clone());
                 session.batches_completed += 1;
 
-                return Ok(format!(
+                let mut result = format!(
                     "Functional areas registered: {}\n\nCall build_semantic_hierarchy to get batch 1 for file assignment.",
                     payload.areas.join(", ")
-                ));
+                );
+                if !ctx.cross_root_notice.is_empty() {
+                    result = format!("{}{}", ctx.cross_root_notice, result);
+                }
+                return Ok(result);
             }
 
             // Batch 1+: File assignments
@@ -3247,12 +3639,13 @@ impl RpgServer {
                 let clusters_count = session.clusters.len();
 
                 // Drop the session before acquiring graph write lock
-                *session_guard = None;
+                session_guard.hierarchy_session = None;
                 drop(session_guard);
 
                 // Now apply the hierarchy
-                let mut guard = self.graph.write().await;
-                let graph = guard.as_mut().ok_or("No RPG loaded")?;
+                let mut state_guard = state.write().await;
+                let mut graph_slot = state_guard.graph.take();
+                let graph = graph_slot.as_mut().ok_or("No RPG loaded")?;
 
                 // Convert file paths to Module entity IDs for apply_hierarchy
                 let mut entity_assignments: std::collections::HashMap<String, String> =
@@ -3315,8 +3708,16 @@ impl RpgServer {
                 graph.refresh_metadata();
 
                 // Save
-                storage::save(&self.project_root().await, graph)
+                storage::save(&project_root, graph)
                     .map_err(|e| format!("Failed to save RPG: {}", e))?;
+
+                let final_graph = graph_slot.take().unwrap();
+                state_guard.graph = Some(final_graph.clone());
+                drop(state_guard);
+                if is_default_root {
+                    *self.graph.write().await = Some(final_graph);
+                    *self.hierarchy_session.write().await = None;
+                }
 
                 let mut result = format!(
                     "Hierarchy applied (batched workflow, {} file batches).\nfiles_matched: {}\nfiles_unmatched: {}\nhierarchy_type: semantic\n",
@@ -3338,6 +3739,8 @@ impl RpgServer {
                 }
 
                 // Show hierarchy summary
+                let state_guard = state.read().await;
+                let graph = state_guard.graph.as_ref().unwrap();
                 result.push_str("\nHierarchy areas:\n");
                 for (area_name, area_node) in &graph.hierarchy {
                     result.push_str(&format!(
@@ -3347,14 +3750,22 @@ impl RpgServer {
                     ));
                 }
 
+                if !ctx.cross_root_notice.is_empty() {
+                    result = format!("{}{}", ctx.cross_root_notice, result);
+                }
+
                 return Ok(result);
             }
 
             // More batches remaining
-            return Ok(format!(
+            let mut result = format!(
                 "Batch {}/{} complete. Call build_semantic_hierarchy for next batch.",
                 session.batches_completed, total_batches
-            ));
+            );
+            if !ctx.cross_root_notice.is_empty() {
+                result = format!("{}{}", ctx.cross_root_notice, result);
+            }
+            return Ok(result);
         }
 
         // NO SESSION: Single-shot mode (backward compatibility)
@@ -3394,8 +3805,9 @@ impl RpgServer {
             ));
         }
 
-        let mut guard = self.graph.write().await;
-        let graph = guard.as_mut().ok_or("No RPG loaded")?;
+        let mut state_guard = state.write().await;
+        let mut graph_slot = state_guard.graph.take();
+        let graph = graph_slot.as_mut().ok_or("No RPG loaded")?;
 
         // Convert file paths to Module entity IDs for apply_hierarchy
         // Module entities use the file path as their ID in the format "path:filename_stem"
@@ -3461,8 +3873,7 @@ impl RpgServer {
         graph.refresh_metadata();
 
         // Save
-        storage::save(&self.project_root().await, graph)
-            .map_err(|e| format!("Failed to save RPG: {}", e))?;
+        storage::save(&project_root, graph).map_err(|e| format!("Failed to save RPG: {}", e))?;
 
         let mut result = format!(
             "Hierarchy applied.\nfiles_matched: {}\nfiles_unmatched: {}\nhierarchy_type: semantic\n",
@@ -3492,6 +3903,18 @@ impl RpgServer {
             ));
         }
 
+        if !ctx.cross_root_notice.is_empty() {
+            result = format!("{}{}", ctx.cross_root_notice, result);
+        }
+
+        let final_graph = graph_slot.take().unwrap();
+        state_guard.graph = Some(final_graph.clone());
+        drop(state_guard);
+        if is_default_root {
+            *self.graph.write().await = Some(final_graph);
+            *self.hierarchy_session.write().await = None;
+        }
+
         Ok(result)
     }
 
@@ -3503,10 +3926,9 @@ impl RpgServer {
         &self,
         Parameters(params): Parameters<AnalyzeHealthParams>,
     ) -> Result<String, String> {
-        self.ensure_graph().await?;
-        let notice = self.auto_sync_if_stale().await;
-        let guard = self.graph.read().await;
-        let graph = guard.as_ref().unwrap();
+        let (project_root, graph, _config, notice, _use_session_cache) = self
+            .resolve_query_context(params.project_root.as_deref())
+            .await?;
 
         let config = rpg_nav::health::HealthConfig {
             instability_threshold: params.instability_threshold.unwrap_or(0.7),
@@ -3520,8 +3942,7 @@ impl RpgServer {
             ..Default::default()
         };
 
-        let report =
-            rpg_nav::health::compute_health_full(graph, &self.project_root().await, &config);
+        let report = rpg_nav::health::compute_health_full(&graph, &project_root, &config);
 
         Ok(format!(
             "{}{}",
@@ -3538,10 +3959,9 @@ impl RpgServer {
         &self,
         Parameters(params): Parameters<DetectCyclesParams>,
     ) -> Result<String, String> {
-        self.ensure_graph().await?;
-        let notice = self.auto_sync_if_stale().await;
-        let guard = self.graph.read().await;
-        let graph = guard.as_ref().unwrap();
+        let (project_root, graph, _config, notice, _use_session_cache) = self
+            .resolve_query_context(params.project_root.as_deref())
+            .await?;
 
         let cross_file_only = params.cross_file_only.unwrap_or(false);
         let cross_area_only = params.cross_area_only.unwrap_or(false);
@@ -3553,7 +3973,7 @@ impl RpgServer {
             .unwrap_or_else(|| "length".to_string());
 
         let excluded_paths = if !params.ignore_rpgignore.unwrap_or(false) {
-            let ignore_path = self.project_root().await.join(".rpgignore");
+            let ignore_path = project_root.join(".rpgignore");
             let (gitignore, err) = ignore::gitignore::Gitignore::new(&ignore_path);
             if err.is_none() || ignore_path.exists() {
                 Some(gitignore)
@@ -3576,7 +3996,7 @@ impl RpgServer {
             excluded_paths,
         };
 
-        let report = rpg_nav::cycles::detect_cycles(graph, &config);
+        let report = rpg_nav::cycles::detect_cycles(&graph, &config);
 
         let has_filters = params.max_cycles.is_some()
             || params.min_cycle_length.unwrap_or(2) > 2
@@ -3609,7 +4029,7 @@ impl RpgServer {
         Ok(format!(
             "{}{}",
             notice,
-            rpg_nav::toon::format_cycle_report(&report, graph, &opts)
+            rpg_nav::toon::format_cycle_report(&report, &graph, &opts)
         ))
     }
 }
@@ -3636,34 +4056,5 @@ pub fn parse_edge_filter(filter: &str) -> Option<rpg_core::graph::EdgeKind> {
         "data_flow" => Some(rpg_core::graph::EdgeKind::DataFlow),
         "contains" => Some(rpg_core::graph::EdgeKind::Contains),
         _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rpg_core::graph::EdgeKind;
-
-    #[test]
-    fn test_parse_edge_filter_data_flow() {
-        assert_eq!(parse_edge_filter("data_flow"), Some(EdgeKind::DataFlow));
-    }
-
-    #[test]
-    fn test_parse_edge_filter_all_kinds() {
-        assert_eq!(parse_edge_filter("imports"), Some(EdgeKind::Imports));
-        assert_eq!(parse_edge_filter("invokes"), Some(EdgeKind::Invokes));
-        assert_eq!(parse_edge_filter("inherits"), Some(EdgeKind::Inherits));
-        assert_eq!(parse_edge_filter("composes"), Some(EdgeKind::Composes));
-        assert_eq!(parse_edge_filter("renders"), Some(EdgeKind::Renders));
-        assert_eq!(parse_edge_filter("reads_state"), Some(EdgeKind::ReadsState));
-        assert_eq!(
-            parse_edge_filter("writes_state"),
-            Some(EdgeKind::WritesState)
-        );
-        assert_eq!(parse_edge_filter("dispatches"), Some(EdgeKind::Dispatches));
-        assert_eq!(parse_edge_filter("data_flow"), Some(EdgeKind::DataFlow));
-        assert_eq!(parse_edge_filter("contains"), Some(EdgeKind::Contains));
-        assert_eq!(parse_edge_filter("unknown"), None);
     }
 }

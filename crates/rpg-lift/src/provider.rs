@@ -67,7 +67,7 @@ impl AnthropicProvider {
             model: model.unwrap_or_else(|| Self::DEFAULT_MODEL.to_string()),
             agent: ureq::Agent::new_with_config(
                 ureq::config::Config::builder()
-                    .timeout_global(Some(std::time::Duration::from_secs(120)))
+                    .timeout_global(Some(std::time::Duration::from_mins(2)))
                     .build(),
             ),
         }
@@ -193,7 +193,7 @@ impl OpenAiProvider {
             base_url: base_url.unwrap_or_else(|| Self::DEFAULT_BASE_URL.to_string()),
             agent: ureq::Agent::new_with_config(
                 ureq::config::Config::builder()
-                    .timeout_global(Some(std::time::Duration::from_secs(120)))
+                    .timeout_global(Some(std::time::Duration::from_mins(2)))
                     .build(),
             ),
         }

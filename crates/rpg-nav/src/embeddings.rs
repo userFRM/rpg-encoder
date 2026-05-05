@@ -69,7 +69,7 @@ impl EmbeddingIndex {
     /// Fingerprints are loaded from meta for incremental sync support.
     pub fn load_or_init(project_root: &Path, graph_updated_at: &str) -> Result<Self> {
         let rpg_dir = project_root.join(".rpg");
-        let model = init_model(&rpg_dir)?;
+        let model = init_model()?;
 
         let embeddings_path = rpg_dir.join("embeddings.bin");
         let meta_path = rpg_dir.join("embeddings.meta.json");
@@ -328,14 +328,66 @@ fn compute_fingerprint(features: &[String]) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-/// Initialize the fastembed model with cache in .rpg/models/.
-fn init_model(rpg_dir: &Path) -> Result<TextEmbedding> {
-    let cache_dir = rpg_dir.join("models");
-    std::fs::create_dir_all(&cache_dir)?;
+fn resolve_shared_model_cache_dir_from_env(
+    rpg_model_cache_dir: Option<&std::ffi::OsStr>,
+    hf_hub_cache: Option<&std::ffi::OsStr>,
+    hf_home: Option<&std::ffi::OsStr>,
+    xdg_cache_home: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+    userprofile: Option<&std::ffi::OsStr>,
+) -> Result<PathBuf> {
+    // Priority 1: explicit RPG override
+    if let Some(path) = rpg_model_cache_dir {
+        return Ok(PathBuf::from(path));
+    }
+    // Priority 2: HuggingFace Hub cache (points directly at hub cache root)
+    if let Some(path) = hf_hub_cache {
+        return Ok(PathBuf::from(path));
+    }
+    // Priority 3: HF_HOME (model repos live directly under this directory)
+    if let Some(path) = hf_home {
+        return Ok(PathBuf::from(path));
+    }
+    // Priority 4: default ~/.cache/rpg-encoder/models/fastembed
+    let home_dir = home
+        .map(PathBuf::from)
+        .or_else(|| userprofile.map(PathBuf::from))
+        .context("could not determine home directory for shared model cache")?;
 
-    let options = fastembed::TextInitOptions::new(EmbeddingModel::BGESmallENV15)
-        .with_show_download_progress(true)
-        .with_cache_dir(cache_dir);
+    let base = if cfg!(target_os = "linux") {
+        xdg_cache_home
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home_dir.join(".cache"))
+    } else {
+        home_dir.join(".cache")
+    };
+
+    Ok(base.join("rpg-encoder").join("models").join("fastembed"))
+}
+
+fn shared_model_cache_dir() -> Result<PathBuf> {
+    let cache_dir = resolve_shared_model_cache_dir_from_env(
+        std::env::var_os("RPG_MODEL_CACHE_DIR").as_deref(),
+        std::env::var_os("HUGGINGFACE_HUB_CACHE").as_deref(),
+        std::env::var_os("HF_HOME").as_deref(),
+        std::env::var_os("XDG_CACHE_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+        std::env::var_os("USERPROFILE").as_deref(),
+    )?;
+    std::fs::create_dir_all(&cache_dir)?;
+    Ok(cache_dir)
+}
+
+/// Initialize the fastembed model with a shared machine-level cache.
+///
+/// IMPORTANT: Do NOT add `.with_show_download_progress(true)` — the MCP server
+/// uses stdio for JSON-RPC transport and any stdout/stderr noise from progress
+/// bars can corrupt the protocol stream, causing deadlocks and zombie processes.
+fn init_model() -> Result<TextEmbedding> {
+    let cache_dir = shared_model_cache_dir()?;
+
+    let options =
+        fastembed::TextInitOptions::new(EmbeddingModel::BGESmallENV15).with_cache_dir(cache_dir);
 
     let model = TextEmbedding::try_new(options)
         .context("failed to initialize embedding model (BGE-small-en-v1.5)")?;
@@ -529,6 +581,89 @@ pub fn hybrid_blend(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_resolve_shared_model_cache_dir_prefers_explicit_override() {
+        let path = resolve_shared_model_cache_dir_from_env(
+            Some(std::ffi::OsStr::new("D:/cache/rpg-models")),
+            Some(std::ffi::OsStr::new("C:/hf-hub-cache")),
+            Some(std::ffi::OsStr::new("C:/hf-home")),
+            Some(std::ffi::OsStr::new("/tmp/xdg-cache")),
+            Some(std::ffi::OsStr::new("/home/tester")),
+            Some(std::ffi::OsStr::new("C:/Users/tester")),
+        )
+        .unwrap();
+        assert_eq!(path, PathBuf::from("D:/cache/rpg-models"));
+    }
+
+    #[test]
+    fn test_resolve_shared_model_cache_dir_uses_xdg_on_linux() {
+        let path = resolve_shared_model_cache_dir_from_env(
+            None,
+            None,
+            None,
+            Some(std::ffi::OsStr::new("/tmp/xdg-cache")),
+            Some(std::ffi::OsStr::new("/home/tester")),
+            None,
+        )
+        .unwrap();
+
+        if cfg!(target_os = "linux") {
+            assert_eq!(
+                path,
+                PathBuf::from("/tmp/xdg-cache/rpg-encoder/models/fastembed")
+            );
+        } else {
+            assert_eq!(
+                path,
+                PathBuf::from("/home/tester/.cache/rpg-encoder/models/fastembed")
+            );
+        }
+    }
+
+    #[test]
+    fn test_resolve_shared_model_cache_dir_falls_back_to_home_cache() {
+        let path = resolve_shared_model_cache_dir_from_env(
+            None,
+            None,
+            None,
+            None,
+            Some(std::ffi::OsStr::new("/home/tester")),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            path,
+            PathBuf::from("/home/tester/.cache/rpg-encoder/models/fastembed")
+        );
+    }
+
+    #[test]
+    fn test_resolve_shared_model_cache_dir_uses_userprofile_when_home_missing() {
+        let path = resolve_shared_model_cache_dir_from_env(
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(std::ffi::OsStr::new("C:/Users/tester")),
+        )
+        .unwrap();
+        assert_eq!(
+            path,
+            PathBuf::from("C:/Users/tester/.cache/rpg-encoder/models/fastembed")
+        );
+    }
+
+    #[test]
+    fn test_resolve_shared_model_cache_dir_errors_without_home_or_override() {
+        let err = resolve_shared_model_cache_dir_from_env(None, None, None, None, None, None)
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("could not determine home directory")
+        );
+    }
 
     #[test]
     fn test_cosine_similarity_identical() {

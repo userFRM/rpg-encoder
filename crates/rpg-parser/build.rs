@@ -291,7 +291,7 @@ fn generate_lang_registry(defs: &[LangToml]) -> String {
          \x20           .filter(|(_, count)| **count > 0)\n\
          \x20           .map(|(idx, count)| (Self::from_index(idx), *count))\n\
          \x20           .collect();\n\
-         \x20       langs.sort_by(|a, b| b.1.cmp(&a.1));\n\
+         \x20       langs.sort_by_key(|entry| std::cmp::Reverse(entry.1));\n\
          \x20       langs.into_iter().map(|(lang, _)| lang).collect()\n\
          \x20   }\n\n\
          \x20   /// Count files per language in the project.\n\
@@ -373,7 +373,7 @@ fn generate_lang_registry(defs: &[LangToml]) -> String {
     );
     for def in defs {
         if !def.grammar.aliases.is_empty() {
-            code.push_str(&format!("        \"{}\" => match file_ext {{\n", def.name,));
+            code.push_str(&format!("        \"{}\" => match file_ext {{\n", def.name));
             for alias in &def.grammar.aliases {
                 let ext_patterns: Vec<String> = alias
                     .for_extensions
@@ -429,7 +429,7 @@ fn generate_lang_registry(defs: &[LangToml]) -> String {
         if let Some(ref builtin) = def.builtin
             && let Some(ref extractor) = builtin.dep_extractor
         {
-            code.push_str(&format!("        {} => Some(\"{}\"),\n", i, extractor,));
+            code.push_str(&format!("        {} => Some(\"{}\"),\n", i, extractor));
         }
     }
     code.push_str("        _ => None,\n    }\n}\n\n");
@@ -444,7 +444,7 @@ fn generate_lang_registry(defs: &[LangToml]) -> String {
         if let Some(ref builtin) = def.builtin
             && let Some(ref extractor) = builtin.entity_extractor
         {
-            code.push_str(&format!("        {} => Some(\"{}\"),\n", i, extractor,));
+            code.push_str(&format!("        {} => Some(\"{}\"),\n", i, extractor));
         }
     }
     code.push_str("        _ => None,\n    }\n}\n");

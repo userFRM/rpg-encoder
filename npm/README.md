@@ -14,11 +14,13 @@ Add to your MCP config:
   "mcpServers": {
     "rpg": {
       "command": "npx",
-      "args": ["-y", "-p", "rpg-encoder", "rpg-mcp-server", "/path/to/your/project"]
+      "args": ["-y", "-p", "rpg-encoder", "rpg-mcp-server"]
     }
   }
 }
 ```
+
+The MCP server uses the startup directory by default when no positional project path is provided.
 
 ## CLI
 
@@ -33,6 +35,12 @@ Or install globally:
 ```bash
 npm install -g rpg-encoder
 rpg-encoder build
+rpg-mcp-server
+```
+
+Or pass an explicit path when you want a different startup root:
+
+```bash
 rpg-mcp-server /path/to/project
 ```
 

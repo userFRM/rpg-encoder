@@ -526,7 +526,7 @@ impl RPGraph {
             }
         }
         let mut result: Vec<(String, Vec<String>)> = by_file.into_iter().collect();
-        result.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+        result.sort_by_key(|entry| std::cmp::Reverse(entry.1.len()));
         result
     }
 
