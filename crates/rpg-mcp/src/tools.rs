@@ -170,11 +170,7 @@ impl RpgServer {
         let guard = self.graph.read().await;
         let graph = guard.as_ref().unwrap();
 
-        let ids: Vec<&str> = if let Some(ref batch) = params.entity_ids {
-            batch.iter().map(|s| s.as_str()).collect()
-        } else {
-            vec![params.entity_id.as_str()]
-        };
+        let ids = requested_entity_ids(params.entity_ids.as_deref(), params.entity_id.as_ref())?;
 
         let projection = rpg_nav::toon::FetchProjection::from_params(
             params.fields.as_deref(),
@@ -228,11 +224,7 @@ impl RpgServer {
             .map(parse_entity_type_filter)
             .filter(|v| !v.is_empty());
 
-        let ids: Vec<&str> = if let Some(ref batch) = params.entity_ids {
-            batch.iter().map(|s| s.as_str()).collect()
-        } else {
-            vec![params.entity_id.as_str()]
-        };
+        let ids = requested_entity_ids(params.entity_ids.as_deref(), params.entity_id.as_ref())?;
 
         let use_compact = matches!(params.format.as_deref(), Some("compact"));
 
@@ -3622,6 +3614,18 @@ impl RpgServer {
     }
 }
 
+fn requested_entity_ids<'a>(
+    entity_ids: Option<&'a [String]>,
+    entity_id: Option<&'a String>,
+) -> Result<Vec<&'a str>, String> {
+    match (entity_ids, entity_id) {
+        (Some([]), _) => Err("entity_ids must not be empty".to_string()),
+        (Some(batch), _) => Ok(batch.iter().map(|s| s.as_str()).collect()),
+        (None, Some(id)) => Ok(vec![id.as_str()]),
+        (None, None) => Err("either entity_id or entity_ids is required".to_string()),
+    }
+}
+
 /// Parse an edge_filter string into an EdgeKind. Exposed for testing.
 pub fn parse_edge_filter(filter: &str) -> Option<rpg_core::graph::EdgeKind> {
     match filter {
@@ -3647,6 +3651,36 @@ mod tests {
     #[test]
     fn test_parse_edge_filter_data_flow() {
         assert_eq!(parse_edge_filter("data_flow"), Some(EdgeKind::DataFlow));
+    }
+
+    #[test]
+    fn requested_entity_ids_requires_single_or_batch() {
+        assert_eq!(
+            requested_entity_ids(None, None).unwrap_err(),
+            "either entity_id or entity_ids is required"
+        );
+    }
+
+    #[test]
+    fn requested_entity_ids_rejects_empty_batch() {
+        let batch = Vec::new();
+        let entity_id = "fallback.rs:item".to_string();
+
+        assert_eq!(
+            requested_entity_ids(Some(&batch), Some(&entity_id)).unwrap_err(),
+            "entity_ids must not be empty"
+        );
+    }
+
+    #[test]
+    fn requested_entity_ids_prefers_non_empty_batch() {
+        let batch = vec!["a.rs:first".to_string(), "b.rs:second".to_string()];
+        let entity_id = "fallback.rs:item".to_string();
+
+        assert_eq!(
+            requested_entity_ids(Some(&batch), Some(&entity_id)).unwrap(),
+            vec!["a.rs:first", "b.rs:second"]
+        );
     }
 
     #[test]

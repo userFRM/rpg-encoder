@@ -25,8 +25,8 @@ pub(crate) struct SearchNodeParams {
 /// Parameters for the `fetch_node` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct FetchNodeParams {
-    /// The entity ID to fetch (e.g., 'src/auth.rs:validate_token')
-    pub(crate) entity_id: String,
+    /// The entity ID to fetch (e.g., 'src/auth.rs:validate_token'). Either entity_id or entity_ids is required.
+    pub(crate) entity_id: Option<String>,
     /// Multiple entity IDs to fetch in batch (overrides entity_id when provided)
     pub(crate) entity_ids: Option<Vec<String>>,
     /// Comma-separated fields to include: "features", "source", "deps", "hierarchy". Omit for all fields.
@@ -38,8 +38,8 @@ pub(crate) struct FetchNodeParams {
 /// Parameters for the `explore_rpg` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct ExploreRpgParams {
-    /// The entity ID to start exploration from
-    pub(crate) entity_id: String,
+    /// The entity ID to start exploration from. Either entity_id or entity_ids is required.
+    pub(crate) entity_id: Option<String>,
     /// Multiple entity IDs to explore from in batch (overrides entity_id when provided)
     pub(crate) entity_ids: Option<Vec<String>>,
     /// Traversal direction: 'upstream', 'downstream', or 'both'
@@ -299,5 +299,49 @@ impl std::fmt::Debug for AutoLiftParams {
             .field("scope", &self.scope)
             .field("dry_run", &self.dry_run)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fetch_node_batch_only_payload_deserializes() {
+        // Reproduces the bug: caller supplies entity_ids (batch) without entity_id.
+        // Before the fix, serde rejected this with `missing field 'entity_id'`
+        // before the handler could use entity_ids.
+        let payload = serde_json::json!({
+            "entity_ids": [
+                "docker/fetch-runtime-config.mjs:main",
+                "docker/fetch-runtime-config.mjs:fetchSsmEnv",
+                "docker/fetch-runtime-config.mjs:fetchSecrets"
+            ],
+            "fields": "source,deps,features",
+            "source_max_lines": 220
+        });
+
+        let result: Result<FetchNodeParams, _> = serde_json::from_value(payload);
+        assert!(
+            result.is_ok(),
+            "batch-only payload should deserialize, got: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn explore_rpg_batch_only_payload_deserializes() {
+        // Same bug, same fix needed on ExploreRpgParams.
+        let payload = serde_json::json!({
+            "entity_ids": ["foo.rs:bar", "baz.rs:qux"],
+            "direction": "downstream"
+        });
+
+        let result: Result<ExploreRpgParams, _> = serde_json::from_value(payload);
+        assert!(
+            result.is_ok(),
+            "batch-only payload should deserialize, got: {:?}",
+            result.err()
+        );
     }
 }
