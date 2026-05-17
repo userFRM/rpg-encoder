@@ -170,10 +170,12 @@ impl RpgServer {
         let guard = self.graph.read().await;
         let graph = guard.as_ref().unwrap();
 
-        let ids: Vec<&str> = if let Some(ref batch) = params.entity_ids {
-            batch.iter().map(|s| s.as_str()).collect()
-        } else {
-            vec![params.entity_id.as_str()]
+        let ids: Vec<&str> = match (params.entity_ids.as_ref(), params.entity_id.as_ref()) {
+            (Some(batch), _) => batch.iter().map(|s| s.as_str()).collect(),
+            (None, Some(id)) => vec![id.as_str()],
+            (None, None) => {
+                return Err("either entity_id or entity_ids is required".to_string());
+            }
         };
 
         let projection = rpg_nav::toon::FetchProjection::from_params(
@@ -228,10 +230,12 @@ impl RpgServer {
             .map(parse_entity_type_filter)
             .filter(|v| !v.is_empty());
 
-        let ids: Vec<&str> = if let Some(ref batch) = params.entity_ids {
-            batch.iter().map(|s| s.as_str()).collect()
-        } else {
-            vec![params.entity_id.as_str()]
+        let ids: Vec<&str> = match (params.entity_ids.as_ref(), params.entity_id.as_ref()) {
+            (Some(batch), _) => batch.iter().map(|s| s.as_str()).collect(),
+            (None, Some(id)) => vec![id.as_str()],
+            (None, None) => {
+                return Err("either entity_id or entity_ids is required".to_string());
+            }
         };
 
         let use_compact = matches!(params.format.as_deref(), Some("compact"));
